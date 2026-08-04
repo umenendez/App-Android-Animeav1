@@ -68,6 +68,10 @@ Si no configuras el proxy, el listado y la edición funcionan perfectamente
 igual; solo esas dos herramientas y el registro automático te pedirán que lo
 configures.
 
+Si ya habías desplegado el proxy antes, **vuelve a desplegarlo** (`wrangler deploy` de nuevo, o pegar el código actualizado en el editor y "Deploy"): se le añadió una cabecera de navegador realista, porque animeav1.com estaba bloqueando/devolviendo error a las peticiones sin ella, y ahora la app distingue "el proxy falló" de "la página de origen dio error" en vez de tratarlos igual.
+
+
+
 ## 5. Instalar en el móvil
 
 1. Abre la URL del paso 2 en Chrome de tu Android.
@@ -98,5 +102,9 @@ diálogo dentro de la app).
   Android no deja que una web se entere de lo que navegas en otra pestaña.
   Compartir el enlace (Opción A) es el equivalente más cercano y tarda lo
   mismo que sacar el móvil del bolsillo.
-- Todo lo demás (listado, filtros, colores por estado/nota, edición de
-  Nota/Estado/Género, portadas, migración) funciona igual.
+- La sesión de Google dura aproximadamently 1 hora (así funciona el tipo de
+  login seguro que usa esta app, sin servidor propio). Mientras esa hora no
+  haya pasado, reabrir la app no te pedirá volver a iniciar sesión. Pasada
+  la hora, si sigues con la cuenta iniciada en el navegador, la app
+  intentará reconectar sola sin preguntarte nada; si no puede, verás la
+  pantalla de "Conectar con Google" con un toque.

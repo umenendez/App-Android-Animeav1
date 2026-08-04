@@ -38,15 +38,27 @@ export default {
     }
 
     const resp = await fetch(destino.toString(), {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; AnimeAV1TrackerProxy/1.0)" },
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Referer": `https://${destino.hostname}/`,
+      },
+      redirect: "follow",
     });
     const texto = await resp.text();
 
     return new Response(texto, {
-      status: resp.status,
+      // Si el sitio de origen devolvió un error, lo pasamos como cabecera
+      // aparte y respondemos 200 al navegador: así la app puede leer el
+      // cuerpo (para saber qué pasó) en vez de que fetch() lo trate como
+      // fallo genérico de red.
+      status: 200,
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
+        "X-Proxy-Upstream-Status": String(resp.status),
+        "X-Proxy-Upstream-Url": destino.toString(),
       },
     });
   },

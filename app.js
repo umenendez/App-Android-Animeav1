@@ -54,8 +54,8 @@ let todosLosAnimes = [];
 // --- Auth (Google Identity Services) -----------------------------------
 
 let tokenClient = null;
-let currentToken = sessionStorage.getItem("aat_token") || null;
-let tokenExpiry = parseInt(sessionStorage.getItem("aat_token_exp") || "0", 10);
+let currentToken = localStorage.getItem("aat_token") || null;
+let tokenExpiry = parseInt(localStorage.getItem("aat_token_exp") || "0", 10);
 
 function gisListo() {
   return typeof google !== "undefined" && google.accounts && google.accounts.oauth2;
@@ -82,8 +82,8 @@ function getAuthToken(interactive) {
       if (resp.error) return reject(new Error(resp.error));
       currentToken = resp.access_token;
       tokenExpiry = Date.now() + (resp.expires_in || 3600) * 1000;
-      sessionStorage.setItem("aat_token", currentToken);
-      sessionStorage.setItem("aat_token_exp", String(tokenExpiry));
+      localStorage.setItem("aat_token", currentToken);
+      localStorage.setItem("aat_token_exp", String(tokenExpiry));
       resolve(currentToken);
     };
     tokenClient.requestAccessToken({ prompt: interactive ? "" : "none" });
@@ -96,8 +96,8 @@ function cerrarSesion() {
   }
   currentToken = null;
   tokenExpiry = 0;
-  sessionStorage.removeItem("aat_token");
-  sessionStorage.removeItem("aat_token_exp");
+  localStorage.removeItem("aat_token");
+  localStorage.removeItem("aat_token_exp");
   mostrarLogin();
 }
 
@@ -296,7 +296,11 @@ function proxyFetch(url) {
     return Promise.reject(new Error("Configura un proxy CORS en Ajustes para usar esta herramienta (ver README)."));
   }
   return fetch(CONFIG.proxy + encodeURIComponent(url)).then((res) => {
-    if (!res.ok) throw new Error(`Proxy respondió ${res.status}`);
+    const upstreamStatus = parseInt(res.headers.get("X-Proxy-Upstream-Status") || "0", 10);
+    if (!res.ok) throw new Error(`El proxy respondió ${res.status} (revisa que la URL del proxy en Ajustes acabe en "?url=")`);
+    if (upstreamStatus && upstreamStatus !== 200) {
+      throw new Error(`La página de origen respondió ${upstreamStatus} para ${url}`);
+    }
     return res.text();
   });
 }
@@ -348,6 +352,7 @@ async function rellenarPortadas() {
     const filas = await getFilasDaJ(token, sheetName);
     const requests = [];
     let encontradas = 0, sinImagen = 0;
+    let ultimoError = "";
     const gid = Number(CONFIG.gid || 0);
 
     for (let i = 0; i < filas.length; i++) {
@@ -369,12 +374,13 @@ async function rellenarPortadas() {
         encontradas++;
       } catch (e) {
         sinImagen++;
+        ultimoError = e.message;
       }
     }
     if (requests.length > 0) {
       await sheetsFetch(":batchUpdate", token, { method: "POST", body: JSON.stringify({ requests }) });
     }
-    return { encontradas, sinImagen };
+    return { encontradas, sinImagen, ultimoError };
   });
 }
 
@@ -386,6 +392,7 @@ async function migrarAnimeFlv() {
     const filas = await getFilasDaJ(token, sheetName);
     const requests = [];
     let migradas = 0, portadasFlv = 0, sinCambios = 0;
+    let ultimoError = "";
     const gid = Number(CONFIG.gid || 0);
 
     for (let i = 0; i < filas.length; i++) {
@@ -438,6 +445,7 @@ async function migrarAnimeFlv() {
           }
         } catch (e) {
           sinCambios++;
+          ultimoError = e.message;
         }
       } else {
         sinCambios++;
@@ -446,7 +454,7 @@ async function migrarAnimeFlv() {
     if (requests.length > 0) {
       await sheetsFetch(":batchUpdate", token, { method: "POST", body: JSON.stringify({ requests }) });
     }
-    return { migradas, portadasFlv, sinCambios };
+    return { migradas, portadasFlv, sinCambios, ultimoError };
   });
 }
 
@@ -470,7 +478,11 @@ async function extraerInfoAnime(mainUrl) {
   const html = await proxyFetch(mainUrl);
   const doc = new DOMParser().parseFromString(html, "text/html");
 
-  const title = (doc.querySelector("h1")?.textContent || mainUrl).trim();
+  const h1 = doc.querySelector("h1")?.textContent?.trim();
+  if (!h1) {
+    throw new Error("No se pudo leer el título de la ficha. El proxy pudo recibir una página distinta (revisa el enlace o vuelve a probar en unos segundos).");
+  }
+  const title = h1;
 
   const bodyText = doc.body.innerText || doc.body.textContent || "";
   const scoreMatch = bodyText.match(/(\d+(?:[.,]\d+)?)\s*\n*\s*MAL RATING/i);
@@ -827,7 +839,8 @@ $("fillCovers").addEventListener("click", async () => {
   status.textContent = "Buscando portadas… puede tardar un poco si hay muchas series.";
   try {
     const res = await rellenarPortadas();
-    status.textContent = `Añadidas ${res.encontradas} portada(s).` + (res.sinImagen > 0 ? ` (${res.sinImagen} sin imagen encontrada)` : "");
+    status.textContent = `Añadidas ${res.encontradas} portada(s).`
+      + (res.sinImagen > 0 ? ` (${res.sinImagen} sin imagen encontrada${res.ultimoError ? " — ej: " + res.ultimoError : ""})` : "");
     cargar();
   } catch (e) {
     status.textContent = "Error al buscar portadas: " + e.message;
@@ -841,7 +854,8 @@ $("migrateFlv").addEventListener("click", async () => {
   status.textContent = "Revisando enlaces de AnimeFLV… puede tardar un poco.";
   try {
     const res = await migrarAnimeFlv();
-    status.textContent = `Migrados a AnimeAV1: ${res.migradas}. Portada de AnimeFLV usada: ${res.portadasFlv}. Sin cambios: ${res.sinCambios}.`;
+    status.textContent = `Migrados a AnimeAV1: ${res.migradas}. Portada de AnimeFLV usada: ${res.portadasFlv}. Sin cambios: ${res.sinCambios}.`
+      + (res.ultimoError ? ` Ej. de error: ${res.ultimoError}` : "");
     cargar();
   } catch (e) {
     status.textContent = "Error: " + e.message;
@@ -896,13 +910,41 @@ function comprobarShareTarget() {
   registrarDesdeUrl(url);
 }
 
+function mostrarCargandoSesion() {
+  pantallaLogin.style.display = "flex";
+  mainEl.style.display = "none";
+  $("btnRegistrar").style.display = "none";
+  subtCuenta.textContent = "Reconectando…";
+}
+
+function esperarGis(timeoutMs) {
+  return new Promise((resolve) => {
+    const limite = Date.now() + timeoutMs;
+    (function poll() {
+      if (gisListo() || Date.now() > limite) return resolve(gisListo());
+      setTimeout(poll, 100);
+    })();
+  });
+}
+
 // --- Arranque ---------------------------------------------------------------
 
 inicializarToolbar();
 if (CONFIG.clientId && CONFIG.sheetId) {
-  initTokenClient();
-  if (currentToken && Date.now() < tokenExpiry) mostrarApp();
-  else mostrarLogin();
+  mostrarCargandoSesion();
+  esperarGis(6000).then((listo) => {
+    if (!listo) { mostrarLogin(); return; }
+    initTokenClient();
+    if (currentToken && Date.now() < tokenExpiry) {
+      mostrarApp();
+    } else {
+      // El token guardado ya no vale (o no había ninguno). Antes de pedir
+      // que el usuario vuelva a tocar "Conectar", probamos a renovarlo en
+      // silencio: si sigue con sesión de Google abierta y ya dio permiso
+      // antes, esto no le pedirá nada y entrará directo.
+      getAuthToken(false).then(mostrarApp).catch(() => mostrarLogin());
+    }
+  });
 } else {
   mostrarLogin();
 }
