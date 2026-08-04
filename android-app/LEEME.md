@@ -1,0 +1,102 @@
+# AnimeAV1 Tracker — versión Android (PWA)
+
+Es la misma app que la extensión de Chrome, pero como aplicación web
+instalable ("PWA") para que puedas ponerla en la pantalla de inicio de tu
+móvil Android y usarla como una app normal. Incluye **todas** las
+herramientas de la extensión:
+
+- Listado con portadas en formato póster, filtros (estado/género), orden por nota.
+- Edición directa de Nota, Estado y Género desde cada tarjeta, con los mismos colores.
+- "Buscar portadas que faltan" (columna J).
+- "Migrar enlaces de AnimeFLV a AnimeAV1".
+- Registrar un anime nuevo (equivalente al script que se disparaba solo al
+  abrir un episodio en el ordenador) — en el móvil se hace compartiendo el
+  enlace desde Chrome, o pegándolo a mano con el botón "＋".
+
+## 1. Por qué hacen falta algunos pasos extra
+
+Una extensión de escritorio tiene permisos especiales (`host_permissions`)
+que le dejan leer cualquier página web sin restricciones y disparar código
+en cuanto visitas una URL. **Un navegador de Android no da esos permisos a
+una página web normal**, así que:
+
+- La lectura/edición de tu Google Sheet funciona igual de bien (la API de
+  Google sí permite llamadas desde el navegador).
+- Para leer páginas de animeav1.com/animeflv.net (portadas, migración,
+  registro) hace falta un pequeño proxy — 2 minutos de configuración, ver
+  paso 4. Es gratis y solo tú lo usas.
+- En vez de dispararse solo al abrir un capítulo, aquí registras un anime
+  compartiendo el enlace desde Chrome hacia la app (o pegándolo a mano).
+
+## 2. Alojar la app (necesario para que el login de Google funcione)
+
+Google no permite iniciar sesión desde una página abierta como archivo local
+(`file://`), necesita una URL real con HTTPS. La forma más simple y gratuita:
+
+1. Sube esta carpeta (`android-app`) a un repositorio de GitHub.
+2. En el repositorio: Settings → Pages → Deploy from branch → selecciona la
+   rama y la carpeta → Guardar.
+3. En un par de minutos tendrás una URL tipo
+   `https://tu-usuario.github.io/tu-repo/`.
+
+(Netlify o Vercel funcionan igual de bien si ya los usas.)
+
+## 3. Crear el ID de cliente OAuth de Google
+
+Es el mismo tipo de credencial que ya usaste para la extensión, pero
+"Aplicación web" en vez de "Extensión de Chrome":
+
+1. Ve a https://console.cloud.google.com/apis/credentials (mismo proyecto
+   donde tengas habilitada la Google Sheets API).
+2. "Crear credenciales" → "ID de cliente de OAuth" → tipo **Aplicación web**.
+3. En "Orígenes de JavaScript autorizados" añade la URL del paso 2, por
+   ejemplo `https://tu-usuario.github.io`.
+4. Guarda y copia el "ID de cliente" (acaba en `.apps.googleusercontent.com`).
+
+## 4. Proxy CORS (para portadas / migración / registro)
+
+Tienes el código ya escrito en `proxy-cloudflare-worker.js`. Desplegarlo:
+
+1. Crea cuenta gratis en https://workers.cloudflare.com
+2. "Create application" → "Create Worker" → pega el contenido de
+   `proxy-cloudflare-worker.js` → "Deploy".
+3. Copia la URL que te da Cloudflare (ej. `https://xxxx.workers.dev`).
+4. En la app, en Ajustes → "Proxy CORS", pon `https://xxxx.workers.dev/?url=`
+   (con el `?url=` al final, tal cual).
+
+Si no configuras el proxy, el listado y la edición funcionan perfectamente
+igual; solo esas dos herramientas y el registro automático te pedirán que lo
+configures.
+
+## 5. Instalar en el móvil
+
+1. Abre la URL del paso 2 en Chrome de tu Android.
+2. Menú (⋮) → "Añadir a pantalla de inicio" / "Instalar aplicación".
+3. Ábrela como una app normal desde el icono.
+4. Dentro de la app, pulsa ⚙️ Ajustes y rellena: ID de cliente, ID de la
+   hoja de cálculo (el mismo `SPREADSHEET_ID` de la URL de tu Sheet), el GID
+   de la pestaña (0 si es la primera) y, opcionalmente, el proxy del paso 4.
+5. Pulsa "Conectar con Google" e inicia sesión.
+
+## 6. Registrar animes desde el móvil
+
+**Opción A — compartir (recomendada):** en Chrome, mientras ves la ficha de
+un anime en animeav1.com, pulsa "Compartir" y elige "AnimeAV1 Tracker". La
+app se abre, lee la ficha a través del proxy y la añade a tu hoja (o la
+marca como "viendo" si ya estaba, o te pregunta si es una temporada
+relacionada — igual que hacía la notificación de la extensión, pero como
+diálogo dentro de la app).
+
+**Opción B — manual:** botón "＋" flotante → pega el enlace de la ficha →
+"Registrar".
+
+## Diferencias respecto a la extensión de escritorio
+
+- El aviso de "¿misma serie?" era una notificación del sistema con botones;
+  aquí es un diálogo dentro de la app (mismo resultado, dos opciones).
+- No hay disparo automático al abrir un episodio sin que tú hagas nada;
+  Android no deja que una web se entere de lo que navegas en otra pestaña.
+  Compartir el enlace (Opción A) es el equivalente más cercano y tarda lo
+  mismo que sacar el móvil del bolsillo.
+- Todo lo demás (listado, filtros, colores por estado/nota, edición de
+  Nota/Estado/Género, portadas, migración) funciona igual.

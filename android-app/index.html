@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>AnimeAV1 Tracker</title>
+<meta name="theme-color" content="#111827" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icons/icon-180.png" />
+<link rel="icon" href="icons/icon-192.png" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Mis animes</h1>
+    <div class="subt" id="subtCuenta">Sin conectar</div>
+  </div>
+  <div class="header-actions">
+    <button class="icon-btn" id="btnHerramientas" title="Herramientas">🛠️</button>
+    <button class="icon-btn" id="btnAjustes" title="Ajustes">⚙️</button>
+  </div>
+</header>
+
+<div id="pantallaLogin" style="display:none">
+  <img src="icons/icon-192.png" alt="" />
+  <h2>Conecta tu Google Sheet</h2>
+  <p>Esta app lee y edita directamente la hoja de cálculo donde llevas el registro de tus animes, igual que la extensión de escritorio.</p>
+  <button class="btn-google" id="btnConectar">Conectar con Google</button>
+  <a href="#" class="link-ajustes" id="abrirAjustesDesdeLogin">Configurar ID de cliente / hoja</a>
+</div>
+
+<main id="main" style="display:none">
+  <div class="toolbar">
+    <select id="filtroEstado"></select>
+    <select id="filtroGenero"></select>
+    <select id="orden"></select>
+  </div>
+  <div id="contador"></div>
+  <div id="cargando">Cargando…</div>
+  <div id="error" style="display:none"></div>
+  <div id="vacio" style="display:none">No hay animes que coincidan con este filtro.</div>
+  <div id="lista"></div>
+</main>
+
+<button class="fab" id="btnRegistrar" style="display:none" title="Registrar anime desde una URL">＋</button>
+
+<!-- Ajustes -->
+<div class="overlay" id="overlayAjustes">
+  <div class="sheet">
+    <div class="sheet-header">
+      <h3>Ajustes</h3>
+      <button class="cerrar-sheet" data-cerrar="overlayAjustes">✕</button>
+    </div>
+    <p class="sheet-desc">Estos datos se guardan solo en este dispositivo. Necesitas tu propio ID de cliente OAuth de Google (mismo que usarías en la extensión) autorizado para el origen desde el que abras esta app.</p>
+    <div class="campo-form">
+      <label class="f">ID de cliente OAuth (Google Cloud)</label>
+      <input type="text" id="cfgClientId" placeholder="xxxxx.apps.googleusercontent.com" />
+    </div>
+    <div class="campo-form">
+      <label class="f">ID de la hoja de cálculo (Spreadsheet ID)</label>
+      <input type="text" id="cfgSheetId" placeholder="1Pasl_bWsVlMPKh..." />
+    </div>
+    <div class="campo-form">
+      <label class="f">GID de la pestaña</label>
+      <input type="number" id="cfgGid" placeholder="0" />
+    </div>
+    <div class="campo-form">
+      <label class="f">Proxy CORS (opcional, para las herramientas de scraping)</label>
+      <input type="url" id="cfgProxy" placeholder="https://tu-proxy.workers.dev/?url=" />
+    </div>
+    <p class="aviso">El navegador no puede leer directamente páginas de animeav1.com/animeflv.net como sí puede hacerlo una extensión de escritorio (CORS). Para "Buscar portadas" y "Migrar AnimeFLV" necesitas un proxy propio — hay uno de ejemplo listo para copiar en el README.</p>
+    <div class="fila-cierre">
+      <button class="btn-secundario" data-cerrar="overlayAjustes">Cancelar</button>
+      <button class="btn-primario" id="btnGuardarAjustes">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Registrar por URL (equivalente al content script) -->
+<div class="overlay" id="overlayRegistrar">
+  <div class="sheet">
+    <div class="sheet-header">
+      <h3>Registrar anime</h3>
+      <button class="cerrar-sheet" data-cerrar="overlayRegistrar">✕</button>
+    </div>
+    <p class="sheet-desc">Pega el enlace de la ficha en animeav1.com, o compártelo desde Chrome directamente a esta app con el botón "Compartir".</p>
+    <div class="campo-form">
+      <label class="f">URL de la ficha</label>
+      <input type="url" id="urlRegistrar" placeholder="https://animeav1.com/media/..." />
+    </div>
+    <div id="estadoRegistrar" class="estado-herramienta"></div>
+    <div class="fila-cierre">
+      <button class="btn-secundario" data-cerrar="overlayRegistrar">Cancelar</button>
+      <button class="btn-primario" id="btnConfirmarRegistrar">Registrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Conflicto: misma serie / temporada relacionada -->
+<div class="overlay" id="overlayConflicto">
+  <div class="sheet">
+    <div class="sheet-header">
+      <h3>¿Misma serie?</h3>
+      <button class="cerrar-sheet" data-cerrar="overlayConflicto">✕</button>
+    </div>
+    <p class="sheet-desc" id="textoConflicto"></p>
+    <div class="fila-cierre">
+      <button class="btn-secundario" id="btnConflictoNuevo">Crear registro nuevo</button>
+      <button class="btn-primario" id="btnConflictoExistente">Marcar como viendo</button>
+    </div>
+  </div>
+</div>
+
+<!-- Herramientas -->
+<div class="overlay" id="overlayHerramientas">
+  <div class="sheet">
+    <div class="sheet-header">
+      <h3>Herramientas</h3>
+      <button class="cerrar-sheet" data-cerrar="overlayHerramientas">✕</button>
+    </div>
+    <button class="btn-herramienta" id="fillCovers"><span class="emoji">🖼️</span> Buscar portadas que faltan (columna J)</button>
+    <div id="fillStatus" class="estado-herramienta"></div>
+    <button class="btn-herramienta" id="migrateFlv"><span class="emoji">🔀</span> Migrar enlaces de AnimeFLV a AnimeAV1</button>
+    <div id="migrateStatus" class="estado-herramienta"></div>
+    <button class="btn-herramienta" id="btnCerrarSesion"><span class="emoji">🚪</span> Cerrar sesión de Google</button>
+  </div>
+</div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="app.js"></script>
+</body>
+</html>
