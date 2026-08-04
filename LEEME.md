@@ -53,22 +53,38 @@ Es el mismo tipo de credencial que ya usaste para la extensión, pero
    ejemplo `https://tu-usuario.github.io`.
 4. Guarda y copia el "ID de cliente" (acaba en `.apps.googleusercontent.com`).
 
-## 4. Proxy CORS (para portadas / migración / registro)
+## 4. Proxy CORS + login persistente (Cloudflare Worker)
 
-Tienes el código ya escrito en `proxy-cloudflare-worker.js`. Desplegarlo:
+Tienes el código ya escrito en `proxy-cloudflare-worker.js`. Este Worker hace
+dos cosas: sirve de proxy para leer animeav1.com/animeflv.net, **y** ahora
+también mantiene tu sesión de Google iniciada de verdad (con refresh token),
+en vez de pedirte reconectar cada hora.
 
 1. Crea cuenta gratis en https://workers.cloudflare.com
 2. "Create application" → "Create Worker" → pega el contenido de
    `proxy-cloudflare-worker.js` → "Deploy".
 3. Copia la URL que te da Cloudflare (ej. `https://xxxx.workers.dev`).
-4. En la app, en Ajustes → "Proxy CORS", pon `https://xxxx.workers.dev/?url=`
+4. En Google Cloud Console, abre el mismo Client ID "Aplicación web" que
+   creaste en el paso 3, y copia también el **Client secret** (antes solo
+   hacía falta el Client ID; ahora el Worker también necesita el secret,
+   pero solo él — nunca va en la app ni en el navegador).
+5. Configura esos dos datos en el Worker como *secrets* (Settings →
+   Variables and Secrets → Add, marcando "Encrypt"; o por CLI):
+   ```
+   wrangler secret put GOOGLE_CLIENT_ID
+   wrangler secret put GOOGLE_CLIENT_SECRET
+   ```
+6. En la app, en Ajustes → "Proxy CORS", pon `https://xxxx.workers.dev/?url=`
    (con el `?url=` al final, tal cual).
 
-Si no configuras el proxy, el listado y la edición funcionan perfectamente
-igual; solo esas dos herramientas y el registro automático te pedirán que lo
-configures.
+Si no configuras los secrets del paso 5, el proxy de scraping (portadas,
+migración, registro) sigue funcionando igual; solo no tendrás login
+persistente y la app te pedirá reconectar cada hora, como antes.
 
-Si ya habías desplegado el proxy antes, **vuelve a desplegarlo** (`wrangler deploy` de nuevo, o pegar el código actualizado en el editor y "Deploy"): se le añadió una cabecera de navegador realista, porque animeav1.com estaba bloqueando/devolviendo error a las peticiones sin ella, y ahora la app distingue "el proxy falló" de "la página de origen dio error" en vez de tratarlos igual.
+**La primera vez** que conectes tras configurar esto, entra en
+https://myaccount.google.com/permissions y quita el acceso previo de esta
+app si ya la habías autorizado antes (así Google te da un refresh token
+nuevo; si no, a veces solo lo entrega la primerísima vez que autorizas).
 
 
 

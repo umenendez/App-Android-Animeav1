@@ -52,13 +52,38 @@ const ordenEl = $("orden");
 let todosLosAnimes = [];
 
 // --- Auth (Google Identity Services) -----------------------------------
+//
+// Si hay un proxy/Worker configurado (ver Ajustes), usamos el flujo de
+// "código de autorización": el Worker canjea el código por un access_token
+// + un refresh_token (esto último solo lo puede hacer un backend, porque
+// hace falta el client_secret). El refresh_token no caduca por sí solo, así
+// que la sesión se mantiene de verdad entre aperturas de la app.
+//
+// Si no hay proxy configurado, caemos al flujo antiguo (token directo en
+// el navegador): funciona, pero el token caduca cada ~1h y a veces no se
+// puede renovar en silencio por las restricciones de cookies de terceros
+// de Chrome — por eso se recomienda configurar el proxy también para esto.
 
 let tokenClient = null;
+let codeClient = null;
 let currentToken = localStorage.getItem("aat_token") || null;
 let tokenExpiry = parseInt(localStorage.getItem("aat_token_exp") || "0", 10);
+let refreshToken = localStorage.getItem("aat_refresh_token") || null;
 
 function gisListo() {
   return typeof google !== "undefined" && google.accounts && google.accounts.oauth2;
+}
+
+function guardarToken(access_token, expires_in) {
+  currentToken = access_token;
+  tokenExpiry = Date.now() + (expires_in || 3600) * 1000;
+  localStorage.setItem("aat_token", currentToken);
+  localStorage.setItem("aat_token_exp", String(tokenExpiry));
+}
+function guardarRefreshToken(rt) {
+  if (!rt) return;
+  refreshToken = rt;
+  localStorage.setItem("aat_refresh_token", refreshToken);
 }
 
 function initTokenClient() {
@@ -70,20 +95,92 @@ function initTokenClient() {
   });
 }
 
+function initCodeClient() {
+  if (!gisListo() || !CONFIG.clientId) return;
+  codeClient = google.accounts.oauth2.initCodeClient({
+    client_id: CONFIG.clientId,
+    scope: "https://www.googleapis.com/auth/spreadsheets",
+    ux_mode: "popup",
+    callback: "",
+  });
+}
+
+// Intenta renovar el access_token en silencio usando el refresh_token
+// guardado, a través del Worker. Sin interacción del usuario.
+async function renovarConRefreshToken() {
+  if (!refreshToken || !CONFIG.proxy) return null;
+  const base = CONFIG.proxy.split("?url=")[0].replace(/\/$/, "");
+  try {
+    const res = await fetch(`${base}/auth/refresh?refresh_token=${encodeURIComponent(refreshToken)}`);
+    const data = await res.json();
+    if (!res.ok || !data.access_token) return null;
+    guardarToken(data.access_token, data.expires_in);
+    return currentToken;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Login interactivo con el flujo de código: consigue access_token +
+// refresh_token de una vez (a través del Worker).
+function loginConCodigo() {
+  return new Promise((resolve, reject) => {
+    if (!CONFIG.proxy) return reject(new Error("Configura el proxy en Ajustes para el login persistente"));
+    if (!gisListo()) return reject(new Error("Google Identity Services no ha cargado (revisa tu conexión)"));
+    if (!codeClient) initCodeClient();
+    if (!codeClient) return reject(new Error("No se pudo inicializar el cliente de Google"));
+
+    const base = CONFIG.proxy.split("?url=")[0].replace(/\/$/, "");
+    codeClient.callback = async (resp) => {
+      if (resp.error) return reject(new Error(resp.error));
+      try {
+        const res = await fetch(`${base}/auth/exchange`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: resp.code }),
+        });
+        const data = await res.json();
+        if (!res.ok) return reject(new Error(data.error || "Error al canjear el código con el Worker"));
+        guardarToken(data.access_token, data.expires_in);
+        guardarRefreshToken(data.refresh_token);
+        resolve(currentToken);
+      } catch (e) {
+        reject(e);
+      }
+    };
+    codeClient.requestCode();
+  });
+}
+
 function getAuthToken(interactive) {
   return new Promise((resolve, reject) => {
     if (currentToken && Date.now() < tokenExpiry - 30000) return resolve(currentToken);
     if (!CONFIG.clientId) return reject(new Error("Falta configurar el ID de cliente OAuth en Ajustes"));
     if (!gisListo()) return reject(new Error("Google Identity Services no ha cargado (revisa tu conexión)"));
+
+    // 1) Si tenemos refresh_token y proxy, renovamos en silencio sin pedir nada.
+    if (refreshToken && CONFIG.proxy) {
+      renovarConRefreshToken().then((t) => {
+        if (t) return resolve(t);
+        if (!interactive) return reject(new Error("No se pudo renovar la sesión en silencio"));
+        loginConCodigo().then(resolve).catch(reject);
+      });
+      return;
+    }
+
+    // 2) Con proxy pero sin refresh_token todavía: primer login con código.
+    if (CONFIG.proxy) {
+      if (!interactive) return reject(new Error("Hace falta iniciar sesión"));
+      loginConCodigo().then(resolve).catch(reject);
+      return;
+    }
+
+    // 3) Sin proxy: flujo antiguo (token directo, caduca cada hora).
     if (!tokenClient) initTokenClient();
     if (!tokenClient) return reject(new Error("No se pudo inicializar el cliente de Google"));
-
     tokenClient.callback = (resp) => {
       if (resp.error) return reject(new Error(resp.error));
-      currentToken = resp.access_token;
-      tokenExpiry = Date.now() + (resp.expires_in || 3600) * 1000;
-      localStorage.setItem("aat_token", currentToken);
-      localStorage.setItem("aat_token_exp", String(tokenExpiry));
+      guardarToken(resp.access_token, resp.expires_in);
       resolve(currentToken);
     };
     tokenClient.requestAccessToken({ prompt: interactive ? "" : "none" });
@@ -96,13 +193,15 @@ function cerrarSesion() {
   }
   currentToken = null;
   tokenExpiry = 0;
+  refreshToken = null;
   localStorage.removeItem("aat_token");
   localStorage.removeItem("aat_token_exp");
+  localStorage.removeItem("aat_refresh_token");
   mostrarLogin();
 }
 
 // Ejecuta fn(token) y, si la API dice que el token ya no vale, pide uno
-// nuevo (con interacción) y reintenta una vez — igual que hacía background.js.
+// nuevo y reintenta una vez — igual que hacía background.js.
 async function conAuth(fn) {
   let token = await getAuthToken(true);
   try {
