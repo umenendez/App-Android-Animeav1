@@ -41,10 +41,13 @@ Google no permite iniciar sesión desde una página abierta como archivo local
 
 (Netlify o Vercel funcionan igual de bien si ya los usas.)
 
-## 3. Crear el ID de cliente OAuth de Google
+## 3. Crear el ID de cliente OAuth de Google y ponerlo en el código
 
 Es el mismo tipo de credencial que ya usaste para la extensión, pero
-"Aplicación web" en vez de "Extensión de Chrome":
+"Aplicación web" en vez de "Extensión de Chrome". Se pega **una vez en el
+código**, igual que el `key` del `manifest.json` de la extensión — así,
+igual que en la extensión, la persona que use la app después no tiene que
+rellenar nada aparte de su cuenta de Google y el enlace de su Sheet.
 
 1. Ve a https://console.cloud.google.com/apis/credentials (mismo proyecto
    donde tengas habilitada la Google Sheets API).
@@ -52,6 +55,15 @@ Es el mismo tipo de credencial que ya usaste para la extensión, pero
 3. En "Orígenes de JavaScript autorizados" añade la URL del paso 2, por
    ejemplo `https://tu-usuario.github.io`.
 4. Guarda y copia el "ID de cliente" (acaba en `.apps.googleusercontent.com`).
+5. Abre `app.js`, busca la línea:
+   ```js
+   const CLIENT_ID = "TU_CLIENT_ID.apps.googleusercontent.com";
+   ```
+   y sustituye el valor por el ID de cliente que acabas de copiar. Sube el
+   cambio a tu repositorio de GitHub (es el mismo paso que "pásale la carpeta
+   con la `key`" en la extensión: el ID de cliente no es secreto, solo
+   identifica la app, y Google ya lo restringe al origen que autorizaste
+   arriba).
 
 ## 4. Proxy CORS + login persistente (Cloudflare Worker)
 
@@ -93,10 +105,13 @@ nuevo; si no, a veces solo lo entrega la primerísima vez que autorizas).
 1. Abre la URL del paso 2 en Chrome de tu Android.
 2. Menú (⋮) → "Añadir a pantalla de inicio" / "Instalar aplicación".
 3. Ábrela como una app normal desde el icono.
-4. Dentro de la app, pulsa ⚙️ Ajustes y rellena: ID de cliente, ID de la
-   hoja de cálculo (el mismo `SPREADSHEET_ID` de la URL de tu Sheet), el GID
-   de la pestaña (0 si es la primera) y, opcionalmente, el proxy del paso 4.
-5. Pulsa "Conectar con Google" e inicia sesión.
+4. Verás la pantalla "Conecta tu Google Sheet": pega el enlace de tu hoja
+   (la misma que usarías en la extensión) y pulsa "Conectar y empezar". Se
+   te pedirá iniciar sesión con Google y, a la vez, se comprobará el acceso
+   a la hoja — igual que en la extensión, no hace falta nada más. Si la hoja
+   está vacía, se crean los encabezados de la fila 1 automáticamente.
+5. El proxy del paso 4 (opcional, solo para "Buscar portadas" y "Migrar
+   AnimeFLV") se configura aparte, en ⚙️ Ajustes → "Proxy CORS".
 
 ## 6. Registrar animes desde el móvil
 
@@ -118,6 +133,10 @@ diálogo dentro de la app).
   Android no deja que una web se entere de lo que navegas en otra pestaña.
   Compartir el enlace (Opción A) es el equivalente más cercano y tarda lo
   mismo que sacar el móvil del bolsillo.
+- Para usar la app día a día, tú (o quien la use) solo necesita su cuenta de
+  Google y el enlace de su Sheet — igual que en la extensión. El ID de
+  cliente OAuth se pega una sola vez en `app.js` al desplegar (paso 3), no
+  se pide en la app.
 - La sesión de Google dura aproximadamently 1 hora (así funciona el tipo de
   login seguro que usa esta app, sin servidor propio). Mientras esa hora no
   haya pasado, reabrir la app no te pedirá volver a iniciar sesión. Pasada

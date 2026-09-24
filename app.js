@@ -19,6 +19,15 @@ const GENEROS = [
 const ESTADO_VIENDO = "-";
 const GID_COL = 0; // A
 
+// --- ID de cliente OAuth (fijo, igual que el manifest.json de la extensión) --
+//
+// No es un secreto: solo identifica qué app pide acceso, y Google lo limita
+// a los orígenes que autorices en la consola. Se pone aquí UNA vez, al
+// desplegar tu copia de esta app (ver LEEME.md, paso 3) — así la persona que
+// la usa después no tiene que rellenar nada, solo su cuenta de Google y el
+// enlace de su Sheet, igual que en la extensión.
+const CLIENT_ID = "123415018434-6dicvlgt2j37v841f9m0hricunuatp9c.apps.googleusercontent.com";
+
 // --- Configuración (guardada solo en este dispositivo) ---------------------
 
 const CONFIG_KEY = "aat_config";
@@ -108,19 +117,23 @@ function guardarRefreshToken(rt) {
   localStorage.setItem("aat_refresh_token", refreshToken);
 }
 
+function clientIdListo() {
+  return CLIENT_ID && !CLIENT_ID.startsWith("TU_");
+}
+
 function initTokenClient() {
-  if (!gisListo() || !CONFIG.clientId) return;
+  if (!gisListo() || !clientIdListo()) return;
   tokenClient = google.accounts.oauth2.initTokenClient({
-    client_id: CONFIG.clientId,
+    client_id: CLIENT_ID,
     scope: "https://www.googleapis.com/auth/spreadsheets",
     callback: "",
   });
 }
 
 function initCodeClient() {
-  if (!gisListo() || !CONFIG.clientId) return;
+  if (!gisListo() || !clientIdListo()) return;
   codeClient = google.accounts.oauth2.initCodeClient({
-    client_id: CONFIG.clientId,
+    client_id: CLIENT_ID,
     scope: "https://www.googleapis.com/auth/spreadsheets",
     ux_mode: "popup",
     callback: "",
@@ -177,7 +190,7 @@ function loginConCodigo() {
 function getAuthToken(interactive) {
   return new Promise((resolve, reject) => {
     if (currentToken && Date.now() < tokenExpiry - 30000) return resolve(currentToken);
-    if (!CONFIG.clientId) return reject(new Error("Falta configurar el ID de cliente OAuth en Ajustes"));
+    if (!clientIdListo()) return reject(new Error("Falta poner tu CLIENT_ID en app.js (ver LEEME.md, paso 3)"));
     if (!gisListo()) return reject(new Error("Google Identity Services no ha cargado (revisa tu conexión)"));
 
     // 1) Si tenemos refresh_token y proxy, renovamos en silencio sin pedir nada.
@@ -273,6 +286,87 @@ async function getFilasDaJ(token, sheetName) {
     token
   );
   return data.sheets?.[0]?.data?.[0]?.rowData || [];
+}
+
+// --- Configuración de la hoja: pegar el enlace basta (igual que la extensión) --
+//
+// Acepta un enlace completo de Google Sheets (con o sin #gid=...) o solo el ID.
+function parsearEnlaceSheet(texto) {
+  const t = String(texto || "").trim();
+  const m = t.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+  const id = m ? m[1] : /^[a-zA-Z0-9_-]{25,}$/.test(t) ? t : null;
+  if (!id) return null;
+  const g = t.match(/[#&?]gid=(\d+)/);
+  return { spreadsheetId: id, gid: g ? parseInt(g[1], 10) : null };
+}
+
+// Comprueba que la cuenta conectada tiene acceso al Sheet, detecta la pestaña
+// (por #gid= o la primera si no se indica), guarda la configuración y, si la
+// hoja está vacía, crea los encabezados de la fila 1 automáticamente.
+async function guardarConfigDesdeEnlace(enlace, token) {
+  const p = parsearEnlaceSheet(enlace);
+  if (!p) throw new Error("ENLACE_INVALIDO");
+
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${p.spreadsheetId}?fields=properties.title,sheets.properties`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (res.status === 401) throw new Error("TOKEN_INVALIDO");
+  if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
+  if (res.status === 403) throw new Error("SIN_PERMISO");
+  if (!res.ok) throw new Error(`Error de Sheets API (${res.status})`);
+
+  const data = await res.json();
+  const hojas = (data.sheets || []).map((s) => s.properties);
+  const hoja = (p.gid !== null && hojas.find((h) => h.sheetId === p.gid)) || hojas[0];
+  if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
+
+  CONFIG = {
+    ...CONFIG,
+    sheetId: p.spreadsheetId,
+    gid: p.gid !== null ? p.gid : hoja.sheetId,
+    url: String(enlace).trim(),
+    titulo: data.properties?.title || "",
+    hoja: hoja.title,
+  };
+  guardarConfig(CONFIG);
+  cachedSheetName = null;
+
+  const encabezadosCreados = await asegurarEncabezados(token);
+  return { titulo: CONFIG.titulo, hoja: CONFIG.hoja, encabezadosCreados };
+}
+
+// Si la fila 1 está vacía (hoja nueva), escribe los encabezados. Se asume que
+// los datos empiezan en la fila 2 (igual que en la extensión).
+async function asegurarEncabezados(token) {
+  const sheetName = await getSheetName(token);
+  const data = await sheetsFetch(
+    `?ranges=${encodeURIComponent(sheetName + "!A1:K1")}&fields=sheets.data.rowData.values(formattedValue)`,
+    token
+  );
+  const fila = data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
+  if (fila.some((c) => (c.formattedValue || "").trim())) return false;
+
+  const gid = Number(CONFIG.gid || 0);
+  const encabezados = ["Género", "", "Nota", "Título", "Descripción", "Estado", "", "", "", "Portada", "Último capítulo"];
+  const requests = [{
+    updateCells: {
+      range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: encabezados.length },
+      rows: [{ values: encabezados.map((t) => ({ userEnteredValue: { stringValue: t }, userEnteredFormat: { textFormat: { bold: true } } })) }],
+      fields: "userEnteredValue,userEnteredFormat.textFormat",
+    },
+  }];
+  await sheetsFetch(":batchUpdate", token, { method: "POST", body: JSON.stringify({ requests }) });
+  return true;
+}
+
+function mensajeErrorConfig(error) {
+  const c = String(error);
+  if (c.includes("ENLACE_INVALIDO")) return "Ese enlace no parece de Google Sheets (debe contener «/spreadsheets/d/…»).";
+  if (c.includes("HOJA_NO_ENCONTRADA")) return "No se encuentra esa hoja. Revisa el enlace.";
+  if (c.includes("SIN_PERMISO")) return "Tu cuenta de Google no tiene acceso a esa hoja. Comprueba que está compartida contigo con permiso de edición.";
+  if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
+  return c.replace(/^Error:\s*/, "");
 }
 
 function coreTitle(title) {
@@ -926,41 +1020,64 @@ function mostrarApp() {
 // --- Wiring de botones -------------------------------------------------
 
 $("btnConectar").addEventListener("click", async () => {
-  if (!CONFIG.clientId || !CONFIG.sheetId) {
-    abrirOverlay("overlayAjustes");
-    return;
-  }
-  initTokenClient();
+  const estadoEl = $("estadoLogin");
+  const url = $("urlSheetLogin").value.trim();
+  if (!url) { estadoEl.textContent = "Pega primero el enlace de tu Google Sheet."; return; }
+  if (!clientIdListo()) { estadoEl.textContent = "Falta poner tu CLIENT_ID en app.js (ver LEEME.md, paso 3)."; return; }
+
+  const btn = $("btnConectar");
+  btn.disabled = true;
+  estadoEl.textContent = "Conectando con Google…";
   try {
-    await getAuthToken(true);
+    initTokenClient();
+    const token = await getAuthToken(true);
+    estadoEl.textContent = "Comprobando acceso a la hoja…";
+    const res = await guardarConfigDesdeEnlace(url, token);
+    estadoEl.textContent = `Conectada: ${res.titulo} (pestaña «${res.hoja}»)`;
     mostrarApp();
   } catch (e) {
-    alert("No se pudo conectar: " + e.message);
+    estadoEl.textContent = mensajeErrorConfig(e.message || e);
   }
+  btn.disabled = false;
 });
-$("abrirAjustesDesdeLogin").addEventListener("click", (e) => { e.preventDefault(); abrirOverlay("overlayAjustes"); });
-$("btnAjustes").addEventListener("click", () => {
-  $("cfgClientId").value = CONFIG.clientId || "";
-  $("cfgSheetId").value = CONFIG.sheetId || "";
-  $("cfgGid").value = CONFIG.gid ?? 0;
+
+$("abrirAjustesDesdeLogin").addEventListener("click", (e) => {
+  e.preventDefault();
+  $("cfgUrlSheet").value = CONFIG.url || "";
   $("cfgProxy").value = CONFIG.proxy || "";
+  $("estadoAjustes").textContent = "";
   abrirOverlay("overlayAjustes");
 });
-$("btnGuardarAjustes").addEventListener("click", () => {
-  CONFIG = {
-    clientId: $("cfgClientId").value.trim(),
-    sheetId: $("cfgSheetId").value.trim(),
-    gid: parseInt($("cfgGid").value, 10) || 0,
-    proxy: $("cfgProxy").value.trim(),
-  };
-  guardarConfig(CONFIG);
-  cachedSheetName = null;
-  tokenClient = null;
-  cerrarOverlay("overlayAjustes");
-  if (CONFIG.clientId && CONFIG.sheetId) {
+$("btnAjustes").addEventListener("click", () => {
+  $("cfgUrlSheet").value = CONFIG.url || "";
+  $("cfgProxy").value = CONFIG.proxy || "";
+  $("estadoAjustes").textContent = "";
+  abrirOverlay("overlayAjustes");
+});
+$("btnGuardarAjustes").addEventListener("click", async () => {
+  const estadoEl = $("estadoAjustes");
+  const url = $("cfgUrlSheet").value.trim();
+  const proxy = $("cfgProxy").value.trim();
+  const btn = $("btnGuardarAjustes");
+
+  if (!clientIdListo()) { estadoEl.textContent = "Falta poner tu CLIENT_ID en app.js (ver LEEME.md, paso 3)."; return; }
+  if (!url) { estadoEl.textContent = "Pega el enlace de tu Google Sheet."; return; }
+
+  btn.disabled = true;
+  estadoEl.textContent = "Comprobando acceso…";
+  try {
     initTokenClient();
-    mostrarLogin();
+    const token = await getAuthToken(true);
+    const res = await guardarConfigDesdeEnlace(url, token);
+    CONFIG.proxy = proxy;
+    guardarConfig(CONFIG);
+    estadoEl.textContent = `Conectada: ${res.titulo} (pestaña «${res.hoja}»)`;
+    setTimeout(() => cerrarOverlay("overlayAjustes"), 700);
+    mostrarApp();
+  } catch (e) {
+    estadoEl.textContent = mensajeErrorConfig(e.message || e);
   }
+  btn.disabled = false;
 });
 
 $("btnHerramientas").addEventListener("click", () => abrirOverlay("overlayHerramientas"));
@@ -1063,7 +1180,7 @@ function esperarGis(timeoutMs) {
 // --- Arranque ---------------------------------------------------------------
 
 inicializarToolbar();
-if (CONFIG.clientId && CONFIG.sheetId) {
+if (CONFIG.sheetId) {
   mostrarCargandoSesion();
   esperarGis(6000).then((listo) => {
     if (!listo) { mostrarLogin(); return; }

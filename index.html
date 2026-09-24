@@ -34,9 +34,11 @@
 <div id="pantallaLogin" style="display:none">
   <img src="icons/icon-192.png" alt="" />
   <h2>Conecta tu Google Sheet</h2>
-  <p>Esta app lee y edita directamente la hoja de cálculo donde llevas el registro de tus animes, igual que la extensión de escritorio.</p>
-  <button class="btn-google" id="btnConectar">Conectar con Google</button>
-  <a href="#" class="link-ajustes" id="abrirAjustesDesdeLogin">Configurar ID de cliente / hoja</a>
+  <p>Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace. Se comprobará el acceso y se conectará tu cuenta a la vez.</p>
+  <input type="url" id="urlSheetLogin" placeholder="https://docs.google.com/spreadsheets/d/…" style="width:100%;max-width:320px" aria-label="Enlace de tu Google Sheet" />
+  <button class="btn-google" id="btnConectar">Conectar y empezar</button>
+  <div id="estadoLogin" class="estado-herramienta"></div>
+  <a href="#" class="link-ajustes" id="abrirAjustesDesdeLogin">Ajustes avanzados (proxy CORS)</a>
 </div>
 
 <main id="main" style="display:none">
@@ -64,24 +66,17 @@
       <h3>Ajustes</h3>
       <button class="cerrar-sheet" data-cerrar="overlayAjustes">✕</button>
     </div>
-    <p class="sheet-desc">Estos datos se guardan solo en este dispositivo. Necesitas tu propio ID de cliente OAuth de Google (mismo que usarías en la extensión) autorizado para el origen desde el que abras esta app.</p>
+    <p class="sheet-desc">Cambia aquí la hoja que usa la app, o el proxy CORS para las herramientas de scraping. Estos datos se guardan solo en este dispositivo.</p>
     <div class="campo-form">
-      <label class="f">ID de cliente OAuth (Google Cloud)</label>
-      <input type="text" id="cfgClientId" placeholder="xxxxx.apps.googleusercontent.com" />
-    </div>
-    <div class="campo-form">
-      <label class="f">ID de la hoja de cálculo (Spreadsheet ID)</label>
-      <input type="text" id="cfgSheetId" placeholder="1Pasl_bWsVlMPKh..." />
-    </div>
-    <div class="campo-form">
-      <label class="f">GID de la pestaña</label>
-      <input type="number" id="cfgGid" placeholder="0" />
+      <label class="f">Enlace de tu Google Sheet</label>
+      <input type="url" id="cfgUrlSheet" placeholder="https://docs.google.com/spreadsheets/d/…" />
     </div>
     <div class="campo-form">
       <label class="f">Proxy CORS (opcional, para las herramientas de scraping)</label>
       <input type="url" id="cfgProxy" placeholder="https://tu-proxy.workers.dev/?url=" />
     </div>
     <p class="aviso">El navegador no puede leer directamente páginas de animeav1.com/animeflv.net como sí puede hacerlo una extensión de escritorio (CORS). Para "Buscar portadas" y "Migrar AnimeFLV" necesitas un proxy propio — hay uno de ejemplo listo para copiar en el README.</p>
+    <div id="estadoAjustes" class="estado-herramienta"></div>
     <div class="fila-cierre">
       <button class="btn-secundario" data-cerrar="overlayAjustes">Cancelar</button>
       <button class="btn-primario" id="btnGuardarAjustes">Guardar</button>
