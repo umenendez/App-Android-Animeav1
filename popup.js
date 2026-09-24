@@ -128,25 +128,33 @@ async function inicializarContadorPortadas() {
 // la portada esté guardada (para la precarga) sin crear el blob.
 async function cargarPortada(url, soloCache = false) {
   if (!url) return url;
-  if (!soloCache && blobUrls.has(url)) return blobUrls.get(url);
+  // Las URLs de las portadas suelen ser de otro dominio (CDN). En una PWA,
+  // fetch() normal puede bloquearse por CORS aunque <img> sí pueda mostrarla.
+  // Por eso dejamos que el Service Worker intercepte la petición y usamos
+  // Cache Storage como almacenamiento persistente.
   try {
     const cache = await caches.open(COVER_CACHE);
-    let respuesta = await cache.match(url);
-    if (!respuesta) {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      await cache.put(url, res.clone());
-      respuesta = res;
+    const guardada = await cache.match(url);
+    if (guardada) {
+      portadasEnCache.add(url);
+      actualizarContadorPortadas();
+      return url;
     }
+
+    // mode:no-cors permite guardar respuestas de imágenes externas como
+    // respuestas opacas. No intentamos convertirlas a Blob; el <img> seguirá
+    // usando la URL original y el Service Worker servirá la copia cacheada.
+    const res = await fetch(url, { mode: "no-cors", credentials: "omit" });
+    if (!res || (!res.ok && res.type !== "opaque")) {
+      throw new Error(`No se pudo descargar la portada (${res?.status ?? "sin respuesta"})`);
+    }
+    await cache.put(url, res.clone());
     portadasEnCache.add(url);
     actualizarContadorPortadas();
-    if (soloCache) return url;
-    const objUrl = URL.createObjectURL(await respuesta.blob());
-    blobUrls.set(url, objUrl);
-    return objUrl;
+    return url;
   } catch (e) {
     console.error("[AnimeAV1 Tracker] No se pudo cachear la portada:", url, e);
-    return url; // si algo falla, se usa la URL remota directamente
+    return url;
   }
 }
 
