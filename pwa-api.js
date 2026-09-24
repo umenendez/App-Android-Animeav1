@@ -7,6 +7,22 @@
   const ESTADO_VIENDO = "-";
   let accessToken = null;
   let tokenExpiresAt = 0;
+  // Si la pestaña se recarga (algo habitual al reabrir la app instalada en
+  // Android) recuperamos el token mientras siga vivo, para no volver a
+  // pasar por Google innecesariamente.
+  try {
+    const guardado = JSON.parse(sessionStorage.getItem("gauth") || "null");
+    if (guardado?.token && guardado.exp > Date.now()) {
+      accessToken = guardado.token;
+      tokenExpiresAt = guardado.exp;
+    }
+  } catch (e) {}
+  function guardarTokenSesion() {
+    try { sessionStorage.setItem("gauth", JSON.stringify({ token: accessToken, exp: tokenExpiresAt })); } catch (e) {}
+  }
+  function borrarTokenSesion() {
+    try { sessionStorage.removeItem("gauth"); } catch (e) {}
+  }
   let spreadsheetId = null;
   let gidConfig = null;
   let gid = 0;
@@ -62,6 +78,7 @@
         if (!response?.access_token) return reject(new Error("NO_SE_OBTUVO_TOKEN"));
         accessToken = response.access_token;
         tokenExpiresAt = Date.now() + ((response.expires_in || 3600) * 1000);
+        guardarTokenSesion();
         resolve(accessToken);
       };
       try {
@@ -83,6 +100,10 @@
       tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets",
+        // FedCM sustituye al viejo mecanismo de reautenticación silenciosa
+        // basado en cookies de terceros (que los navegadores bloquean cada
+        // vez más), así que el intento de prompt:"" es más fiable con esto.
+        use_fedcm_for_prompt: true,
         callback: () => {}
       });
       tokenClientId = clientId;
@@ -107,7 +128,7 @@
       }
     });
     if (res.status === 401) {
-      accessToken = null; tokenExpiresAt = 0;
+      accessToken = null; tokenExpiresAt = 0; borrarTokenSesion();
       throw new Error("TOKEN_INVALIDO");
     }
     if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
@@ -146,7 +167,7 @@
       const limpio = String(clientId || "").trim();
       if (limpio && limpio !== obtenerClientIdGuardado()) {
         guardarClientIdLocal(limpio);
-        accessToken = null; tokenExpiresAt = 0; tokenClient = null; tokenClientId = null;
+        accessToken = null; tokenExpiresAt = 0; tokenClient = null; tokenClientId = null; borrarTokenSesion();
       }
     }
     if (!obtenerClientId()) throw new Error("CONFIGURA_CLIENT_ID_WEB");
