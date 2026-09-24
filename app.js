@@ -45,11 +45,33 @@ const errorEl = $("error");
 const vacioEl = $("vacio");
 const listaEl = $("lista");
 const contadorEl = $("contador");
-const filtroEstadoEl = $("filtroEstado");
+const chipsEl = $("chips");
+const busquedaEl = $("busqueda");
 const filtroGeneroEl = $("filtroGenero");
 const ordenEl = $("orden");
 
 let todosLosAnimes = [];
+let filtroEstado = "-"; // por defecto: viendo, igual que en la extensión
+const normalizar = (s) => String(s || "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+
+// --- Tema claro / oscuro / automático (igual que en la extensión) ---------
+
+const MODOS_TEMA = ["auto", "light", "dark"];
+const NOMBRE_TEMA = { auto: "automático", light: "claro", dark: "oscuro" };
+const btnTema = $("btnTema");
+
+function aplicarTema(modo) {
+  document.documentElement.dataset.tema = modo;
+  btnTema.dataset.modo = modo;
+  btnTema.title = `Tema: ${NOMBRE_TEMA[modo]}`;
+}
+aplicarTema(document.documentElement.dataset.tema || "auto");
+btnTema.addEventListener("click", () => {
+  const actual = document.documentElement.dataset.tema;
+  const siguiente = MODOS_TEMA[(MODOS_TEMA.indexOf(actual) + 1) % MODOS_TEMA.length];
+  try { localStorage.setItem("tema", siguiente); } catch (e) {}
+  aplicarTema(siguiente);
+});
 
 // --- Auth (Google Identity Services) -----------------------------------
 //
@@ -666,18 +688,32 @@ document.querySelectorAll("[data-cerrar]").forEach((el) => {
 
 // --- Toolbar de filtros/orden ---------------------------------------------
 
-function inicializarToolbar() {
-  filtroEstadoEl.innerHTML = "";
-  const optTodos = document.createElement("option");
-  optTodos.value = ""; optTodos.textContent = "Todos los estados";
-  filtroEstadoEl.appendChild(optTodos);
-  ESTADOS.forEach(({ value, label }) => {
-    const opt = document.createElement("option");
-    opt.value = value; opt.textContent = label;
-    filtroEstadoEl.appendChild(opt);
+function renderChips() {
+  const conteo = {};
+  todosLosAnimes.forEach((a) => { conteo[a.status] = (conteo[a.status] || 0) + 1; });
+  chipsEl.innerHTML = "";
+  [{ value: "", label: "Todos", n: todosLosAnimes.length }, ...ESTADOS.map((e) => ({ ...e, n: conteo[e.value] || 0 }))].forEach(({ value, label, n }) => {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = "chip";
+    if (value) {
+      chip.dataset.estado = value;
+      const punto = document.createElement("span");
+      punto.className = "punto";
+      chip.appendChild(punto);
+    }
+    chip.appendChild(document.createTextNode(label.replace(/^[^ ]+ /, "")));
+    const conteoSpan = document.createElement("span");
+    conteoSpan.className = "n";
+    conteoSpan.textContent = n;
+    chip.appendChild(conteoSpan);
+    chip.setAttribute("aria-pressed", String(filtroEstado === value));
+    chip.addEventListener("click", () => { filtroEstado = value; render(); });
+    chipsEl.appendChild(chip);
   });
-  filtroEstadoEl.value = "-";
+}
 
+function inicializarToolbar() {
   filtroGeneroEl.innerHTML = "";
   const optTodosGenero = document.createElement("option");
   optTodosGenero.value = ""; optTodosGenero.textContent = "Todos los géneros";
@@ -699,17 +735,19 @@ function inicializarToolbar() {
     ordenEl.appendChild(opt);
   });
 
-  [filtroEstadoEl, filtroGeneroEl, ordenEl].forEach((el) => el.addEventListener("change", render));
+  [filtroGeneroEl, ordenEl].forEach((el) => el.addEventListener("change", render));
+  busquedaEl.addEventListener("input", render);
 }
 
 function render() {
-  const estado = filtroEstadoEl.value;
   const genero = filtroGeneroEl.value;
   const orden = ordenEl.value;
+  const q = normalizar(busquedaEl.value.trim());
 
   let lista = todosLosAnimes.filter((a) => {
-    if (estado && a.status !== estado) return false;
+    if (filtroEstado && a.status !== filtroEstado) return false;
     if (genero && a.genre !== genero) return false;
+    if (q && !normalizar(a.title).includes(q)) return false;
     return true;
   });
 
@@ -721,6 +759,7 @@ function render() {
     });
   }
 
+  renderChips();
   contadorEl.textContent = `${lista.length} anime(s)`;
   listaEl.innerHTML = "";
 
@@ -776,33 +815,26 @@ function renderItem(anime) {
   card.className = "card";
   card.dataset.estado = anime.status || "";
 
+  // Portada, con la nota superpuesta como en la extensión
+  const portada = document.createElement("div");
+  portada.className = "portada";
   if (anime.cover) {
     const img = document.createElement("img");
     img.className = "cover"; img.loading = "lazy";
     img.src = anime.cover; img.alt = "";
-    card.appendChild(img);
+    portada.appendChild(img);
   } else {
     const placeholder = document.createElement("div");
     placeholder.className = "cover-placeholder";
     placeholder.textContent = "Sin portada";
-    card.appendChild(placeholder);
+    portada.appendChild(placeholder);
   }
 
-  const info = document.createElement("div");
-  info.className = "info";
-
-  const link = document.createElement("a");
-  link.className = "titulo"; link.href = anime.url || "#"; link.target = "_blank";
-  link.rel = "noopener"; link.textContent = anime.title || "(sin título)";
-  info.appendChild(link);
-
-  const campoScore = document.createElement("div");
-  campoScore.className = "campo";
-  const labelScore = document.createElement("label");
-  labelScore.textContent = "Nota";
   const inputScore = document.createElement("input");
+  inputScore.className = "nota";
   inputScore.type = "number"; inputScore.step = "0.1"; inputScore.min = "0"; inputScore.max = "11";
-  inputScore.value = anime.score || "";
+  inputScore.value = anime.score || ""; inputScore.placeholder = "–";
+  inputScore.title = inputScore.ariaLabel = "Nota";
   aplicarColorNota(inputScore);
   inputScore.addEventListener("input", () => aplicarColorNota(inputScore));
   inputScore.addEventListener("change", async () => {
@@ -813,14 +845,20 @@ function renderItem(anime) {
       flashGuardado(inputScore);
     } catch (e) { alert("No se pudo guardar: " + e.message); }
   });
-  campoScore.appendChild(labelScore); campoScore.appendChild(inputScore);
-  info.appendChild(campoScore);
+  portada.appendChild(inputScore);
+  card.appendChild(portada);
 
-  const campoEstado = document.createElement("div");
-  campoEstado.className = "campo campo-estado";
-  const labelEstado = document.createElement("label");
-  labelEstado.textContent = "Estado";
+  const info = document.createElement("div");
+  info.className = "info";
+
+  const link = document.createElement("a");
+  link.className = "titulo"; link.href = anime.url || "#"; link.target = "_blank";
+  link.rel = "noopener"; link.textContent = anime.title || "(sin título)"; link.title = anime.title || "";
+  info.appendChild(link);
+
   const selectEstado = crearSelect(ESTADOS, anime.status, false);
+  selectEstado.className = "estado";
+  selectEstado.title = selectEstado.ariaLabel = "Estado";
   selectEstado.addEventListener("change", async () => {
     anime.status = selectEstado.value;
     card.dataset.estado = selectEstado.value;
@@ -830,14 +868,11 @@ function renderItem(anime) {
       render();
     } catch (e) { alert("No se pudo guardar: " + e.message); }
   });
-  campoEstado.appendChild(labelEstado); campoEstado.appendChild(selectEstado);
-  info.appendChild(campoEstado);
+  info.appendChild(selectEstado);
 
-  const campoGenero = document.createElement("div");
-  campoGenero.className = "campo";
-  const labelGenero = document.createElement("label");
-  labelGenero.textContent = "Género";
   const selectGenero = crearSelect(GENEROS, anime.genre, true, "Sin género");
+  selectGenero.className = "genero";
+  selectGenero.title = selectGenero.ariaLabel = "Género";
   selectGenero.addEventListener("change", async () => {
     anime.genre = selectGenero.value;
     try {
@@ -846,8 +881,7 @@ function renderItem(anime) {
       render();
     } catch (e) { alert("No se pudo guardar: " + e.message); }
   });
-  campoGenero.appendChild(labelGenero); campoGenero.appendChild(selectGenero);
-  info.appendChild(campoGenero);
+  info.appendChild(selectGenero);
 
   card.appendChild(info);
   return card;

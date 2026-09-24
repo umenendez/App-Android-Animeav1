@@ -1,8 +1,9 @@
-const CACHE = "animeav1-tracker-v1";
+const CACHE = "animeav1-tracker-v2";
 const APP_SHELL = [
   "./index.html",
   "./style.css",
   "./app.js",
+  "./theme.js",
   "./manifest.webmanifest",
   "./icons/icon-192.png",
   "./icons/icon-512.png",
