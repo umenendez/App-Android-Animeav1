@@ -9,6 +9,6 @@
 //   https://tuusuario.github.io
 // o tu dominio propio.
 window.PWA_CONFIG = {
-  googleClientId: "1Pasl_bWsVlMPKhNLes3MAXLIFi3-4sD8ErkuP1EvO2M/edit?pli",
+  googleClientId: "1Pasl_bWsVlMPKhNLes3MAXLIFi3-4sD8ErkuP1EvO2M",
   googleScopes: "https://www.googleapis.com/auth/spreadsheets"
 };
