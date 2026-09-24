@@ -12,6 +12,7 @@
   let gid = 0;
   let cachedSheetName = null;
   let tokenClient = null;
+  let tokenClientId = null;
   let gisReady = null;
 
   function parsearEnlaceSheet(texto) {
@@ -21,6 +22,23 @@
     if (!id) return null;
     const g = t.match(/[#&?]gid=(\d+)/);
     return { spreadsheetId: id, gid: g ? parseInt(g[1], 10) : null };
+  }
+
+  // El Client ID de OAuth ya no hace falta pegarlo en config.js: se pide en
+  // el propio formulario junto al enlace del Google Sheet y se guarda en
+  // este dispositivo (localStorage). config.js solo se usa como valor por
+  // defecto si el usuario no ha guardado ninguno todavía.
+  function obtenerClientIdGuardado() {
+    try { return (localStorage.getItem("oauthClientId") || "").trim(); } catch (e) { return ""; }
+  }
+  function guardarClientIdLocal(id) {
+    try {
+      if (id) localStorage.setItem("oauthClientId", id);
+      else localStorage.removeItem("oauthClientId");
+    } catch (e) {}
+  }
+  function obtenerClientId() {
+    return obtenerClientIdGuardado() || CFG.googleClientId || "";
   }
 
   function esperarGIS() {
@@ -37,19 +55,7 @@
     return gisReady;
   }
 
-  async function ensureToken(interactive = true) {
-    if (accessToken && Date.now() < tokenExpiresAt - 60000) return accessToken;
-    if (!CFG.googleClientId || CFG.googleClientId.startsWith("PON_AQUI")) {
-      throw new Error("CONFIGURA_CLIENT_ID_WEB");
-    }
-    await esperarGIS();
-    if (!tokenClient) {
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CFG.googleClientId,
-        scope: CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets",
-        callback: () => {}
-      });
-    }
+  function pedirToken(prompt) {
     return new Promise((resolve, reject) => {
       tokenClient.callback = (response) => {
         if (response?.error) return reject(new Error(response.error));
@@ -59,9 +65,34 @@
         resolve(accessToken);
       };
       try {
-        tokenClient.requestAccessToken({ prompt: interactive ? "consent" : "" });
+        tokenClient.requestAccessToken({ prompt });
       } catch (e) { reject(e); }
     });
+  }
+
+  // Intenta iniciar sesión sola, sin ventanas ni clics (prompt:""), usando la
+  // sesión de Google que ya haya en el navegador/dispositivo. Solo si eso
+  // falla (primera vez, o el acceso se revocó) se muestra el diálogo de
+  // consentimiento de Google, y solo cuando interactive=true.
+  async function ensureToken(interactive = true) {
+    if (accessToken && Date.now() < tokenExpiresAt - 60000) return accessToken;
+    const clientId = obtenerClientId();
+    if (!clientId) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+    await esperarGIS();
+    if (!tokenClient || tokenClientId !== clientId) {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets",
+        callback: () => {}
+      });
+      tokenClientId = clientId;
+    }
+    try {
+      return await pedirToken("");
+    } catch (e) {
+      if (!interactive) throw e;
+      return await pedirToken("consent");
+    }
   }
 
   async function sheetsFetch(path, options = {}) {
@@ -108,9 +139,17 @@
     return cachedSheetName;
   }
 
-  async function guardarConfig(enlace) {
+  async function guardarConfig(enlace, clientId) {
     const p = parsearEnlaceSheet(enlace);
     if (!p) throw new Error("ENLACE_INVALIDO");
+    if (clientId !== undefined) {
+      const limpio = String(clientId || "").trim();
+      if (limpio && limpio !== obtenerClientIdGuardado()) {
+        guardarClientIdLocal(limpio);
+        accessToken = null; tokenExpiresAt = 0; tokenClient = null; tokenClientId = null;
+      }
+    }
+    if (!obtenerClientId()) throw new Error("CONFIGURA_CLIENT_ID_WEB");
     const token = await ensureToken(true);
     const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${p.spreadsheetId}?fields=properties.title,sheets.properties`, {
       headers: { Authorization: `Bearer ${token}` }
@@ -250,7 +289,8 @@
   async function handle(msg){
     switch(msg.type){
       case "GET_CONFIG": return {ok:true,config:JSON.parse(localStorage.getItem("config")||"null")};
-      case "SAVE_CONFIG": return {ok:true,...await guardarConfig(msg.url)};
+      case "GET_CLIENT_ID": return {ok:true,clientId:obtenerClientId()};
+      case "SAVE_CONFIG": return {ok:true,...await guardarConfig(msg.url,msg.clientId)};
       case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};
       case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};

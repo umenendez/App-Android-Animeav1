@@ -390,6 +390,7 @@ $("btnHerramientas").addEventListener("click", () => setHerramientas($("herramie
 // --- Configuración: qué Google Sheet se usa -----------------------------------
 
 let configActual = null; // { url, titulo, hoja } o null si aún no se ha elegido hoja
+let clientIdActual = ""; // Client ID de OAuth ya guardado en este dispositivo (si lo hay)
 
 function mensajeError(error) {
   const c = String(error);
@@ -406,33 +407,37 @@ function mensajeError(error) {
 
 function crearFormConfig({ bienvenida }) {
   const input = el("input", { type: "url", placeholder: "https://docs.google.com/spreadsheets/d/…", value: configActual?.url || "", ariaLabel: "Enlace de tu Google Sheet" });
+  const clientIdInput = el("input", { type: "text", placeholder: "Client ID de OAuth (…apps.googleusercontent.com)", value: clientIdActual || "", ariaLabel: "Client ID de OAuth de Google" });
   const estado = el("div", { className: "estado-txt" });
   const btn = el("button", { className: "btn", type: "button", textContent: bienvenida ? "Conectar y empezar" : "Guardar hoja" });
   if (configActual?.titulo) estado.textContent = `Conectada: ${configActual.titulo} (pestaña «${configActual.hoja}»)`;
 
   async function guardarConfig() {
     const url = input.value.trim();
+    const clientId = clientIdInput.value.trim();
+    if (!clientId) { estado.textContent = "Pega el Client ID de OAuth (tipo Aplicación web)."; return; }
     if (!url) { estado.textContent = "Pega primero el enlace de tu Google Sheet."; return; }
     btn.disabled = true;
     estado.textContent = "Comprobando acceso…";
-    const res = await enviarMensaje({ type: "SAVE_CONFIG", url });
+    const res = await enviarMensaje({ type: "SAVE_CONFIG", url, clientId });
     btn.disabled = false;
     if (!res?.ok) { estado.textContent = mensajeError(res?.error || "Error desconocido"); return; }
     configActual = { url, titulo: res.titulo, hoja: res.hoja };
+    clientIdActual = clientId;
     estado.textContent = `Conectada: ${res.titulo} (pestaña «${res.hoja}»)` + (res.encabezadosCreados ? " · encabezados creados" : "");
     toast("Hoja conectada");
     if (!bienvenida) setHerramientas(false);
     cargar();
   }
   btn.addEventListener("click", guardarConfig);
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarConfig(); });
+  [input, clientIdInput].forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarConfig(); }));
 
   return el("div", { className: "config" },
     el("h2", { textContent: bienvenida ? "Conecta tu Google Sheet" : "Hoja de Google Sheets" }),
     el("p", { textContent: bienvenida
-      ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace."
-      : "Cambia aquí la hoja que usa la extensión. Pega el enlace completo." }),
-    input, btn, estado);
+      ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace, junto con el Client ID de OAuth (Aplicación web) de tu proyecto de Google Cloud."
+      : "Cambia aquí la hoja o el Client ID de OAuth. Se guardan solo en este dispositivo." }),
+    clientIdInput, input, btn, estado);
 }
 
 // --- Herramientas ------------------------------------------------------------
@@ -523,6 +528,7 @@ inicializarToolbar();
 (async () => {
   // El formulario de "Herramientas" necesita conocer la hoja actual antes de crearse
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
+  clientIdActual = (await enviarMensaje({ type: "GET_CLIENT_ID" }))?.clientId || "";
   $("configTools").append(crearFormConfig({ bienvenida: false }));
   cargar();
 })();

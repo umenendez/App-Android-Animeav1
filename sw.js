@@ -1,5 +1,5 @@
-const CACHE = "animeav1-pwa-v2";
-const COVER_CACHE = "anime-covers-v2";
+const CACHE = "animeav1-pwa-v3";
+const COVER_CACHE = "anime-covers-v1";
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./icon16.png", "./icon48.png", "./icon128.png", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {

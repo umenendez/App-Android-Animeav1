@@ -10,11 +10,15 @@ Una extensión de Chrome puede usar un OAuth Client ID de tipo Chrome Extension.
 2. Activa **Google Sheets API**.
 3. En **APIs y servicios → Credenciales**, crea un **ID de cliente OAuth 2.0 → Aplicación web**.
 4. Añade como origen autorizado la URL exacta donde vas a publicar esta PWA, por ejemplo `https://usuario.github.io`.
-5. Copia ese Client ID en `config.js` sustituyendo `PON_AQUI_TU_CLIENT_ID_WEB.apps.googleusercontent.com`.
-6. Publica esta carpeta en GitHub Pages, Netlify, Cloudflare Pages o tu propio HTTPS.
-7. Abre la URL desde Android con Chrome y usa **⋮ → Añadir a pantalla de inicio**.
+5. Publica esta carpeta en GitHub Pages, Netlify, Cloudflare Pages o tu propio HTTPS.
+6. Abre la URL: la propia app te pedirá el Client ID y el enlace de tu Google Sheet en el mismo formulario la primera vez (ya no hace falta editar `config.js`). Se guarda en este dispositivo (localStorage).
+7. Desde Android, con Chrome, usa **⋮ → Añadir a pantalla de inicio** para instalarla y poder abrirla como una app.
 
 No publiques un `client_secret`: para esta aplicación web solo necesitas el Client ID.
+
+### Inicio de sesión automático
+
+La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cada vez que se abre, usando la sesión que ya tengas en el navegador. Si Google no puede confirmarlo en silencio (primera vez, sesión caducada más allá de una hora o permiso revocado), pedirá el consentimiento una vez. Esto es una limitación del propio sistema de login de Google en apps instaladas, no algo que se pueda eliminar del todo.
 
 ## Qué funciona
 
