@@ -144,7 +144,16 @@ async function cargarPortada(url, soloCache = false) {
     // mode:no-cors permite guardar respuestas de imágenes externas como
     // respuestas opacas. No intentamos convertirlas a Blob; el <img> seguirá
     // usando la URL original y el Service Worker servirá la copia cacheada.
-    const res = await fetch(url, { mode: "no-cors", credentials: "omit" });
+    // Con timeout: si una portada concreta no responde (mala señal, CDN
+    // atascado…) no se queda colgada bloqueando a las demás.
+    const controlador = new AbortController();
+    const timeoutId = setTimeout(() => controlador.abort(), 10000);
+    let res;
+    try {
+      res = await fetch(url, { mode: "no-cors", credentials: "omit", signal: controlador.signal });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     if (!res || (!res.ok && res.type !== "opaque")) {
       throw new Error(`No se pudo descargar la portada (${res?.status ?? "sin respuesta"})`);
     }
@@ -448,11 +457,24 @@ precargarBtn.addEventListener("click", async () => {
   precargarBtn.disabled = true;
   const pendientes = todosLosAnimes.filter((a) => a.cover);
   const total = pendientes.length;
-  const CONCURRENCIA = 6;
-  for (let i = 0; i < total; i += CONCURRENCIA) {
-    precargarStatusEl.textContent = `Guardando ${i}/${total}… no cierres esta ventana.`;
-    await Promise.allSettled(pendientes.slice(i, i + CONCURRENCIA).map((a) => cargarPortada(a.cover, true)));
+  const CONCURRENCIA = 8;
+  let hechas = 0;
+  precargarStatusEl.textContent = `Guardando 0/${total}… no cierres esta ventana.`;
+
+  // Pool continuo: en cuanto un "trabajador" termina una portada, coge la
+  // siguiente al momento. Así una portada lenta solo ocupa su propio hueco
+  // y no frena a las demás (antes se esperaba a un grupo fijo entero).
+  let indice = 0;
+  async function trabajador() {
+    while (indice < total) {
+      const anime = pendientes[indice++];
+      await cargarPortada(anime.cover, true);
+      hechas++;
+      precargarStatusEl.textContent = `Guardando ${hechas}/${total}… no cierres esta ventana.`;
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCIA, total) }, trabajador));
+
   precargarStatusEl.textContent = `Listo: ${total} portada(s) guardadas en este dispositivo.`;
   precargarBtn.disabled = false;
 });
