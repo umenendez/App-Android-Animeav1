@@ -31,6 +31,10 @@ const fillCoversBtn = $("fillCovers");
 const fillStatusEl = $("fillStatus");
 const migrateFlvBtn = $("migrateFlv");
 const migrateStatusEl = $("migrateStatus");
+const agregarPanelEl = $("agregarPanel");
+const agregarUrlEl = $("agregarUrl");
+const agregarBtnEl = $("agregarBtn");
+const agregarStatusEl = $("agregarStatus");
 
 let todosLosAnimes = [];
 let modoEdicion = false;
@@ -396,6 +400,35 @@ function setHerramientas(abierto) {
 }
 $("btnHerramientas").addEventListener("click", () => setHerramientas($("herramientas").hidden));
 
+// --- Añadir anime por enlace ---------------------------------------------------
+
+function setAgregarPanel(abierto) {
+  agregarPanelEl.hidden = !abierto;
+  $("btnAgregar").setAttribute("aria-expanded", String(abierto));
+  if (abierto) {
+    agregarStatusEl.textContent = "";
+    agregarUrlEl.value = "";
+    setTimeout(() => agregarUrlEl.focus(), 0);
+  }
+}
+$("btnAgregar").addEventListener("click", () => setAgregarPanel(agregarPanelEl.hidden));
+
+async function agregarAnime() {
+  const url = agregarUrlEl.value.trim();
+  if (!url) { agregarStatusEl.textContent = "Pega primero el enlace."; return; }
+  agregarBtnEl.disabled = true;
+  agregarStatusEl.textContent = "Buscando título y portada…";
+  const res = await enviarMensaje({ type: "REGISTER_ANIME", url });
+  agregarBtnEl.disabled = false;
+  if (!res || !res.ok) { agregarStatusEl.textContent = mensajeError(res?.error || "error desconocido"); return; }
+  agregarStatusEl.textContent = `Añadido: ${res.title}`;
+  agregarUrlEl.value = "";
+  toast("Anime añadido");
+  cargar();
+}
+agregarBtnEl.addEventListener("click", agregarAnime);
+agregarUrlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") agregarAnime(); });
+
 // --- Configuración: qué Google Sheet se usa -----------------------------------
 
 let configActual = null; // { url, titulo, hoja } o null si aún no se ha elegido hoja
@@ -411,6 +444,10 @@ function mensajeError(error) {
   if (c.includes("HOJA_NO_ENCONTRADA")) return "No se encuentra esa hoja. Revisa el enlace.";
   if (c.includes("SIN_PERMISO")) return "Tu cuenta de Google no tiene acceso a esa hoja. Comprueba que está compartida contigo con permiso de edición.";
   if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
+  if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace completo (con http:// o https://) a la ficha del anime.";
+  if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
+  if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
+  if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
   return c.replace(/^Error:\s*/, "");
 }
 

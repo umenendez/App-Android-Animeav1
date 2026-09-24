@@ -268,6 +268,58 @@
     }}] }) });
   }
 
+  async function siguienteFilaLibre(sheetName) {
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "D:D"))}&fields=sheets.data.rowData.values(formattedValue)`);
+    const filas = data.sheets?.[0]?.data?.[0]?.rowData || [];
+    let ultimaConTitulo = 1; // la fila 1 es la cabecera
+    filas.forEach((r, i) => {
+      if ((r?.values?.[0]?.formattedValue || "").trim()) ultimaConTitulo = i + 1;
+    });
+    return ultimaConTitulo + 1;
+  }
+
+  // Añade un anime nuevo a partir de su enlace: descarga la página, saca el
+  // título y la portada, y crea la fila. Sustituye a la detección automática
+  // que hacía la extensión de Chrome al abrir un episodio (no disponible en
+  // una PWA normal).
+  async function registrarAnime(enlace) {
+    const url = String(enlace || "").trim();
+    if (!/^https?:\/\//i.test(url)) throw new Error("ENLACE_ANIME_INVALIDO");
+
+    const existentes = await obtenerListaCompleta();
+    const yaExiste = existentes.some((a) => a.url && a.url.replace(/\/+$/, "") === url.replace(/\/+$/, ""));
+    if (yaExiste) throw new Error("YA_EXISTE");
+
+    let html;
+    try {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error();
+      html = await r.text();
+    } catch (e) { throw new Error("NO_SE_PUDO_LEER_LA_PAGINA"); }
+
+    const m = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+    const titulo = m ? m[1].trim() : "";
+    if (!titulo) throw new Error("SIN_TITULO");
+    const cover = extraerPortadaDesdeHtml(html);
+
+    const sheetName = await getSheetName();
+    const fila = await siguienteFilaLibre(sheetName);
+
+    const valores = new Array(11).fill(null).map(() => ({}));
+    valores[3] = { userEnteredValue: { stringValue: titulo }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: url } } }] };
+    valores[5] = { userEnteredValue: { stringValue: ESTADO_VIENDO } };
+    if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover}",1)` } };
+
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
+      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+      rows: [{ values: valores }],
+      fields: "userEnteredValue,textFormatRuns"
+    }}] }) });
+
+    if (cover) precachearImagen(cover);
+    return { row: fila, title: titulo, url, cover: cover || "", status: ESTADO_VIENDO };
+  }
+
   async function precachearImagen(url) {
     if (!url) return;
     try { const cache = await caches.open(COVER_CACHE); if (!(await cache.match(url))) { const r=await fetch(url); if(r.ok) await cache.put(url,r.clone()); } } catch(e) {}
@@ -317,7 +369,7 @@
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};
       case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
-      case "REGISTER_ANIME": throw new Error("REGISTRO_AUTOMATICO_NO_DISPONIBLE_EN_PWA");
+      case "REGISTER_ANIME": return {ok:true,...await registrarAnime(msg.url)};
       default: throw new Error("MENSAJE_DESCONOCIDO");
     }
   }
