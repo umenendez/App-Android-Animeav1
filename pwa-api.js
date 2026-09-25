@@ -391,8 +391,13 @@
 
     let html;
     try {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error();
+      const WORKER_URL = "https://red-violet-9fed.unaxmenendez.workers.dev";
+      const r = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(url)}`);
+      // Este Worker siempre responde 200 y mete el status real de la
+      // página de origen en X-Proxy-Upstream-Status (para poder leer el
+      // cuerpo del error en vez de que fetch() lo trate como fallo).
+      const upstream = Number(r.headers.get("X-Proxy-Upstream-Status") || 0);
+      if (!r.ok || (upstream && upstream >= 400)) throw new Error();
       html = await r.text();
     } catch (e) { throw new Error("NO_SE_PUDO_LEER_LA_PAGINA"); }
 
