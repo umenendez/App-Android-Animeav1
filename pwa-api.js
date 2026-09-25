@@ -194,6 +194,103 @@
     return { titulo: data.properties?.title || "", hoja: hoja.title, encabezadosCreados };
   }
 
+  // --- Varias listas guardadas (por ejemplo, la de un amigo) -------------------
+
+  function obtenerListasArr() {
+    try { return JSON.parse(localStorage.getItem("listas") || "[]"); } catch (e) { return []; }
+  }
+  function guardarListasArr(arr) {
+    try { localStorage.setItem("listas", JSON.stringify(arr)); } catch (e) {}
+  }
+  function idListaActiva() {
+    try { return localStorage.getItem("listaActivaId") || null; } catch (e) { return null; }
+  }
+  function marcarListaActiva(id) {
+    try {
+      if (id) localStorage.setItem("listaActivaId", id);
+      else localStorage.removeItem("listaActivaId");
+    } catch (e) {}
+  }
+  function nuevoIdLista() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  // La primera vez que se abre el gestor de listas, convierte la hoja que ya
+  // tenías configurada en la primera entrada de la lista, para que también
+  // aparezca en el selector.
+  function obtenerListasParaUI() {
+    let listas = obtenerListasArr();
+    const config = JSON.parse(localStorage.getItem("config") || "null");
+    if (listas.length === 0 && config?.spreadsheetId) {
+      const migrada = {
+        id: nuevoIdLista(), name: "Mi lista", url: config.url,
+        spreadsheetId: config.spreadsheetId, gid: config.gid,
+        titulo: config.titulo, hoja: config.hoja
+      };
+      listas = [migrada];
+      guardarListasArr(listas);
+      marcarListaActiva(migrada.id);
+    }
+    const activaId = idListaActiva();
+    return listas.map((l) => ({ ...l, activa: l.id === activaId }));
+  }
+
+  async function verificarAccesoHoja(p) {
+    if (!obtenerClientId()) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+    const token = await ensureToken(true);
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${p.spreadsheetId}?fields=properties.title,sheets.properties`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.status === 401) throw new Error("TOKEN_INVALIDO");
+    if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
+    if (res.status === 403) throw new Error("SIN_PERMISO");
+    if (!res.ok) throw new Error(`Error de Sheets API (${res.status})`);
+    const data = await res.json();
+    const hojas = (data.sheets || []).map(s => s.properties);
+    const hoja = (p.gid !== null && hojas.find(h => h.sheetId === p.gid)) || hojas[0];
+    if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
+    return { titulo: data.properties?.title || "", hoja: hoja.title };
+  }
+
+  async function agregarListaGuardada(nombre, enlace) {
+    const nombreLimpio = String(nombre || "").trim();
+    if (!nombreLimpio) throw new Error("FALTA_NOMBRE");
+    const p = parsearEnlaceSheet(enlace);
+    if (!p) throw new Error("ENLACE_INVALIDO");
+    const { titulo, hoja } = await verificarAccesoHoja(p);
+    obtenerListasParaUI(); // asegura la migración de "Mi lista" si hacía falta
+    const listas = obtenerListasArr();
+    const nueva = {
+      id: nuevoIdLista(), name: nombreLimpio, url: String(enlace).trim(),
+      spreadsheetId: p.spreadsheetId, gid: p.gid, titulo, hoja
+    };
+    listas.push(nueva);
+    guardarListasArr(listas);
+    return { id: nueva.id, name: nueva.name, titulo, hoja };
+  }
+
+  async function eliminarListaGuardada(id) {
+    const listas = obtenerListasArr();
+    const restantes = listas.filter((l) => l.id !== id);
+    if (restantes.length === listas.length) throw new Error("LISTA_NO_ENCONTRADA");
+    guardarListasArr(restantes);
+    if (idListaActiva() === id) marcarListaActiva(restantes[0]?.id || null);
+    return { removed: true };
+  }
+
+  async function cambiarListaActiva(id) {
+    const listas = obtenerListasArr();
+    const lista = listas.find((l) => l.id === id);
+    if (!lista) throw new Error("LISTA_NO_ENCONTRADA");
+    localStorage.setItem("config", JSON.stringify({
+      spreadsheetId: lista.spreadsheetId, gid: lista.gid, url: lista.url,
+      titulo: lista.titulo, hoja: lista.hoja
+    }));
+    marcarListaActiva(id);
+    resetConfig();
+    return { titulo: lista.titulo, hoja: lista.hoja, name: lista.name };
+  }
+
   async function asegurarEncabezados() {
     const nombre = await getSheetName();
     const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(nombre, "A1:K1"))}&fields=sheets.data.rowData.values(formattedValue)`);
@@ -366,6 +463,10 @@
       case "GET_CONFIG": return {ok:true,config:JSON.parse(localStorage.getItem("config")||"null")};
       case "GET_CLIENT_ID": return {ok:true,clientId:obtenerClientId()};
       case "SAVE_CONFIG": return {ok:true,...await guardarConfig(msg.url,msg.clientId)};
+      case "GET_LISTAS": return {ok:true,listas:obtenerListasParaUI()};
+      case "ADD_LISTA": return {ok:true,...await agregarListaGuardada(msg.name,msg.url)};
+      case "DELETE_LISTA": return {ok:true,...await eliminarListaGuardada(msg.id)};
+      case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
       case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};
       case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};

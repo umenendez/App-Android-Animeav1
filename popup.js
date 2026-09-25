@@ -35,6 +35,12 @@ const agregarPanelEl = $("agregarPanel");
 const agregarUrlEl = $("agregarUrl");
 const agregarBtnEl = $("agregarBtn");
 const agregarStatusEl = $("agregarStatus");
+const listasPanelEl = $("listasPanel");
+const listasContenidoEl = $("listasContenido");
+const listaNombreEl = $("listaNombre");
+const listaUrlEl = $("listaUrl");
+const listaGuardarBtnEl = $("listaGuardarBtn");
+const listaStatusEl = $("listaStatus");
 
 let todosLosAnimes = [];
 let modoEdicion = false;
@@ -429,6 +435,78 @@ async function agregarAnime() {
 agregarBtnEl.addEventListener("click", agregarAnime);
 agregarUrlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") agregarAnime(); });
 
+// --- Varias listas guardadas (la tuya, la de un amigo…) --------------------------
+
+function setListasPanel(abierto) {
+  listasPanelEl.hidden = !abierto;
+  $("btnListas").setAttribute("aria-expanded", String(abierto));
+  if (abierto) {
+    listaStatusEl.textContent = "";
+    listaNombreEl.value = "";
+    listaUrlEl.value = "";
+    cargarListasPanel();
+  }
+}
+$("btnListas").addEventListener("click", () => setListasPanel(listasPanelEl.hidden));
+
+async function cambiarAListaGuardada(l, usarBtn) {
+  usarBtn.disabled = true;
+  const r = await enviarMensaje({ type: "SWITCH_LISTA", id: l.id });
+  if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); usarBtn.disabled = false; return; }
+  toast(`Viendo: ${r.name}`);
+  setListasPanel(false);
+  todosLosAnimes = [];
+  await cargar();
+  // Refresca también el formulario de "Herramientas" para que muestre la hoja activa
+  $("configTools").innerHTML = "";
+  $("configTools").append(crearFormConfig({ bienvenida: false }));
+}
+
+async function borrarListaGuardada(l) {
+  if (!confirm(`¿Quitar «${l.name}» de tus listas guardadas? (no borra la hoja de Google, solo el acceso rápido)`)) return;
+  const r = await enviarMensaje({ type: "DELETE_LISTA", id: l.id });
+  if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); return; }
+  cargarListasPanel();
+}
+
+async function cargarListasPanel() {
+  listasContenidoEl.innerHTML = "";
+  const res = await enviarMensaje({ type: "GET_LISTAS" });
+  const listas = res?.listas || [];
+  if (listas.length === 0) {
+    listasContenidoEl.append(el("p", { className: "vacio-listas", textContent: "Todavía no has guardado ninguna lista." }));
+    return;
+  }
+  listas.forEach((l) => {
+    const usarBtn = el("button", { className: "btn-mini", type: "button", textContent: l.activa ? "En uso" : "Usar", disabled: l.activa });
+    usarBtn.addEventListener("click", () => cambiarAListaGuardada(l, usarBtn));
+    const borrarBtn = el("button", { className: "btn-mini peligro", type: "button", textContent: "Quitar" });
+    borrarBtn.addEventListener("click", () => borrarListaGuardada(l));
+    listasContenidoEl.append(el("div", { className: "lista-item" },
+      el("span", { className: "nombre", textContent: l.name }),
+      l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
+      usarBtn, borrarBtn));
+  });
+}
+
+async function guardarListaNueva() {
+  const name = listaNombreEl.value.trim();
+  const url = listaUrlEl.value.trim();
+  if (!name) { listaStatusEl.textContent = "Ponle un nombre a la lista."; return; }
+  if (!url) { listaStatusEl.textContent = "Pega el enlace de la hoja."; return; }
+  listaGuardarBtnEl.disabled = true;
+  listaStatusEl.textContent = "Comprobando acceso…";
+  const res = await enviarMensaje({ type: "ADD_LISTA", name, url });
+  listaGuardarBtnEl.disabled = false;
+  if (!res?.ok) { listaStatusEl.textContent = mensajeError(res?.error || "error desconocido"); return; }
+  listaStatusEl.textContent = `Guardada: ${res.name}`;
+  listaNombreEl.value = ""; listaUrlEl.value = "";
+  toast("Lista guardada");
+  cargarListasPanel();
+}
+listaGuardarBtnEl.addEventListener("click", guardarListaNueva);
+[listaNombreEl, listaUrlEl].forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarListaNueva(); }));
+
 // --- Configuración: qué Google Sheet se usa -----------------------------------
 
 let configActual = null; // { url, titulo, hoja } o null si aún no se ha elegido hoja
@@ -448,6 +526,8 @@ function mensajeError(error) {
   if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
   if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
   if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
+  if (c.includes("FALTA_NOMBRE")) return "Ponle un nombre a la lista.";
+  if (c.includes("LISTA_NO_ENCONTRADA")) return "Esa lista ya no existe.";
   return c.replace(/^Error:\s*/, "");
 }
 
