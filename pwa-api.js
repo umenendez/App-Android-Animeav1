@@ -7,21 +7,23 @@
   const ESTADO_VIENDO = "-";
   let accessToken = null;
   let tokenExpiresAt = 0;
-  // Si la pestaña se recarga (algo habitual al reabrir la app instalada en
-  // Android) recuperamos el token mientras siga vivo, para no volver a
-  // pasar por Google innecesariamente.
+  // localStorage (no sessionStorage): tiene que sobrevivir a cerrar del
+  // todo la app y volver a abrirla, no solo a recargar la pestaña. Sigue
+  // sin evitar el aviso pasada la hora de vida del token (eso ya es un
+  // límite de Google, no nuestro), pero si abres/cierras varias veces
+  // dentro de esa hora ya no debería volver a pedir nada.
   try {
-    const guardado = JSON.parse(sessionStorage.getItem("gauth") || "null");
+    const guardado = JSON.parse(localStorage.getItem("gauth") || "null");
     if (guardado?.token && guardado.exp > Date.now()) {
       accessToken = guardado.token;
       tokenExpiresAt = guardado.exp;
     }
   } catch (e) {}
   function guardarTokenSesion() {
-    try { sessionStorage.setItem("gauth", JSON.stringify({ token: accessToken, exp: tokenExpiresAt })); } catch (e) {}
+    try { localStorage.setItem("gauth", JSON.stringify({ token: accessToken, exp: tokenExpiresAt })); } catch (e) {}
   }
   function borrarTokenSesion() {
-    try { sessionStorage.removeItem("gauth"); } catch (e) {}
+    try { localStorage.removeItem("gauth"); } catch (e) {}
   }
   let spreadsheetId = null;
   let gidConfig = null;
