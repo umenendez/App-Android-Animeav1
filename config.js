@@ -13,5 +13,5 @@
 //   https://tuusuario.github.io
 window.PWA_CONFIG = {
   googleClientId: "123415018434-6dicvlgt2j37v841f9m0hricunuatp9c.apps.googleusercontent.com",
-  googleScopes: "https://www.googleapis.com/auth/spreadsheets"
+  googleScopes: "openid email profile https://www.googleapis.com/auth/spreadsheets"
 };

@@ -7,6 +7,7 @@
   const ESTADO_VIENDO = "-";
   let accessToken = null;
   let tokenExpiresAt = 0;
+  let googleAccount = null;
   // localStorage (no sessionStorage): tiene que sobrevivir a cerrar del
   // todo la app y volver a abrirla, no solo a recargar la pestaña. Sigue
   // sin evitar el aviso pasada la hora de vida del token (eso ya es un
@@ -17,13 +18,77 @@
     if (guardado?.token && guardado.exp > Date.now()) {
       accessToken = guardado.token;
       tokenExpiresAt = guardado.exp;
+      googleAccount = guardado.account || null;
     }
   } catch (e) {}
   function guardarTokenSesion() {
-    try { localStorage.setItem("gauth", JSON.stringify({ token: accessToken, exp: tokenExpiresAt })); } catch (e) {}
+    try { localStorage.setItem("gauth", JSON.stringify({ token: accessToken, exp: tokenExpiresAt, account: googleAccount })); } catch (e) {}
   }
   function borrarTokenSesion() {
     try { localStorage.removeItem("gauth"); } catch (e) {}
+  }
+
+  function claveUsuario(sufijo) {
+    return `usuario:${googleAccount?.sub || "anonimo"}:${sufijo}`;
+  }
+
+  function obtenerDatosUsuario(sufijo, fallback) {
+    try { return JSON.parse(localStorage.getItem(claveUsuario(sufijo)) || JSON.stringify(fallback)); } catch (e) { return fallback; }
+  }
+
+  function guardarDatosUsuario(sufijo, value) {
+    try { localStorage.setItem(claveUsuario(sufijo), JSON.stringify(value)); } catch (e) {}
+  }
+
+  async function cargarCuentaGoogle() {
+    if (!accessToken) return null;
+    try {
+      const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
+        headers: { Authorization: `Bearer ${accessToken}` }
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data?.sub) {
+        googleAccount = { sub: data.sub, email: data.email || "", name: data.name || "", picture: data.picture || "" };
+        // Migra una configuración/listas antiguas, guardadas antes de activar
+        // el soporte multiusuario, al primer usuario que inicia sesión.
+        try {
+          const legacyConfig = JSON.parse(localStorage.getItem("config") || "null");
+          const ownConfig = obtenerDatosUsuario("config", null);
+          if (legacyConfig?.spreadsheetId && !ownConfig) {
+            guardarDatosUsuario("config", legacyConfig);
+            localStorage.removeItem("config");
+          }
+          const legacyLists = JSON.parse(localStorage.getItem("listas") || "null");
+          const ownLists = obtenerDatosUsuario("listas", null);
+          if (Array.isArray(legacyLists) && legacyLists.length && !ownLists) {
+            guardarDatosUsuario("listas", legacyLists);
+            localStorage.removeItem("listas");
+          }
+        } catch (e) {}
+        guardarTokenSesion();
+      }
+      return googleAccount;
+    } catch (e) { return null; }
+  }
+
+  async function cambiarCuentaGoogle() {
+    accessToken = null; tokenExpiresAt = 0; googleAccount = null;
+    borrarTokenSesion();
+    tokenClient = null; tokenClientId = null;
+    const clientId = obtenerClientId();
+    if (!clientId) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+    await esperarGIS();
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: CFG.googleScopes || "openid email profile https://www.googleapis.com/auth/spreadsheets",
+      use_fedcm_for_prompt: true,
+      callback: () => {}
+    });
+    tokenClientId = clientId;
+    await pedirToken("select_account");
+    await cargarCuentaGoogle();
+    return googleAccount;
   }
   let spreadsheetId = null;
   let gidConfig = null;
@@ -101,7 +166,7 @@
     if (!tokenClient || tokenClientId !== clientId) {
       tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: clientId,
-        scope: CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets",
+        scope: CFG.googleScopes || "openid email profile https://www.googleapis.com/auth/spreadsheets",
         // FedCM sustituye al viejo mecanismo de reautenticación silenciosa
         // basado en cookies de terceros (que los navegadores bloquean cada
         // vez más), así que el intento de prompt:"" es más fiable con esto.
@@ -111,10 +176,14 @@
       tokenClientId = clientId;
     }
     try {
-      return await pedirToken("");
+      const token = await pedirToken("");
+      if (!googleAccount) await cargarCuentaGoogle();
+      return token;
     } catch (e) {
       if (!interactive) throw e;
-      return await pedirToken("consent");
+      const token = await pedirToken("consent");
+      await cargarCuentaGoogle();
+      return token;
     }
   }
 
@@ -130,7 +199,7 @@
       }
     });
     if (res.status === 401) {
-      accessToken = null; tokenExpiresAt = 0; borrarTokenSesion();
+      accessToken = null; tokenExpiresAt = 0; googleAccount = null; borrarTokenSesion();
       throw new Error("TOKEN_INVALIDO");
     }
     if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
@@ -141,7 +210,7 @@
 
   async function cargarConfig() {
     if (spreadsheetId) return;
-    const config = JSON.parse(localStorage.getItem("config") || "null");
+    const config = obtenerDatosUsuario("config", null);
     if (!config?.spreadsheetId) throw new Error("SIN_CONFIG");
     spreadsheetId = config.spreadsheetId;
     gidConfig = config.gid ?? null;
@@ -185,10 +254,10 @@
     const hojas = (data.sheets || []).map(s => s.properties);
     const hoja = (p.gid !== null && hojas.find(h => h.sheetId === p.gid)) || hojas[0];
     if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
-    localStorage.setItem("config", JSON.stringify({
+    guardarDatosUsuario("config", {
       spreadsheetId: p.spreadsheetId, gid: p.gid, url: String(enlace).trim(),
       titulo: data.properties?.title || "", hoja: hoja.title
-    }));
+    });
     resetConfig();
     const encabezadosCreados = await asegurarEncabezados();
     return { titulo: data.properties?.title || "", hoja: hoja.title, encabezadosCreados };
@@ -197,18 +266,18 @@
   // --- Varias listas guardadas (por ejemplo, la de un amigo) -------------------
 
   function obtenerListasArr() {
-    try { return JSON.parse(localStorage.getItem("listas") || "[]"); } catch (e) { return []; }
+    try { return obtenerDatosUsuario("listas", []); } catch (e) { return []; }
   }
   function guardarListasArr(arr) {
-    try { localStorage.setItem("listas", JSON.stringify(arr)); } catch (e) {}
+    try { guardarDatosUsuario("listas", arr); } catch (e) {}
   }
   function idListaActiva() {
-    try { return localStorage.getItem("listaActivaId") || null; } catch (e) { return null; }
+    try { return obtenerDatosUsuario("listaActivaId", null); } catch (e) { return null; }
   }
   function marcarListaActiva(id) {
     try {
-      if (id) localStorage.setItem("listaActivaId", id);
-      else localStorage.removeItem("listaActivaId");
+      if (id) guardarDatosUsuario("listaActivaId", id);
+      else guardarDatosUsuario("listaActivaId", null);
     } catch (e) {}
   }
   function nuevoIdLista() {
@@ -220,7 +289,7 @@
   // aparezca en el selector.
   function obtenerListasParaUI() {
     let listas = obtenerListasArr();
-    const config = JSON.parse(localStorage.getItem("config") || "null");
+    const config = obtenerDatosUsuario("config", null);
     if (listas.length === 0 && config?.spreadsheetId) {
       const migrada = {
         id: nuevoIdLista(), name: "Mi lista", url: config.url,
@@ -282,10 +351,10 @@
     const listas = obtenerListasArr();
     const lista = listas.find((l) => l.id === id);
     if (!lista) throw new Error("LISTA_NO_ENCONTRADA");
-    localStorage.setItem("config", JSON.stringify({
+    guardarDatosUsuario("config", {
       spreadsheetId: lista.spreadsheetId, gid: lista.gid, url: lista.url,
       titulo: lista.titulo, hoja: lista.hoja
-    }));
+    });
     marcarListaActiva(id);
     resetConfig();
     return { titulo: lista.titulo, hoja: lista.hoja, name: lista.name };
@@ -465,8 +534,10 @@
 
   async function handle(msg){
     switch(msg.type){
-      case "GET_CONFIG": return {ok:true,config:JSON.parse(localStorage.getItem("config")||"null")};
+      case "GET_CONFIG": return {ok:true,config:obtenerDatosUsuario("config", null)};
       case "GET_CLIENT_ID": return {ok:true,clientId:obtenerClientId()};
+      case "GET_GOOGLE_ACCOUNT": return {ok:true,account:googleAccount};
+      case "SWITCH_GOOGLE_ACCOUNT": return {ok:true,account:await cambiarCuentaGoogle()};
       case "SAVE_CONFIG": return {ok:true,...await guardarConfig(msg.url,msg.clientId)};
       case "GET_LISTAS": return {ok:true,listas:obtenerListasParaUI()};
       case "ADD_LISTA": return {ok:true,...await agregarListaGuardada(msg.name,msg.url)};
