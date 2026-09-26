@@ -531,48 +531,11 @@ function mensajeError(error) {
   return c.replace(/^Error:\s*/, "");
 }
 
-async function cambiarCuentaGoogleDesdeUI(estado, btn) {
-  if (btn) btn.disabled = true;
-  if (estado) estado.textContent = "Selecciona la cuenta de Google que quieres usar…";
-  const res = await enviarMensaje({ type: "SWITCH_GOOGLE_ACCOUNT" });
-  if (btn) btn.disabled = false;
-  if (!res?.ok) {
-    if (estado) estado.textContent = mensajeError(res?.error || "No se pudo cambiar de cuenta");
-    return false;
-  }
-  if (estado) estado.textContent = `Cuenta activa: ${res.account?.email || res.account?.name || "Google"}`;
-  configActual = null;
-  try {
-    const cfg = await enviarMensaje({ type: "GET_CONFIG" });
-    configActual = cfg?.config || null;
-  } catch (e) {}
-  return true;
-}
-
-async function obtenerCuentaGoogleUI() {
-  const res = await enviarMensaje({ type: "GET_GOOGLE_ACCOUNT" });
-  return res?.account || null;
-}
-
 function crearFormConfig({ bienvenida }) {
   const input = el("input", { type: "url", placeholder: "https://docs.google.com/spreadsheets/d/…", value: configActual?.url || "", ariaLabel: "Enlace de tu Google Sheet" });
   const clientIdInput = el("input", { type: "text", placeholder: "Client ID de OAuth (…apps.googleusercontent.com)", value: clientIdActual || "", ariaLabel: "Client ID de OAuth de Google" });
-  const cuentaEstado = el("div", { className: "estado-txt" });
-  const cambiarCuentaBtn = el("button", { className: "btn", type: "button", textContent: "Cambiar cuenta de Google" });
   const estado = el("div", { className: "estado-txt" });
   const btn = el("button", { className: "btn", type: "button", textContent: bienvenida ? "Conectar y empezar" : "Guardar hoja" });
-  obtenerCuentaGoogleUI().then((cuenta) => {
-    cuentaEstado.textContent = cuenta?.email ? `Cuenta de Google activa: ${cuenta.email}` : "No hay una cuenta de Google activa.";
-  });
-  cambiarCuentaBtn.addEventListener("click", async () => {
-    const ok = await cambiarCuentaGoogleDesdeUI(cuentaEstado, cambiarCuentaBtn);
-    if (ok) {
-      configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
-      input.value = configActual?.url || "";
-      estado.textContent = configActual ? `Conectada: ${configActual.titulo} (pestaña «${configActual.hoja}»)` : "Cuenta cambiada. Conecta ahora su Google Sheet.";
-      if (!bienvenida) setHerramientas(true);
-    }
-  });
   if (configActual?.titulo) estado.textContent = `Conectada: ${configActual.titulo} (pestaña «${configActual.hoja}»)`;
 
   async function guardarConfig() {
@@ -600,7 +563,7 @@ function crearFormConfig({ bienvenida }) {
     el("p", { textContent: bienvenida
       ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace, junto con el Client ID de OAuth (Aplicación web) de tu proyecto de Google Cloud."
       : "Cambia aquí la hoja o el Client ID de OAuth. Se guardan solo en este dispositivo." }),
-    cuentaEstado, cambiarCuentaBtn, clientIdInput, input, btn, estado);
+    clientIdInput, input, btn, estado);
 }
 
 // --- Herramientas ------------------------------------------------------------
@@ -687,10 +650,17 @@ async function cargar() {
   cargandoEl.hidden = true;
 
   if (!res || !res.ok) {
+    const error = String(res?.error || "");
+    const soloSesionCaducada = error.includes("TOKEN_INVALIDO") || error.includes("NO_SE_OBTUVO_TOKEN");
     errorEl.innerHTML = "";
-    errorEl.append("No se pudo cargar la lista: " + mensajeError(res?.error || "error desconocido"), el("br"),
-      el("button", { className: "btn", textContent: "Reintentar", onclick: cargar }), " ",
-      el("button", { className: "btn", textContent: "Cambiar de hoja", onclick: () => setHerramientas(true) }));
+    errorEl.append("No se pudo cargar la lista: " + mensajeError(error || "error desconocido"), el("br"),
+      el("button", { className: "btn", textContent: soloSesionCaducada ? "Volver a iniciar sesión" : "Reintentar", onclick: cargar }));
+    // El enlace del Sheet ya está guardado y sigue siendo válido: si el único
+    // problema es la sesión de Google, no hace falta tocarlo para nada, así
+    // que no se ofrece la opción de "cambiar de hoja" en ese caso.
+    if (!soloSesionCaducada) {
+      errorEl.append(" ", el("button", { className: "btn", textContent: "Cambiar de hoja", onclick: () => setHerramientas(true) }));
+    }
     errorEl.hidden = false;
     return;
   }
