@@ -22,6 +22,7 @@
 
   let accessToken = null;
   let tokenExpiresAt = 0;
+  const WORKER_URL = "https://red-violet-9fed.unaxmenendez.workers.dev";
   // localStorage (no sessionStorage): tiene que sobrevivir a cerrar del
   // todo la app y volver a abrirla, no solo a recargar la pestaña. Sigue
   // sin evitar el aviso pasada la hora de vida del token (eso ya es un
@@ -46,6 +47,7 @@
   let cachedSheetName = null;
   let tokenClient = null;
   let tokenClientId = null;
+  let tokenClientUsaFedcm = null;
   let gisReady = null;
 
   function parsearEnlaceSheet(texto) {
@@ -88,8 +90,18 @@
     return gisReady;
   }
 
-  function pedirToken(prompt) {
+  function pedirToken(clientId, prompt, usarFedcm) {
     return new Promise((resolve, reject) => {
+      if (!tokenClient || tokenClientId !== clientId || tokenClientUsaFedcm !== usarFedcm) {
+        tokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: clientId,
+          scope: CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets",
+          use_fedcm_for_prompt: usarFedcm,
+          callback: () => {}
+        });
+        tokenClientId = clientId;
+        tokenClientUsaFedcm = usarFedcm;
+      }
       tokenClient.callback = (response) => {
         if (response?.error) return reject(new Error(response.error));
         if (!response?.access_token) return reject(new Error("NO_SE_OBTUVO_TOKEN"));
@@ -104,32 +116,26 @@
     });
   }
 
-  // Intenta iniciar sesión sola, sin ventanas ni clics (prompt:""), usando la
-  // sesión de Google que ya haya en el navegador/dispositivo. Solo si eso
-  // falla (primera vez, o el acceso se revocó) se muestra el diálogo de
-  // consentimiento de Google, y solo cuando interactive=true.
+  // Intenta iniciar sesión sola, sin ventanas ni clics, usando la sesión de
+  // Google que ya haya en el dispositivo. Lo prueba de dos formas distintas
+  // antes de rendirse (FedCM primero, y si eso falla, el mecanismo clásico
+  // basado en cookies), porque no todos los navegadores/instalaciones de la
+  // PWA admiten FedCM igual de bien. Solo si las dos fallan, y solo cuando
+  // interactive=true, se muestra el diálogo de consentimiento de Google.
   async function ensureToken(interactive = true) {
     if (accessToken && Date.now() < tokenExpiresAt - 60000) return accessToken;
     const clientId = obtenerClientId();
     if (!clientId) throw new Error("CONFIGURA_CLIENT_ID_WEB");
     await esperarGIS();
-    if (!tokenClient || tokenClientId !== clientId) {
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets",
-        // FedCM sustituye al viejo mecanismo de reautenticación silenciosa
-        // basado en cookies de terceros (que los navegadores bloquean cada
-        // vez más), así que el intento de prompt:"" es más fiable con esto.
-        use_fedcm_for_prompt: true,
-        callback: () => {}
-      });
-      tokenClientId = clientId;
-    }
     try {
-      return await pedirToken("");
+      return await pedirToken(clientId, "", true);
     } catch (e) {
-      if (!interactive) throw e;
-      return await pedirToken("consent");
+      try {
+        return await pedirToken(clientId, "", false);
+      } catch (e2) {
+        if (!interactive) throw e2;
+        return await pedirToken(clientId, "consent", true);
+      }
     }
   }
 
@@ -145,7 +151,7 @@
       }
     });
     if (res.status === 401) {
-      accessToken = null; tokenExpiresAt = 0; borrarTokenSesion();
+      accessToken = null; tokenExpiresAt = 0; guardarTokenSesion();
       throw new Error("TOKEN_INVALIDO");
     }
     if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
@@ -184,7 +190,7 @@
       const limpio = String(clientId || "").trim();
       if (limpio && limpio !== obtenerClientIdGuardado()) {
         guardarClientIdLocal(limpio);
-        accessToken = null; tokenExpiresAt = 0; tokenClient = null; tokenClientId = null; borrarTokenSesion();
+        accessToken = null; tokenExpiresAt = 0; borrarTokenSesion();
       }
     }
     if (!obtenerClientId()) throw new Error("CONFIGURA_CLIENT_ID_WEB");
@@ -406,7 +412,6 @@
 
     let html;
     try {
-      const WORKER_URL = "https://red-violet-9fed.unaxmenendez.workers.dev";
       const r = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(url)}`);
       // Este Worker siempre responde 200 y mete el status real de la
       // página de origen en X-Proxy-Upstream-Status (para poder leer el
