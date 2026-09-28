@@ -47,7 +47,6 @@
   let cachedSheetName = null;
   let tokenClient = null;
   let tokenClientId = null;
-  let tokenClientUsaFedcm = null;
   let gisReady = null;
 
   function parsearEnlaceSheet(texto) {
@@ -90,53 +89,124 @@
     return gisReady;
   }
 
-  function pedirToken(clientId, prompt, usarFedcm) {
+  // --- Inicio de sesión de Google (solo del lado del cliente) -------------
+  // El token de Google dura 1 hora y sin servidor no hay forma de renovarlo
+  // del todo a escondidas. Lo que sí se puede hacer:
+  //  - recordar el correo de la cuenta y pasarlo como "hint": la ventana de
+  //    Google elige esa cuenta sola y, como ya diste permiso, se cierra al
+  //    instante (nada de selector ni de "cambiar de cuenta");
+  //  - renovar el token con el primer toque cuando le queda poco, para que
+  //    no caduque mientras usas la app;
+  //  - si de verdad hace falta iniciar sesión, abrir directamente el
+  //    selector de cuentas de Google.
+  const SCOPES = (CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets") +
+    " https://www.googleapis.com/auth/userinfo.email";
+  let pendiente = null;
+  let tokenEnCurso = null;
+
+  function emailGuardado() {
+    try { return localStorage.getItem("gemail") || ""; } catch (e) { return ""; }
+  }
+  function guardarEmail(e) {
+    try { if (e) localStorage.setItem("gemail", e); else localStorage.removeItem("gemail"); } catch (x) {}
+  }
+  async function recordarCuenta(token) {
+    try {
+      const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.email) guardarEmail(d.email);
+    } catch (e) {}
+  }
+
+  function crearTokenClient(clientId) {
+    if (tokenClient && tokenClientId === clientId) return tokenClient;
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: SCOPES,
+      callback: (r) => pendiente && pendiente.ok(r),
+      // Sin esto, si el navegador bloquea o se cierra la ventana de Google,
+      // la promesa se quedaba colgada para siempre.
+      error_callback: (e) => pendiente && pendiente.err(new Error(e?.type || "popup_error"))
+    });
+    tokenClientId = clientId;
+    return tokenClient;
+  }
+
+  function pedirToken(clientId, prompt) {
     return new Promise((resolve, reject) => {
-      if (!tokenClient || tokenClientId !== clientId || tokenClientUsaFedcm !== usarFedcm) {
-        tokenClient = google.accounts.oauth2.initTokenClient({
-          client_id: clientId,
-          scope: CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets",
-          use_fedcm_for_prompt: usarFedcm,
-          callback: () => {}
-        });
-        tokenClientId = clientId;
-        tokenClientUsaFedcm = usarFedcm;
-      }
-      tokenClient.callback = (response) => {
-        if (response?.error) return reject(new Error(response.error));
-        if (!response?.access_token) return reject(new Error("NO_SE_OBTUVO_TOKEN"));
-        accessToken = response.access_token;
-        tokenExpiresAt = Date.now() + ((response.expires_in || 3600) * 1000);
-        guardarTokenSesion();
-        resolve(accessToken);
+      const cliente = crearTokenClient(clientId);
+      pendiente = {
+        ok: (r) => {
+          if (r?.error) return reject(new Error(r.error));
+          if (!r?.access_token) return reject(new Error("NO_SE_OBTUVO_TOKEN"));
+          accessToken = r.access_token;
+          tokenExpiresAt = Date.now() + ((r.expires_in || 3600) * 1000);
+          guardarTokenSesion();
+          recordarCuenta(accessToken);
+          resolve(accessToken);
+        },
+        err: reject
       };
-      try {
-        tokenClient.requestAccessToken({ prompt });
-      } catch (e) { reject(e); }
+      const opciones = { prompt };
+      const hint = emailGuardado();
+      if (hint && prompt !== "select_account") opciones.hint = hint;
+      try { cliente.requestAccessToken(opciones); } catch (e) { reject(e); }
     });
   }
 
-  // Intenta iniciar sesión sola, sin ventanas ni clics, usando la sesión de
-  // Google que ya haya en el dispositivo. Lo prueba de dos formas distintas
-  // antes de rendirse (FedCM primero, y si eso falla, el mecanismo clásico
-  // basado en cookies), porque no todos los navegadores/instalaciones de la
-  // PWA admiten FedCM igual de bien. Solo si las dos fallan, y solo cuando
-  // interactive=true, se muestra el diálogo de consentimiento de Google.
-  async function ensureToken(interactive = true) {
-    if (accessToken && Date.now() < tokenExpiresAt - 60000) return accessToken;
+  function esErrorDeVentana(e) {
+    const m = String(e?.message || e);
+    return m.includes("popup_failed_to_open") || m.includes("popup_closed");
+  }
+
+  // interactive=true: si hace falta, abre el selector de cuentas de Google.
+  // forzar=true: renueva aunque el token actual aún sea válido.
+  function ensureToken(interactive = true, forzar = false) {
+    if (!forzar && accessToken && Date.now() < tokenExpiresAt - 60000) return Promise.resolve(accessToken);
+    if (tokenEnCurso) return tokenEnCurso;
+    tokenEnCurso = (async () => {
+      const clientId = obtenerClientId();
+      if (!clientId) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+      await esperarGIS();
+      try {
+        if (emailGuardado()) {
+          try { return await pedirToken(clientId, ""); }
+          catch (e) { if (esErrorDeVentana(e) || !interactive) throw e; }
+        }
+        if (!interactive) throw new Error("popup_failed_to_open");
+        return await pedirToken(clientId, "select_account");
+      } catch (e) {
+        if (esErrorDeVentana(e)) throw new Error("NECESITA_INICIO_SESION");
+        throw e;
+      }
+    })().finally(() => { tokenEnCurso = null; });
+    return tokenEnCurso;
+  }
+
+  // Mientras usas la app, con el primer toque cuando al token le quedan
+  // menos de 10 minutos (o ya caducó) se renueva en silencio, con la cuenta
+  // recordada. Así casi nunca caduca a mitad de uso.
+  let ultimoRefrescoAuto = 0;
+  document.addEventListener("pointerdown", () => {
+    if (!emailGuardado() || !window.google?.accounts?.oauth2) return;
+    if (accessToken && Date.now() < tokenExpiresAt - 10 * 60 * 1000) return;
+    if (tokenEnCurso || Date.now() - ultimoRefrescoAuto < 60000) return;
+    ultimoRefrescoAuto = Date.now();
+    ensureToken(false, true).catch(() => {});
+  }, { capture: true, passive: true });
+
+  // Botón explícito "Cambiar de cuenta": olvida la cuenta y abre el selector.
+  async function cambiarCuenta() {
+    accessToken = null; tokenExpiresAt = 0; guardarEmail("");
+    guardarTokenSesion();
     const clientId = obtenerClientId();
     if (!clientId) throw new Error("CONFIGURA_CLIENT_ID_WEB");
     await esperarGIS();
-    try {
-      return await pedirToken(clientId, "", true);
-    } catch (e) {
-      try {
-        return await pedirToken(clientId, "", false);
-      } catch (e2) {
-        if (!interactive) throw e2;
-        return await pedirToken(clientId, "consent", true);
-      }
-    }
+    try { await pedirToken(clientId, "select_account"); }
+    catch (e) { throw esErrorDeVentana(e) ? new Error("NECESITA_INICIO_SESION") : e; }
+    resetConfig();
+    return { cambiada: true };
   }
 
   async function sheetsFetch(path, options = {}) {
@@ -486,6 +556,13 @@
   async function handle(msg){
     switch(msg.type){
       case "GET_CONFIG": return {ok:true,config:JSON.parse(localStorage.getItem("config")||"null")};
+      case "LOGIN": {
+        // Si ya hay un intento en marcha (renovación con el primer toque), se espera a él.
+        if (tokenEnCurso) { try { await tokenEnCurso; return {ok:true}; } catch (e) {} }
+        await ensureToken(true);
+        return {ok:true};
+      }
+      case "CAMBIAR_CUENTA": return {ok:true,...await cambiarCuenta()};
       case "GET_CLIENT_ID": return {ok:true,clientId:obtenerClientId()};
       case "SAVE_CONFIG": return {ok:true,...await guardarConfig(msg.url,msg.clientId)};
       case "GET_LISTAS": return {ok:true,listas:obtenerListasParaUI()};

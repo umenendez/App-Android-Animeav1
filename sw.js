@@ -1,4 +1,4 @@
-const CACHE = "animeav1-pwa-v9";
+const CACHE = "animeav1-pwa-v10";
 const COVER_CACHE = "anime-covers-v1";
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
 
@@ -49,16 +49,17 @@ self.addEventListener("fetch", event => {
     return;
   }
 
-  // Archivos de la propia PWA: cache-first.
+  // Archivos de la propia PWA: red primero (así las actualizaciones llegan
+  // solas) y, si no hay conexión, la copia guardada.
   if (url.origin === location.origin) {
     event.respondWith(
-      caches.match(request).then(cached => cached || fetch(request).then(response => {
+      fetch(request).then(response => {
         if (response.ok) {
           const copy = response.clone();
           caches.open(CACHE).then(c => c.put(request, copy));
         }
         return response;
-      }))
+      }).catch(() => caches.match(request))
     );
   }
 });

@@ -459,7 +459,7 @@ async function cambiarAListaGuardada(l, usarBtn) {
   await cargar();
   // Refresca también el formulario de "Herramientas" para que muestre la hoja activa
   $("configTools").innerHTML = "";
-  $("configTools").append(crearFormConfig({ bienvenida: false }));
+  $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta());
 }
 
 async function borrarListaGuardada(l) {
@@ -522,6 +522,8 @@ function mensajeError(error) {
   if (c.includes("HOJA_NO_ENCONTRADA")) return "No se encuentra esa hoja. Revisa el enlace.";
   if (c.includes("SIN_PERMISO")) return "Tu cuenta de Google no tiene acceso a esa hoja. Comprueba que está compartida contigo con permiso de edición.";
   if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
+  if (c.includes("NECESITA_INICIO_SESION")) return "Toca el botón para iniciar sesión con Google.";
+  if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
   if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace completo (con http:// o https://) a la ficha del anime.";
   if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
   if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
@@ -564,6 +566,22 @@ function crearFormConfig({ bienvenida }) {
       ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace, junto con el Client ID de OAuth (Aplicación web) de tu proyecto de Google Cloud."
       : "Cambia aquí la hoja o el Client ID de OAuth. Se guardan solo en este dispositivo." }),
     clientIdInput, input, btn, estado);
+}
+
+function crearBotonCuenta() {
+  const estado = el("div", { className: "estado-txt" });
+  const btn = el("button", { className: "btn", type: "button", textContent: "Cambiar de cuenta de Google" });
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    estado.textContent = "";
+    const r = await enviarMensaje({ type: "CAMBIAR_CUENTA" });
+    btn.disabled = false;
+    if (!r?.ok) { estado.textContent = mensajeError(r?.error || "error desconocido"); return; }
+    toast("Cuenta cambiada");
+    setHerramientas(false);
+    cargar();
+  });
+  return el("div", { className: "config" }, btn, estado);
 }
 
 // --- Herramientas ------------------------------------------------------------
@@ -651,15 +669,24 @@ async function cargar() {
 
   if (!res || !res.ok) {
     const error = String(res?.error || "");
-    const soloSesionCaducada = error.includes("TOKEN_INVALIDO") || error.includes("NO_SE_OBTUVO_TOKEN");
+    const hayQueIniciarSesion = /NECESITA_INICIO_SESION|TOKEN_INVALIDO|NO_SE_OBTUVO_TOKEN|access_denied|interaction_required/.test(error);
     errorEl.innerHTML = "";
-    errorEl.append("No se pudo cargar la lista: " + mensajeError(error || "error desconocido"), el("br"),
-      el("button", { className: "btn", textContent: soloSesionCaducada ? "Volver a iniciar sesión" : "Reintentar", onclick: cargar }));
-    // El enlace del Sheet ya está guardado y sigue siendo válido: si el único
-    // problema es la sesión de Google, no hace falta tocarlo para nada, así
-    // que no se ofrece la opción de "cambiar de hoja" en ese caso.
-    if (!soloSesionCaducada) {
-      errorEl.append(" ", el("button", { className: "btn", textContent: "Cambiar de hoja", onclick: () => setHerramientas(true) }));
+    if (hayQueIniciarSesion) {
+      // El enlace del Sheet ya está guardado: solo falta la sesión de Google.
+      // Un toque abre directamente el selector de cuentas de Google.
+      const btn = el("button", { className: "btn", type: "button", textContent: "Iniciar sesión con Google" });
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        const r = await enviarMensaje({ type: "LOGIN" });
+        if (r?.ok) return cargar();
+        btn.disabled = false;
+        toast(mensajeError(r?.error || "error desconocido"));
+      });
+      errorEl.append(el("p", { textContent: "Inicia sesión con Google para ver tu lista." }), btn);
+    } else {
+      errorEl.append("No se pudo cargar la lista: " + mensajeError(error || "error desconocido"), el("br"),
+        el("button", { className: "btn", textContent: "Reintentar", onclick: cargar }), " ",
+        el("button", { className: "btn", textContent: "Cambiar de hoja", onclick: () => setHerramientas(true) }));
     }
     errorEl.hidden = false;
     return;
@@ -675,7 +702,7 @@ inicializarToolbar();
   // El formulario de "Herramientas" necesita conocer la hoja actual antes de crearse
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
   clientIdActual = (await enviarMensaje({ type: "GET_CLIENT_ID" }))?.clientId || "";
-  $("configTools").append(crearFormConfig({ bienvenida: false }));
+  $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta());
   cargar();
 })();
 
