@@ -209,6 +209,84 @@ const observador = new IntersectionObserver(
   { root: listaEl, rootMargin: "300px" }
 );
 
+
+// --- Estadísticas ------------------------------------------------------------
+const dlgStatsEl = document.getElementById("dlgStats");
+const btnStats = document.getElementById("btnStats");
+
+function numeroNota(a) {
+  const n = parseFloat(String(a?.score ?? "").replace(",", "."));
+  return Number.isFinite(n) && n >= 0 ? Math.min(10, n) : null;
+}
+
+function crearBarraEstadistica(nombre, cantidad, maximo, sufijo = "") {
+  const fila = el("div", { className: "stats-fila" });
+  const ancho = maximo ? Math.round((cantidad / maximo) * 100) : 0;
+  fila.append(
+    el("span", { className: "nombre", textContent: nombre, title: nombre }),
+    (() => { const barra = el("span", { className: "stats-barra" }); const relleno = el("i"); relleno.style.width = `${ancho}%`; barra.append(relleno); return barra; })(),
+    el("span", { className: "cantidad", textContent: `${cantidad}${sufijo}` })
+  );
+  return fila;
+}
+
+function renderEstadisticas() {
+  if (!dlgStatsEl) return;
+  dlgStatsEl.innerHTML = "";
+  const notas = todosLosAnimes.map(numeroNota).filter((n) => n !== null);
+  const media = notas.length ? notas.reduce((s, n) => s + n, 0) / notas.length : 0;
+  const vistos = todosLosAnimes.filter((a) => a.status === "✔").length;
+  const viendo = todosLosAnimes.filter((a) => a.status === "-").length;
+  const porVer = todosLosAnimes.filter((a) => a.status === "@").length;
+  const drop = todosLosAnimes.filter((a) => a.status === "📉").length;
+  const sinVer = todosLosAnimes.filter((a) => a.status === "✖").length;
+  const porcentajeVistos = todosLosAnimes.length ? Math.round(vistos / todosLosAnimes.length * 100) : 0;
+
+  const cab = el("div", { className: "stats-cab" },
+    el("h2", { textContent: "Estadísticas" }),
+    el("button", { className: "stats-cerrar", type: "button", textContent: "×", ariaLabel: "Cerrar estadísticas", onclick: () => dlgStatsEl.close() })
+  );
+  const resumen = el("div", { className: "stats-resumen" });
+  [
+    [todosLosAnimes.length, "Anime en total"],
+    [media ? media.toFixed(1) : "—", `Nota media · ${notas.length} valorados`],
+    [vistos, `Vistos · ${porcentajeVistos}%`],
+    [viendo, "Viendo ahora"],
+    [porVer, "Por ver"],
+    [sinVer + drop, `Sin completar · ${sinVer} sin ver / ${drop} drop`],
+  ].forEach(([n, label]) => resumen.append(el("div", { className: "stats-tarjeta" }, el("span", { className: "stats-num", textContent: n }), el("span", { className: "stats-label", textContent: label }))));
+
+  const estados = el("div", { className: "stats-seccion" }, el("h3", { textContent: "Estados" }));
+  const estadoDatos = [["Vistos", vistos], ["Viendo", viendo], ["Por ver", porVer], ["Sin ver", sinVer], ["Dropeados", drop]];
+  const maxEstado = Math.max(1, ...estadoDatos.map(x => x[1]));
+  estadoDatos.forEach(([n, c]) => estados.append(crearBarraEstadistica(n, c, maxEstado)));
+
+  const conteoGeneros = {};
+  todosLosAnimes.forEach((a) => parseGeneros(a.genre).forEach((g) => { conteoGeneros[g] = (conteoGeneros[g] || 0) + 1; }));
+  const generos = Object.entries(conteoGeneros).sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0], "es")).slice(0, 8);
+  const secGeneros = el("div", { className: "stats-seccion" }, el("h3", { textContent: "Géneros más frecuentes" }));
+  if (!generos.length) secGeneros.append(el("div", { className: "stats-vacio", textContent: "Todavía no hay géneros." }));
+  else { const maxGenero = Math.max(1, ...generos.map(x => x[1])); generos.forEach(([n,c]) => secGeneros.append(crearBarraEstadistica(n,c,maxGenero))); }
+
+  const distrib = Array.from({ length: 11 }, () => 0);
+  notas.forEach((n) => distrib[Math.round(n)]++);
+  const secNotas = el("div", { className: "stats-seccion" }, el("h3", { textContent: "Distribución de notas" }));
+  const notasGrid = el("div", { className: "stats-notas" });
+  distrib.forEach((c, i) => notasGrid.append(el("div", { className: "stats-nota" }, el("b", { textContent: String(i) }), el("span", { textContent: c }))));
+  secNotas.append(notasGrid);
+
+  dlgStatsEl.append(cab, resumen, estados, secGeneros, secNotas);
+}
+
+if (btnStats) btnStats.addEventListener("click", () => { renderEstadisticas(); dlgStatsEl.showModal(); });
+
+document.addEventListener("click", (ev) => {
+  const control = ev.target.closest?.(".rating-control");
+  document.querySelectorAll(".rating-popover:not([hidden])").forEach((p) => {
+    if (!control || !control.contains(p)) p.hidden = true;
+  });
+});
+
 // --- Filtros -----------------------------------------------------------------
 
 function llenarSelect(select, primera, opciones) {
@@ -423,14 +501,48 @@ function renderItem(anime) {
     portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
   }
 
-  const inputScore = el("input", { className: "nota", type: "number", step: "0.1", min: "0", max: "11", value: anime.score || "", placeholder: "–", title: "Nota", ariaLabel: "Nota" });
-  aplicarColorNota(inputScore);
-  inputScore.addEventListener("input", () => aplicarColorNota(inputScore));
-  inputScore.addEventListener("change", () => {
-    anime.score = inputScore.value;
-    aplicarColorNota(inputScore);
-    guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor: inputScore.value }, inputScore);
-  });
+  const ratingControl = el("div", { className: "rating-control" });
+  const ratingButton = el("button", { className: "rating-btn", type: "button", title: "Cambiar valoración", ariaLabel: "Cambiar valoración" });
+  const ratingPopover = el("div", { className: "rating-popover", hidden: true });
+  const ratingValue = el("strong", { className: "rating-value" });
+  const ratingRange = el("input", { className: "rating-range", type: "range", min: "0", max: "10", step: "0.5" });
+  const ratingHead = el("div", { className: "rating-head" }, el("strong", { textContent: "Tu valoración" }), ratingValue);
+  const ratingScale = el("div", { className: "rating-escala" }, el("span", { textContent: "0" }), el("span", { textContent: "5" }), el("span", { textContent: "10" }));
+  const ratingActions = el("div", { className: "rating-actions" });
+  const btnCinco = el("button", { className: "rating-mini", type: "button", textContent: "5" });
+  const btnDiez = el("button", { className: "rating-mini", type: "button", textContent: "10" });
+  const btnLimpiar = el("button", { className: "rating-mini limpiar", type: "button", textContent: "Quitar" });
+  ratingActions.append(btnCinco, btnDiez, btnLimpiar);
+  ratingPopover.append(ratingHead, ratingRange, ratingScale, ratingActions);
+  ratingControl.append(ratingButton, ratingPopover);
+
+  let ratingOriginal = anime.score || "";
+  function actualizarRatingUI(valor) {
+    const limpio = String(valor ?? "").trim().replace(",", ".");
+    const n = parseFloat(limpio);
+    const valido = Number.isFinite(n) && n >= 0;
+    ratingButton.textContent = valido ? `★ ${n}` : "★ –";
+    ratingButton.classList.toggle("sin-nota", !valido);
+    ratingValue.textContent = valido ? String(n) : "—";
+    ratingRange.value = valido ? String(Math.min(10, Math.max(0, n))) : "0";
+    ratingButton.title = valido ? `Valoración: ${n}/10 · Cambiar` : "Sin valoración · Añadir valoración";
+  }
+  actualizarRatingUI(ratingOriginal);
+
+  async function guardarRating(valor) {
+    const limpio = String(valor ?? "").trim().replace(",", ".");
+    anime.score = limpio;
+    actualizarRatingUI(limpio);
+    const ok = await guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor: limpio }, ratingButton);
+    if (ok) { ratingOriginal = limpio; ratingPopover.hidden = true; }
+    return ok;
+  }
+  ratingButton.addEventListener("click", (ev) => { ev.stopPropagation(); ratingPopover.hidden = !ratingPopover.hidden; });
+  ratingRange.addEventListener("input", () => actualizarRatingUI(ratingRange.value));
+  ratingRange.addEventListener("change", () => guardarRating(ratingRange.value));
+  btnCinco.addEventListener("click", () => guardarRating("5"));
+  btnDiez.addEventListener("click", () => guardarRating("10"));
+  btnLimpiar.addEventListener("click", () => guardarRating(""));
 
   const btnUltimoCap = el("a", { className: "btn-ultimo-cap", target: "_blank", title: "Ir al último capítulo visto", ariaLabel: "Último capítulo visto", textContent: "▶" });
   function actualizarBotonUltimoCap() {
@@ -439,7 +551,7 @@ function renderItem(anime) {
     btnUltimoCap.style.display = visible ? "flex" : "none";
   }
   actualizarBotonUltimoCap();
-  portada.append(inputScore, btnUltimoCap);
+  portada.append(ratingControl, btnUltimoCap);
 
   // Info
   const info = el("div", { className: "info" });
