@@ -81,7 +81,7 @@
     .fila { display: flex; flex-wrap: wrap; gap: 5px; }
     .fila > * { flex: 1 1 100px; min-width: 0; }
     .fila > #busqueda { flex: 1.6 1 120px; }
-    #busqueda, .filtros select {
+    #busqueda, .filtros select, .btn-filtro {
       height: 28px; padding: 0 8px;
       border: 1px solid var(--border); border-radius: 8px;
       background: var(--surface);
@@ -186,6 +186,26 @@
       background-color: color-mix(in srgb, var(--st) 12%, var(--surface));
     }
     .info select.genero { color: var(--muted); }
+    .btn-filtro { text-align: left; color: var(--text); cursor: pointer; }
+    .btn-filtro[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    #panelGeneros { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 2px 0 4px; }
+    #panelGeneros[hidden] { display: none; }
+    .info button.genero {
+      width: 100%; height: 23px; padding: 0 6px; font-size: 10.5px; text-align: left; color: var(--muted);
+      border: 1px solid var(--border); border-radius: 6px; background: var(--field); cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    dialog#dlgGeneros {
+      width: min(360px, calc(100vw - 24px)); padding: 14px; border: 1px solid var(--border);
+      border-radius: 12px; background: var(--surface); color: var(--text);
+    }
+    dialog#dlgGeneros::backdrop { background: rgba(0, 0, 0, .5); }
+    dialog#dlgGeneros h2 { margin: 0 0 8px; font-size: 13px; }
+    .gen-lista { max-height: 50vh; overflow-y: auto; }
+    .gen-fila { display: flex; align-items: center; gap: 6px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+    .gen-nombre { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+    .gen-add, .gen-pie { display: flex; gap: 6px; margin-top: 8px; }
+    .gen-add input { flex: 1; min-width: 0; height: 30px; padding: 0 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
     .saved-flash { box-shadow: 0 0 0 2px #22c55e; }
     .edicion { display: flex; flex-direction: column; gap: 5px; padding-top: 7px; border-top: 1px dashed var(--border); }
     .edicion label { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--muted); }
@@ -272,10 +292,13 @@
     <div class="chips" id="chips"></div>
     <div class="fila">
       <input id="busqueda" type="search" placeholder="Buscar por título" aria-label="Buscar por título" />
-      <select id="filtroGenero" aria-label="Filtrar por género"></select>
+      <button id="filtroGenero" class="btn-filtro" type="button" aria-expanded="false" aria-label="Filtrar por géneros">Géneros</button>
       <select id="orden" aria-label="Ordenar"></select>
     </div>
+    <div id="panelGeneros" hidden></div>
   </div>
+
+  <dialog id="dlgGeneros"></dialog>
 
   <section id="agregarPanel" class="config" hidden>
     <h2>Añadir anime por enlace</h2>

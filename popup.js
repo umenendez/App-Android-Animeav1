@@ -7,10 +7,26 @@ const ESTADOS = [
 ];
 
 // Se preservan tal cual las opciones del Sheet, incluyendo mayúsculas/acentos
-const GENEROS = [
+const GENEROS_BASE = [
   "ISEKAI", "SHOUNEN", "EL RESTO", "ROMANCE", "(._.)", "PELICULA",
   "NOVELA", "MANGA / MANWHA", "SLICE OF LIFE", "FANTASÍA", "MONOGATARI",
 ];
+
+// --- Géneros: varios por anime, separados por coma en la columna A -------------
+const unico = (a) => [...new Set(a)];
+const parseGeneros = (s) => unico(String(s || "").split(",").map((g) => g.trim()).filter(Boolean));
+const limpiarGenero = (s) => String(s || "").replace(/,/g, " ").replace(/\s+/g, " ").trim().toLocaleUpperCase("es");
+let catalogo = GENEROS_BASE.slice();
+try {
+  const c = JSON.parse(localStorage.getItem("generos") || "null");
+  if (Array.isArray(c) && c.length) catalogo = unico(c);
+} catch (e) {}
+function guardarCatalogo() { try { localStorage.setItem("generos", JSON.stringify(catalogo)); } catch (e) {} }
+// Los géneros que ya están en la hoja siempre aparecen en el catálogo
+function sincronizarCatalogo() {
+  todosLosAnimes.forEach((a) => parseGeneros(a.genre).forEach((g) => { if (!catalogo.includes(g)) catalogo.push(g); }));
+  guardarCatalogo();
+}
 
 const $ = (id) => document.getElementById(id);
 const cargandoEl = $("cargando");
@@ -45,6 +61,9 @@ const listaStatusEl = $("listaStatus");
 let todosLosAnimes = [];
 let modoEdicion = false;
 let filtroEstado = "-"; // por defecto: viendo
+let filtroGeneros = new Set(); // filtro multiple: el anime debe tener TODOS los seleccionados
+const panelGenerosEl = $("panelGeneros");
+const dlgGenerosEl = $("dlgGeneros");
 
 function enviarMensaje(msg) {
   if (typeof window.enviarMensajePWA === "function") return window.enviarMensajePWA(msg);
@@ -95,7 +114,7 @@ btnTema.addEventListener("click", () => {
 
 function guardarFiltros() {
   try {
-    localStorage.setItem("filtros", JSON.stringify({ estado: filtroEstado, genero: filtroGeneroEl.value, orden: ordenEl.value }));
+    localStorage.setItem("filtros", JSON.stringify({ estado: filtroEstado, generos: [...filtroGeneros], orden: ordenEl.value }));
   } catch (e) {}
 }
 function cargarFiltros() {
@@ -103,7 +122,7 @@ function cargarFiltros() {
     const f = JSON.parse(localStorage.getItem("filtros") || "null");
     if (f) {
       filtroEstado = f.estado ?? "-";
-      filtroGeneroEl.value = f.genero || "";
+      filtroGeneros = new Set(Array.isArray(f.generos) ? f.generos : (f.genero ? [f.genero] : []));
       ordenEl.value = f.orden || "";
     }
   } catch (e) {}
@@ -199,13 +218,13 @@ function llenarSelect(select, primera, opciones) {
 }
 
 function inicializarToolbar() {
-  llenarSelect(filtroGeneroEl, "Todos los géneros", GENEROS.map((g) => ({ value: g, label: g })));
   llenarSelect(ordenEl, "Sin ordenar", [
     { value: "score-desc", label: "Nota: mayor a menor" },
     { value: "score-asc", label: "Nota: menor a mayor" },
   ]);
   cargarFiltros();
-  [filtroGeneroEl, ordenEl].forEach((s) => s.addEventListener("change", () => { guardarFiltros(); render(); }));
+  ordenEl.addEventListener("change", () => { guardarFiltros(); render(); });
+  filtroGeneroEl.addEventListener("click", () => { panelGenerosEl.hidden = !panelGenerosEl.hidden; renderPanelGeneros(); });
   busquedaEl.addEventListener("input", render);
 }
 
@@ -222,14 +241,36 @@ function renderChips() {
   });
 }
 
+function renderPanelGeneros() {
+  filtroGeneroEl.textContent = filtroGeneros.size ? `Géneros (${filtroGeneros.size})` : "Géneros";
+  filtroGeneroEl.setAttribute("aria-pressed", String(filtroGeneros.size > 0));
+  filtroGeneroEl.setAttribute("aria-expanded", String(!panelGenerosEl.hidden));
+  panelGenerosEl.innerHTML = "";
+  catalogo.forEach((g) => {
+    const chip = el("button", { className: "chip", type: "button", textContent: g });
+    chip.setAttribute("aria-pressed", String(filtroGeneros.has(g)));
+    chip.addEventListener("click", () => {
+      if (!filtroGeneros.delete(g)) filtroGeneros.add(g);
+      guardarFiltros(); render();
+    });
+    panelGenerosEl.append(chip);
+  });
+  panelGenerosEl.append(
+    el("button", { className: "btn-mini", type: "button", textContent: "Limpiar", onclick: () => { filtroGeneros.clear(); guardarFiltros(); render(); } }),
+    el("button", { className: "btn-mini", type: "button", textContent: "Gestionar géneros", onclick: () => abrirDialogoGeneros(null) })
+  );
+}
+
 function render() {
-  const genero = filtroGeneroEl.value;
   const orden = ordenEl.value;
   const q = normalizar(busquedaEl.value.trim());
 
   let lista = todosLosAnimes.filter((a) => {
     if (filtroEstado && a.status !== filtroEstado) return false;
-    if (genero && a.genre !== genero) return false;
+    if (filtroGeneros.size) {
+      const gs = parseGeneros(a.genre);
+      for (const g of filtroGeneros) if (!gs.includes(g)) return false;
+    }
     if (q && !normalizar(a.title).includes(q)) return false;
     return true;
   });
@@ -240,6 +281,7 @@ function render() {
   }
 
   renderChips();
+  renderPanelGeneros();
   observador.disconnect();
   contadorEl.textContent = lista.length;
   listaEl.innerHTML = "";
@@ -252,7 +294,7 @@ function render() {
     } else {
       vacioEl.append("Ningún anime coincide con estos filtros.", el("br"), el("button", {
         className: "btn", textContent: "Quitar filtros",
-        onclick: () => { filtroEstado = ""; filtroGeneroEl.value = ""; ordenEl.value = ""; busquedaEl.value = ""; guardarFiltros(); render(); },
+        onclick: () => { filtroEstado = ""; filtroGeneros.clear(); ordenEl.value = ""; busquedaEl.value = ""; guardarFiltros(); render(); },
       }));
     }
     return;
@@ -349,13 +391,10 @@ function renderItem(anime) {
     if (await guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "status", valor: selectEstado.value }, selectEstado)) render();
   });
 
-  const selectGenero = crearSelect(GENEROS, anime.genre, true, "Sin género");
-  selectGenero.className = "genero";
-  selectGenero.title = selectGenero.ariaLabel = "Género";
-  selectGenero.addEventListener("change", async () => {
-    anime.genre = selectGenero.value;
-    if (await guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "genre", valor: selectGenero.value }, selectGenero)) render();
-  });
+  const gsAnime = parseGeneros(anime.genre);
+  const selectGenero = el("button", { className: "genero", type: "button", textContent: gsAnime.join(" · ") || "Sin género", title: gsAnime.join(", ") || "Añadir géneros" });
+  selectGenero.ariaLabel = "Géneros";
+  selectGenero.addEventListener("click", () => abrirDialogoGeneros(anime));
 
   info.append(link, selectEstado, selectGenero);
 
@@ -389,6 +428,98 @@ function renderItem(anime) {
 
   card.append(portada, info);
   return card;
+}
+
+// --- Diálogo de géneros: asignar varios a un anime y añadir / renombrar / quitar --
+
+// Aplica fn a los géneros de cada anime y guarda todos los cambios de una vez
+async function cambiarGeneroEnHoja(fn) {
+  const cambios = [];
+  todosLosAnimes.forEach((a) => {
+    const ant = parseGeneros(a.genre), nue = fn(ant);
+    if (nue.join("|") !== ant.join("|")) cambios.push({ a, valor: nue.join(", ") });
+  });
+  if (cambios.length) {
+    const res = await enviarMensaje({ type: "UPDATE_GENRES_BULK", cambios: cambios.map((c) => ({ row: c.a.row, valor: c.valor })) });
+    if (!res?.ok) { toast("No se pudo guardar el cambio"); return false; }
+    cambios.forEach((c) => { c.a.genre = c.valor; });
+  }
+  return true;
+}
+
+function abrirDialogoGeneros(anime) {
+  const sel = new Set(anime ? parseGeneros(anime.genre) : []);
+
+  async function renombrar(g) {
+    const n = limpiarGenero(prompt(`Nuevo nombre para «${g}» (se cambia en todos los animes):`, g));
+    if (!n || n === g) return;
+    if (!(await cambiarGeneroEnHoja((a) => unico(a.map((x) => (x === g ? n : x)))))) return;
+    catalogo = unico(catalogo.map((x) => (x === g ? n : x))); guardarCatalogo();
+    if (filtroGeneros.delete(g)) filtroGeneros.add(n);
+    if (sel.delete(g)) sel.add(n);
+    guardarFiltros(); pintar(); render();
+  }
+
+  async function quitar(g) {
+    const usos = todosLosAnimes.filter((a) => parseGeneros(a.genre).includes(g)).length;
+    if (!confirm(`¿Quitar «${g}»?` + (usos ? ` Se eliminará de ${usos} anime(s).` : ""))) return;
+    if (!(await cambiarGeneroEnHoja((a) => a.filter((x) => x !== g)))) return;
+    catalogo = catalogo.filter((x) => x !== g); guardarCatalogo();
+    filtroGeneros.delete(g); sel.delete(g);
+    guardarFiltros(); pintar(); render();
+  }
+
+  function pintar() {
+    dlgGenerosEl.innerHTML = "";
+    const lista = el("div", { className: "gen-lista" });
+    catalogo.forEach((g) => {
+      const fila = el("div", { className: "gen-fila" });
+      if (anime) {
+        const cb = el("input", { type: "checkbox", checked: sel.has(g) });
+        cb.addEventListener("change", () => { if (cb.checked) sel.add(g); else sel.delete(g); });
+        fila.append(el("label", { className: "gen-nombre" }, cb, g));
+      } else fila.append(el("span", { className: "gen-nombre", textContent: g }));
+      fila.append(
+        el("button", { className: "btn-mini", type: "button", textContent: "✎", title: "Renombrar", onclick: () => renombrar(g) }),
+        el("button", { className: "btn-mini peligro", type: "button", textContent: "✕", title: "Quitar", onclick: () => quitar(g) })
+      );
+      lista.append(fila);
+    });
+
+    const nuevo = el("input", { type: "text", placeholder: "Nuevo género", ariaLabel: "Nuevo género" });
+    const anadir = () => {
+      const n = limpiarGenero(nuevo.value);
+      if (!n) return;
+      if (!catalogo.includes(n)) catalogo.push(n);
+      if (anime) sel.add(n);
+      guardarCatalogo(); pintar(); render();
+    };
+    nuevo.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); anadir(); } });
+
+    const pie = el("div", { className: "gen-pie" });
+    if (anime) {
+      pie.append(
+        el("button", { className: "btn", type: "button", textContent: "Cancelar", onclick: () => dlgGenerosEl.close() }),
+        el("button", { className: "btn", type: "button", textContent: "Guardar", onclick: async () => {
+          const valor = catalogo.filter((g) => sel.has(g)).join(", ");
+          if (valor !== anime.genre) {
+            if (!(await guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "genre", valor }))) return;
+            anime.genre = valor;
+          }
+          dlgGenerosEl.close(); render();
+        } })
+      );
+    } else pie.append(el("button", { className: "btn", type: "button", textContent: "Cerrar", onclick: () => dlgGenerosEl.close() }));
+
+    dlgGenerosEl.append(
+      el("h2", { textContent: anime ? `Géneros: ${anime.title || "(sin título)"}` : "Gestionar géneros" }),
+      lista,
+      el("div", { className: "gen-add" }, nuevo, el("button", { className: "btn", type: "button", textContent: "Añadir", onclick: anadir })),
+      pie
+    );
+  }
+  pintar();
+  if (!dlgGenerosEl.open) dlgGenerosEl.showModal();
 }
 
 // --- Cabecera: modo edición y herramientas -------------------------------------
@@ -693,6 +824,7 @@ async function cargar() {
   }
 
   todosLosAnimes = res.lista;
+  sincronizarCatalogo();
   await inicializarContadorPortadas();
   render();
 }

@@ -449,6 +449,16 @@
     }}] }) });
   }
 
+  // Cambia la columna A de varias filas en una sola petición (renombrar/quitar géneros)
+  async function actualizarGenerosLote(cambios) {
+    await getSheetName();
+    if (!cambios?.length) return;
+    await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:cambios.map(c => ({ updateCells:{
+      range:{sheetId:gid,startRowIndex:c.row-1,endRowIndex:c.row,startColumnIndex:0,endColumnIndex:1},
+      rows:[{values:[{userEnteredValue:{stringValue:String(c.valor ?? "")}}]}], fields:"userEnteredValue"
+    }})) }) });
+  }
+
   async function actualizarTituloUrl(row, title, url) {
     await getSheetName();
     await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:[{ updateCells:{
@@ -571,6 +581,7 @@
       case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
       case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};
       case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
+      case "UPDATE_GENRES_BULK": await actualizarGenerosLote(msg.cambios); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};
       case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
