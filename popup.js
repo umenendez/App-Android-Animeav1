@@ -61,7 +61,7 @@ const listaStatusEl = $("listaStatus");
 let todosLosAnimes = [];
 let modoEdicion = false;
 let filtroEstado = "-"; // por defecto: viendo
-let filtroGeneros = new Set(); // filtro multiple: el anime debe tener TODOS los seleccionados
+let filtroGeneros = new Set(); // filtro múltiple: el anime debe tener TODOS los seleccionados (y puede tener más)
 const panelGenerosEl = $("panelGeneros");
 const dlgGenerosEl = $("dlgGeneros");
 
@@ -269,7 +269,7 @@ function render() {
     if (filtroEstado && a.status !== filtroEstado) return false;
     if (filtroGeneros.size) {
       const gs = parseGeneros(a.genre);
-      for (const g of filtroGeneros) if (!gs.includes(g)) return false;
+      for (const g of filtroGeneros) if (!gs.includes(g)) return false; // deben estar todos (puede tener más)
     }
     if (q && !normalizar(a.title).includes(q)) return false;
     return true;
