@@ -494,7 +494,7 @@ function renderItem(anime) {
     portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
   }
 
-  const inputScore = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0", max: "10", value: anime.score || "", placeholder: "–", title: "Nota (0-10)", ariaLabel: "Nota (0-10)" });
+  const inputScore = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0", max: "10", value: anime.score ?? "", placeholder: "–", title: "Nota (0-10)", ariaLabel: "Nota (0-10)" });
   aplicarColorNota(inputScore);
   inputScore.addEventListener("input", () => aplicarColorNota(inputScore));
   inputScore.addEventListener("change", () => {
