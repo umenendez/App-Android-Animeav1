@@ -144,12 +144,12 @@
     @media (min-width: 620px) { #lista { grid-template-columns: repeat(5, 1fr); } }
     @media (min-width: 860px) { #lista { grid-template-columns: repeat(6, 1fr); } }
     .card {
-      display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+      display: flex; flex-direction: column; min-width: 0; overflow: visible;
       background: color-mix(in srgb, var(--tinte) 12%, var(--surface));
       border: 1px solid color-mix(in srgb, var(--tinte) 40%, var(--border));
       border-radius: 12px;
     }
-    .portada { position: relative; aspect-ratio: 2 / 3; background: var(--field); }
+    .portada { position: relative; aspect-ratio: 2 / 3; background: var(--field); overflow: hidden; border-radius: 11px 11px 0 0; }
     .portada::after { content: ""; position: absolute; inset: auto 0 0 0; height: 3px; background: var(--st); }
     .cover { width: 100%; height: 100%; object-fit: cover; display: block; opacity: 0; transition: opacity .25s; }
     .cover.lista { opacity: 1; }
@@ -277,7 +277,7 @@
     .rating-btn.sin-nota { color:rgba(255,255,255,.72); }
     .rating-btn:active { transform:scale(.97); }
     .rating-popover {
-      position:absolute; top:25px; left:0; z-index:20; width:178px; padding:9px;
+      position:absolute; top:25px; left:0; z-index:20; width:min(178px, calc(100vw - 28px)); max-width:calc(100vw - 28px); box-sizing:border-box; padding:9px;
       border:1px solid var(--border); border-radius:10px; background:var(--surface); color:var(--text);
       box-shadow:0 8px 24px rgba(0,0,0,.28);
     }
@@ -285,7 +285,7 @@
     .rating-head { display:flex; align-items:center; gap:7px; margin-bottom:6px; }
     .rating-head strong { font-size:12px; flex:1; }
     .rating-value { font-size:13px; font-weight:800; }
-    .rating-range { width:100%; accent-color:var(--accent); }
+    .rating-range { display:block; width:100%; max-width:100%; min-width:0; box-sizing:border-box; accent-color:var(--accent); }
     .rating-escala { display:flex; justify-content:space-between; color:var(--muted); font-size:9px; }
     .rating-actions { display:flex; justify-content:space-between; gap:5px; margin-top:7px; }
     .rating-mini { border:1px solid var(--border); background:var(--field); border-radius:6px; padding:4px 7px; font-size:9.5px; }

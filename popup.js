@@ -505,8 +505,8 @@ function renderItem(anime) {
   const ratingButton = el("button", { className: "rating-btn", type: "button", title: "Cambiar valoración", ariaLabel: "Cambiar valoración" });
   const ratingPopover = el("div", { className: "rating-popover", hidden: true });
   const ratingValue = el("strong", { className: "rating-value" });
-  const ratingRange = el("input", { className: "rating-range", type: "range", min: "0", max: "10", step: "0.5" });
-  const ratingHead = el("div", { className: "rating-head" }, el("strong", { textContent: "Tu valoración" }), ratingValue);
+  const ratingRange = el("input", { className: "rating-range", type: "range", min: "0", max: "10", step: "0.1" });
+  const ratingHead = el("div", { className: "rating-head" }, el("strong", { textContent: "Tu valoración · /10" }), ratingValue);
   const ratingScale = el("div", { className: "rating-escala" }, el("span", { textContent: "0" }), el("span", { textContent: "5" }), el("span", { textContent: "10" }));
   const ratingActions = el("div", { className: "rating-actions" });
   const btnCinco = el("button", { className: "rating-mini", type: "button", textContent: "5" });
@@ -521,7 +521,7 @@ function renderItem(anime) {
     const limpio = String(valor ?? "").trim().replace(",", ".");
     const n = parseFloat(limpio);
     const valido = Number.isFinite(n) && n >= 0;
-    ratingButton.textContent = valido ? `★ ${n}` : "★ –";
+    ratingButton.textContent = valido ? `${n}/10` : "—/10";
     ratingButton.classList.toggle("sin-nota", !valido);
     ratingValue.textContent = valido ? String(n) : "—";
     ratingRange.value = valido ? String(Math.min(10, Math.max(0, n))) : "0";
