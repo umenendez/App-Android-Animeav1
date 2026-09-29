@@ -280,13 +280,6 @@ function renderEstadisticas() {
 
 if (btnStats) btnStats.addEventListener("click", () => { renderEstadisticas(); dlgStatsEl.showModal(); });
 
-document.addEventListener("click", (ev) => {
-  const control = ev.target.closest?.(".rating-control");
-  document.querySelectorAll(".rating-popover:not([hidden])").forEach((p) => {
-    if (!control || !control.contains(p)) p.hidden = true;
-  });
-});
-
 // --- Filtros -----------------------------------------------------------------
 
 function llenarSelect(select, primera, opciones) {
@@ -501,48 +494,21 @@ function renderItem(anime) {
     portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
   }
 
-  const ratingControl = el("div", { className: "rating-control" });
-  const ratingButton = el("button", { className: "rating-btn", type: "button", title: "Cambiar valoración", ariaLabel: "Cambiar valoración" });
-  const ratingPopover = el("div", { className: "rating-popover", hidden: true });
-  const ratingValue = el("strong", { className: "rating-value" });
-  const ratingRange = el("input", { className: "rating-range", type: "range", min: "0", max: "10", step: "0.1" });
-  const ratingHead = el("div", { className: "rating-head" }, el("strong", { textContent: "Tu valoración · /10" }), ratingValue);
-  const ratingScale = el("div", { className: "rating-escala" }, el("span", { textContent: "0" }), el("span", { textContent: "5" }), el("span", { textContent: "10" }));
-  const ratingActions = el("div", { className: "rating-actions" });
-  const btnCinco = el("button", { className: "rating-mini", type: "button", textContent: "5" });
-  const btnDiez = el("button", { className: "rating-mini", type: "button", textContent: "10" });
-  const btnLimpiar = el("button", { className: "rating-mini limpiar", type: "button", textContent: "Quitar" });
-  ratingActions.append(btnCinco, btnDiez, btnLimpiar);
-  ratingPopover.append(ratingHead, ratingRange, ratingScale, ratingActions);
-  ratingControl.append(ratingButton, ratingPopover);
-
-  let ratingOriginal = anime.score || "";
-  function actualizarRatingUI(valor) {
-    const limpio = String(valor ?? "").trim().replace(",", ".");
-    const n = parseFloat(limpio);
-    const valido = Number.isFinite(n) && n >= 0;
-    ratingButton.textContent = valido ? `${n}/10` : "—/10";
-    ratingButton.classList.toggle("sin-nota", !valido);
-    ratingValue.textContent = valido ? String(n) : "—";
-    ratingRange.value = valido ? String(Math.min(10, Math.max(0, n))) : "0";
-    ratingButton.title = valido ? `Valoración: ${n}/10 · Cambiar` : "Sin valoración · Añadir valoración";
-  }
-  actualizarRatingUI(ratingOriginal);
-
-  async function guardarRating(valor) {
-    const limpio = String(valor ?? "").trim().replace(",", ".");
-    anime.score = limpio;
-    actualizarRatingUI(limpio);
-    const ok = await guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor: limpio }, ratingButton);
-    if (ok) { ratingOriginal = limpio; ratingPopover.hidden = true; }
-    return ok;
-  }
-  ratingButton.addEventListener("click", (ev) => { ev.stopPropagation(); ratingPopover.hidden = !ratingPopover.hidden; });
-  ratingRange.addEventListener("input", () => actualizarRatingUI(ratingRange.value));
-  ratingRange.addEventListener("change", () => guardarRating(ratingRange.value));
-  btnCinco.addEventListener("click", () => guardarRating("5"));
-  btnDiez.addEventListener("click", () => guardarRating("10"));
-  btnLimpiar.addEventListener("click", () => guardarRating(""));
+  const inputScore = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0", max: "10", value: anime.score || "", placeholder: "–", title: "Nota (0-10)", ariaLabel: "Nota (0-10)" });
+  aplicarColorNota(inputScore);
+  inputScore.addEventListener("input", () => aplicarColorNota(inputScore));
+  inputScore.addEventListener("change", () => {
+    let valor = String(inputScore.value || "").replace(",", ".").trim();
+    if (valor !== "") {
+      const n = parseFloat(valor);
+      if (!Number.isFinite(n)) return;
+      valor = String(Math.min(10, Math.max(0, n)));
+      inputScore.value = valor;
+    }
+    anime.score = valor;
+    aplicarColorNota(inputScore);
+    guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor }, inputScore);
+  });
 
   const btnUltimoCap = el("a", { className: "btn-ultimo-cap", target: "_blank", title: "Ir al último capítulo visto", ariaLabel: "Último capítulo visto", textContent: "▶" });
   function actualizarBotonUltimoCap() {
@@ -551,7 +517,7 @@ function renderItem(anime) {
     btnUltimoCap.style.display = visible ? "flex" : "none";
   }
   actualizarBotonUltimoCap();
-  portada.append(ratingControl, btnUltimoCap);
+  portada.append(inputScore, btnUltimoCap);
 
   // Info
   const info = el("div", { className: "info" });

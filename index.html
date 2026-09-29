@@ -267,30 +267,6 @@
     .stats-nota span { color:var(--muted); }
     .stats-vacio { color:var(--muted); font-size:11px; }
 
-    /* Valoración visual */
-    .rating-control { position:absolute; top:5px; left:5px; z-index:3; }
-    .rating-btn {
-      min-width:39px; height:21px; padding:0 6px; border:1px solid rgba(255,255,255,.22);
-      border-radius:6px; background:rgba(15,20,29,.78); color:#fff; font-size:10px; font-weight:750;
-      cursor:pointer; backdrop-filter:blur(3px);
-    }
-    .rating-btn.sin-nota { color:rgba(255,255,255,.72); }
-    .rating-btn:active { transform:scale(.97); }
-    .rating-popover {
-      position:absolute; top:25px; left:0; z-index:20; width:min(178px, calc(100vw - 28px)); max-width:calc(100vw - 28px); box-sizing:border-box; padding:9px;
-      border:1px solid var(--border); border-radius:10px; background:var(--surface); color:var(--text);
-      box-shadow:0 8px 24px rgba(0,0,0,.28);
-    }
-    .rating-popover[hidden] { display:none; }
-    .rating-head { display:flex; align-items:center; gap:7px; margin-bottom:6px; }
-    .rating-head strong { font-size:12px; flex:1; }
-    .rating-value { font-size:13px; font-weight:800; }
-    .rating-range { display:block; width:100%; max-width:100%; min-width:0; box-sizing:border-box; accent-color:var(--accent); }
-    .rating-escala { display:flex; justify-content:space-between; color:var(--muted); font-size:9px; }
-    .rating-actions { display:flex; justify-content:space-between; gap:5px; margin-top:7px; }
-    .rating-mini { border:1px solid var(--border); background:var(--field); border-radius:6px; padding:4px 7px; font-size:9.5px; }
-    .rating-mini.limpiar { color:var(--accent); }
-
     /* Herramientas */
     #herramientas {
       flex-shrink: 0; max-height: 45%; overflow-y: auto;
