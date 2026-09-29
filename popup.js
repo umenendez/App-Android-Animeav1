@@ -241,16 +241,40 @@ function renderChips() {
   });
 }
 
+// "Sin género" es un filtro especial y excluyente con el resto de géneros
+const SIN = "__SIN_GENERO__";
+// Con varios géneros seleccionados deben estar todos (el anime puede tener más)
+function pasaGeneros(a, set) {
+  if (!set.size) return true;
+  const gs = parseGeneros(a.genre);
+  if (set.has(SIN)) return gs.length === 0;
+  for (const g of set) if (!gs.includes(g)) return false;
+  return true;
+}
+
 function renderPanelGeneros() {
   filtroGeneroEl.textContent = filtroGeneros.size ? `Géneros (${filtroGeneros.size})` : "Géneros";
   filtroGeneroEl.setAttribute("aria-pressed", String(filtroGeneros.size > 0));
   filtroGeneroEl.setAttribute("aria-expanded", String(!panelGenerosEl.hidden));
   panelGenerosEl.innerHTML = "";
-  catalogo.forEach((g) => {
-    const chip = el("button", { className: "chip", type: "button", textContent: g });
-    chip.setAttribute("aria-pressed", String(filtroGeneros.has(g)));
+  // Animes que cumplen los otros filtros (estado y búsqueda); sobre ellos se cuenta cada chip
+  const q = normalizar(busquedaEl.value.trim());
+  const base = todosLosAnimes.filter((a) => (!filtroEstado || a.status === filtroEstado) && (!q || normalizar(a.title).includes(q)));
+  // Cuántos resultados habría si ese chip estuviera activado junto a la selección actual
+  const cuenta = (g) => {
+    const s = new Set(filtroGeneros);
+    s.delete(SIN);
+    if (g !== SIN) s.add(g);
+    return base.filter((a) => (g === SIN ? parseGeneros(a.genre).length === 0 : pasaGeneros(a, s))).length;
+  };
+  [SIN, ...catalogo].forEach((g) => {
+    const n = cuenta(g), activo = filtroGeneros.has(g);
+    const chip = el("button", { className: "chip" + (n === 0 && !activo ? " vacio" : ""), type: "button" }, g === SIN ? "Sin género" : g, el("span", { className: "n", textContent: n }));
+    chip.setAttribute("aria-pressed", String(activo));
     chip.addEventListener("click", () => {
-      if (!filtroGeneros.delete(g)) filtroGeneros.add(g);
+      if (activo) filtroGeneros.delete(g);
+      else if (g === SIN) { filtroGeneros.clear(); filtroGeneros.add(SIN); }
+      else { filtroGeneros.delete(SIN); filtroGeneros.add(g); }
       guardarFiltros(); render();
     });
     panelGenerosEl.append(chip);
@@ -267,10 +291,7 @@ function render() {
 
   let lista = todosLosAnimes.filter((a) => {
     if (filtroEstado && a.status !== filtroEstado) return false;
-    if (filtroGeneros.size) {
-      const gs = parseGeneros(a.genre);
-      for (const g of filtroGeneros) if (!gs.includes(g)) return false; // deben estar todos (puede tener más)
-    }
+    if (!pasaGeneros(a, filtroGeneros)) return false;
     if (q && !normalizar(a.title).includes(q)) return false;
     return true;
   });
