@@ -257,32 +257,75 @@ function renderPanelGeneros() {
   filtroGeneroEl.setAttribute("aria-pressed", String(filtroGeneros.size > 0));
   filtroGeneroEl.setAttribute("aria-expanded", String(!panelGenerosEl.hidden));
   panelGenerosEl.innerHTML = "";
-  // Animes que cumplen los otros filtros (estado y búsqueda); sobre ellos se cuenta cada chip
+
+  // El selector muestra solo géneros relevantes para los resultados actuales,
+  // pero mantiene visibles los que ya están seleccionados.
   const q = normalizar(busquedaEl.value.trim());
-  const base = todosLosAnimes.filter((a) => (!filtroEstado || a.status === filtroEstado) && (!q || normalizar(a.title).includes(q)));
-  // Cuántos resultados habría si ese chip estuviera activado junto a la selección actual
-  const cuenta = (g) => {
-    const s = new Set(filtroGeneros);
-    s.delete(SIN);
-    if (g !== SIN) s.add(g);
-    return base.filter((a) => (g === SIN ? parseGeneros(a.genre).length === 0 : pasaGeneros(a, s))).length;
-  };
-  [SIN, ...catalogo].forEach((g) => {
-    const n = cuenta(g), activo = filtroGeneros.has(g);
-    const chip = el("button", { className: "chip" + (n === 0 && !activo ? " vacio" : ""), type: "button" }, g === SIN ? "Sin género" : g, el("span", { className: "n", textContent: n }));
-    chip.setAttribute("aria-pressed", String(activo));
-    chip.addEventListener("click", () => {
-      if (activo) filtroGeneros.delete(g);
-      else if (g === SIN) { filtroGeneros.clear(); filtroGeneros.add(SIN); }
-      else { filtroGeneros.delete(SIN); filtroGeneros.add(g); }
-      guardarFiltros(); render();
-    });
-    panelGenerosEl.append(chip);
+  const base = todosLosAnimes.filter((a) =>
+    (!filtroEstado || a.status === filtroEstado) &&
+    (!q || normalizar(a.title).includes(q))
+  );
+  const cuenta = (g) => base.filter((a) =>
+    g === SIN ? parseGeneros(a.genre).length === 0 : parseGeneros(a.genre).includes(g)
+  ).length;
+
+  const cabecera = el("div", { className: "generos-cabecera" },
+    el("span", { className: "generos-titulo", textContent: "Filtrar por género" }),
+    el("span", { className: "generos-contador", textContent: filtroGeneros.size ? `${filtroGeneros.size} seleccionados` : "Sin filtro" })
+  );
+
+  const busqueda = el("input", {
+    className: "generos-busqueda",
+    type: "search",
+    placeholder: "Buscar género…",
+    ariaLabel: "Buscar género"
   });
-  panelGenerosEl.append(
-    el("button", { className: "btn-mini", type: "button", textContent: "Limpiar", onclick: () => { filtroGeneros.clear(); guardarFiltros(); render(); } }),
+
+  const lista = el("div", { className: "generos-lista" });
+  const opciones = [SIN, ...catalogo];
+
+  function pintarOpciones() {
+    const texto = normalizar(busqueda.value.trim());
+    lista.innerHTML = "";
+    const visibles = opciones.filter((g) => !texto || normalizar(g === SIN ? "Sin género" : g).includes(texto));
+    if (!visibles.length) {
+      lista.append(el("div", { className: "generos-vacio", textContent: "No hay géneros que coincidan." }));
+      return;
+    }
+    visibles.forEach((g) => {
+      const cantidad = cuenta(g);
+      const cb = el("input", { type: "checkbox", checked: filtroGeneros.has(g) });
+      const fila = el("label", { className: "genero-opcion" },
+        cb,
+        el("span", { className: "nombre", textContent: g === SIN ? "Sin género" : g }),
+        el("span", { className: "cantidad", textContent: cantidad })
+      );
+      cb.addEventListener("change", () => {
+        if (g === SIN) {
+          if (cb.checked) { filtroGeneros.clear(); filtroGeneros.add(SIN); }
+          else filtroGeneros.delete(SIN);
+        } else {
+          if (cb.checked) { filtroGeneros.delete(SIN); filtroGeneros.add(g); }
+          else filtroGeneros.delete(g);
+        }
+        guardarFiltros();
+        render();
+      });
+      lista.append(fila);
+    });
+  }
+
+  busqueda.addEventListener("input", pintarOpciones);
+  pintarOpciones();
+
+  const pie = el("div", { className: "generos-pie" });
+  pie.append(
+    el("button", { className: "btn-mini", type: "button", textContent: "Limpiar", disabled: !filtroGeneros.size,
+      onclick: () => { filtroGeneros.clear(); guardarFiltros(); render(); }}),
     el("button", { className: "btn-mini", type: "button", textContent: "Gestionar géneros", onclick: () => abrirDialogoGeneros(null) })
   );
+
+  panelGenerosEl.append(cabecera, busqueda, lista, pie);
 }
 
 function render() {
