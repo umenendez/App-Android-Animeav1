@@ -437,7 +437,6 @@ function render() {
   renderChips();
   renderPanelGeneros();
   observador.disconnect();
-  contadorEl.textContent = lista.length;
   listaEl.innerHTML = "";
 
   vacioEl.hidden = lista.length > 0;
@@ -788,25 +787,20 @@ function iniciarPosicionamiento(row) {
   const candidate = posicionState.validas.find(a => Number(a.row) === Number(row));
   if (!candidate) return;
   const rated = posicionState.validas.filter(a => a !== candidate && notaNumero(a) != null);
-  if (!rated.length) {
-    toast("Necesitas al menos una serie valorada para compararla");
-    return;
-  }
+  if (!rated.length) { toast("Necesitas al menos una serie valorada para compararla"); return; }
   const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
-  const inicial = notaNumero(candidate) ?? mediana(rated.map(notaNumero));
+  const original = notaNumero(candidate);
+  const inicial = original ?? mediana(rated.map(notaNumero));
   working.set(candidate.row, inicial);
   posicionState = {
-    ...posicionState,
-    candidate,
-    rated,
-    working,
-    usados: [],
-    saltados: [],
-    comparaciones: 0,
-    estabilidad: 0,
-    anterior: inicial,
-    minComparaciones: 5,
-    maxComparaciones: Math.min(14, Math.max(7, rated.length + 2)),
+    ...posicionState, candidate, rated, working,
+    usados: [], saltados: [], comparaciones: 0,
+    estabilidad: 0, anterior: inicial,
+    inferior: null, superior: null,
+    minComparaciones: 4,
+    maxComparaciones: Math.min(18, Math.max(8, rated.length + 3)),
+    cambiosReferencias: new Set(),
+    extremoMas: 0, extremoMenos: 0
   };
   mostrarComparacion();
 }
@@ -814,22 +808,72 @@ function iniciarPosicionamiento(row) {
 function elegirComparador() {
   const s = posicionState;
   const disponibles = s.rated.filter(a => a !== s.candidate);
-  // Las referencias que el usuario ha saltado no vuelven a aparecer mientras
-  // haya otras disponibles. Si ya no quedan alternativas, se reciclan.
   const noSaltadas = disponibles.filter(a => !s.saltados.includes(a.row));
   const sinUsar = noSaltadas.filter(a => !s.usados.includes(a.row));
   let pool = sinUsar.length ? sinUsar : noSaltadas;
   if (!pool.length) {
     s.saltados = [];
-    const sinUsarRecicladas = disponibles.filter(a => !s.usados.includes(a.row));
-    pool = sinUsarRecicladas.length ? sinUsarRecicladas : disponibles;
+    pool = disponibles.filter(a => !s.usados.includes(a.row));
+    if (!pool.length) pool = disponibles;
   }
-  const score = s.working.get(s.candidate.row);
-  return pool.slice().sort((a,b) => {
-    const da = Math.abs((s.working.get(a.row) ?? 5) - score);
-    const db = Math.abs((s.working.get(b.row) ?? 5) - score);
-    return da - db;
-  })[0];
+  if (!pool.length) return null;
+  const low = s.inferior;
+  const high = s.superior;
+  let objetivo = s.working.get(s.candidate.row) ?? 5;
+  if (low != null && high != null) objetivo = (low + high) / 2;
+  else if (low != null) objetivo = Math.min(10, low + Math.max(0.15, (10 - low) / 2));
+  else if (high != null) objetivo = Math.max(0, high - Math.max(0.15, high / 2));
+  return pool.slice().sort((a,b) =>
+    Math.abs((s.working.get(a.row) ?? 5) - objetivo) - Math.abs((s.working.get(b.row) ?? 5) - objetivo)
+  )[0];
+}
+
+function posicionTerminada(s) {
+  if (s.extremoMas >= 3) { s.working.set(s.candidate.row, 10); return true; }
+  if (s.extremoMenos >= 3) { s.working.set(s.candidate.row, 0); return true; }
+  if (s.inferior != null && s.superior != null) {
+    return (s.superior - s.inferior) <= 0.20 && s.comparaciones >= s.minComparaciones;
+  }
+  if (s.inferior != null && s.inferior >= 9.85) return true;
+  if (s.superior != null && s.superior <= 0.15) return true;
+  return s.comparaciones >= s.maxComparaciones;
+}
+
+function actualizarEstimacion(s, tipo, rivalScore) {
+  if (tipo === "más") s.inferior = Math.max(s.inferior ?? -Infinity, rivalScore);
+  else if (tipo === "menos") s.superior = Math.min(s.superior ?? Infinity, rivalScore);
+  else {
+    s.inferior = Math.max(s.inferior ?? -Infinity, rivalScore - 0.10);
+    s.superior = Math.min(s.superior ?? Infinity, rivalScore + 0.10);
+  }
+  let nueva;
+  if (s.inferior != null && s.superior != null) nueva = (s.inferior + s.superior) / 2;
+  else if (s.inferior != null) nueva = Math.min(10, s.inferior + Math.max(0.1, (10 - s.inferior) * 0.55));
+  else if (s.superior != null) nueva = Math.max(0, s.superior - Math.max(0.1, s.superior * 0.55));
+  else nueva = s.working.get(s.candidate.row) ?? 5;
+  return notaRedondeada(nueva);
+}
+
+function ajustarReferenciasEnIntervalo(s) {
+  if (s.inferior == null || s.superior == null) return;
+  const gap = s.superior - s.inferior;
+  if (gap <= 0.20 || gap > 1.0) return;
+  // Solo ajustamos referencias cuando ya existe un verdadero intervalo:
+  // la candidata ha quedado por encima de una y por debajo de otra.
+  const inferior = s.rated.filter(a => (s.working.get(a.row) ?? -99) <= s.inferior + 0.001).sort((a,b) => (s.working.get(b.row) ?? -99) - (s.working.get(a.row) ?? -99))[0];
+  const superior = s.rated.filter(a => (s.working.get(a.row) ?? 99) >= s.superior - 0.001).sort((a,b) => (s.working.get(a.row) ?? 99) - (s.working.get(b.row) ?? 99))[0];
+  const objetivo = s.working.get(s.candidate.row);
+  const paso = Math.min(0.035, gap * 0.08);
+  if (inferior && objetivo > s.inferior && !s.cambiosReferencias.has(`i:${inferior.row}:${s.comparaciones}`)) {
+    const nuevo = Math.min(s.superior - 0.02, (s.working.get(inferior.row) ?? s.inferior) + paso);
+    if (nuevo > s.working.get(inferior.row)) { s.working.set(inferior.row, nuevo); s.cambiosReferencias.add(`i:${inferior.row}:${s.comparaciones}`); }
+  }
+  if (superior && objetivo < s.superior && !s.cambiosReferencias.has(`s:${superior.row}:${s.comparaciones}`)) {
+    const nuevo = Math.max(s.inferior + 0.02, (s.working.get(superior.row) ?? s.superior) - paso);
+    if (nuevo < s.working.get(superior.row)) { s.working.set(superior.row, nuevo); s.cambiosReferencias.add(`s:${superior.row}:${s.comparaciones}`); }
+  }
+  s.inferior = Math.min(s.superior, s.inferior);
+  s.superior = Math.max(s.inferior, s.superior);
 }
 
 function mostrarComparacion() {
@@ -845,20 +889,12 @@ function mostrarComparacion() {
   const scoreActual = s.working.get(candidate.row);
   const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}`;
   const botones = el("div", { className: "pos-votos" });
-  [
-    ["más", "↑", "pos-mas"],
-    ["igual", "=", "pos-igual"],
-    ["menos", "↓", "pos-menos"]
-  ].forEach(([tipo, icono, clase]) => {
+  [["más", "↑", "pos-mas"],["igual", "=", "pos-igual"],["menos", "↓", "pos-menos"]].forEach(([tipo, icono, clase]) => {
     const b = el("button", { className: `pos-voto ${clase}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: tipo === "más" ? "Me ha gustado más" : tipo === "menos" ? "Me ha gustado menos" : "Me han gustado igual" }));
-    b.addEventListener("click", () => responderPosicionamiento(tipo));
-    botones.append(b);
+    b.addEventListener("click", () => responderPosicionamiento(tipo)); botones.append(b);
   });
   const saltar = el("button", { className: "btn-mini", type: "button", textContent: "Saltar →", title: "No he visto esta serie" });
-  saltar.addEventListener("click", () => {
-    if (!s.saltados.includes(rival.row)) s.saltados.push(rival.row);
-    mostrarComparacion();
-  });
+  saltar.addEventListener("click", () => { if (!s.saltados.includes(rival.row)) s.saltados.push(rival.row); mostrarComparacion(); });
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
@@ -869,40 +905,28 @@ function mostrarComparacion() {
       el("div", { className: "pos-vs", textContent: "VS" }),
       el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
     ),
-    el("p", { className: "pos-question", textContent: "¿Cuál te ha gustado más?" }),
-    botones,
-    el("div", { className: "pos-foot" },
-      el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }),
-      el("div", { className: "pos-foot-actions" }, saltar, cerrar)
-    )
+    el("p", { className: "pos-question", textContent: "¿Cuál te ha gustado más?" }), botones,
+    el("div", { className: "pos-foot" }, el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, saltar, cerrar))
   );
 }
 
 async function responderPosicionamiento(tipo) {
-  const s = posicionState;
-  if (!s?.rival) return;
+  const s = posicionState; if (!s?.rival) return;
   const a = s.candidate, b = s.rival;
   const oldA = s.working.get(a.row) ?? 5;
   const oldB = s.working.get(b.row) ?? 5;
-  const diff = oldB - oldA;
-  const expected = 1 / (1 + Math.pow(10, diff / 2));
-  const actual = tipo === "más" ? 1 : tipo === "menos" ? 0 : 0.5;
-  const k = Math.max(0.22, 0.46 - s.comparaciones * 0.025);
-  const cambio = k * (actual - expected);
-  const newA = Math.min(10, Math.max(0, oldA + cambio));
-  // Los títulos ya valorados actúan como anclas: pueden moverse, pero muy poco.
-  const movimientoReferencia = cambio * 0.28;
-  const newB = Math.min(10, Math.max(0, oldB - movimientoReferencia));
-  s.working.set(a.row, newA); s.working.set(b.row, newB);
+  const nueva = actualizarEstimacion(s, tipo, oldB);
+  s.working.set(a.row, nueva);
+  const rivalScore = oldB;
+  const maxRated = Math.max(...s.rated.map(x => s.working.get(x.row) ?? 0));
+  const minRated = Math.min(...s.rated.map(x => s.working.get(x.row) ?? 10));
+  if (tipo === "más" && rivalScore >= maxRated - 0.001 && s.inferior != null && s.superior == null) { s.extremoMas++; } else if (tipo !== "más") s.extremoMas = 0;
+  if (tipo === "menos" && rivalScore <= minRated + 0.001 && s.superior != null && s.inferior == null) { s.extremoMenos++; } else if (tipo !== "menos") s.extremoMenos = 0;
   s.usados.push(b.row); s.comparaciones++;
-  const delta = Math.abs(newA - s.anterior);
-  s.anterior = newA;
-  s.estabilidad = delta < 0.045 ? s.estabilidad + 1 : 0;
-  if (s.comparaciones >= s.minComparaciones && s.estabilidad >= 3 || s.comparaciones >= s.maxComparaciones) {
-    await finalizarPosicionamiento();
-  } else {
-    mostrarComparacion();
-  }
+  const delta = Math.abs(nueva - s.anterior); s.anterior = nueva;
+  s.estabilidad = delta < 0.05 ? s.estabilidad + 1 : 0;
+  ajustarReferenciasEnIntervalo(s);
+  if (posicionTerminada(s)) await finalizarPosicionamiento(); else mostrarComparacion();
 }
 
 async function finalizarPosicionamiento() {
@@ -917,18 +941,11 @@ async function finalizarPosicionamiento() {
     const nueva = notaRedondeada(valor);
     // Las referencias existentes solo aparecen si han cambiado de verdad;
     // la candidata siempre aparece para que el usuario pueda revisar su nota.
-    if (anime === s.candidate || original == null || Math.abs(nueva - original) >= 0.01) {
+    if (anime !== s.candidate && original != null && Math.abs(nueva - original) >= 0.01) {
       cambios.push({ anime, original, nueva });
     }
   });
 
-  if (!cambios.some(c => c.anime === s.candidate)) {
-    cambios.push({
-      anime: s.candidate,
-      original: notaNumero(s.candidate),
-      nueva: notaRedondeada(s.working.get(s.candidate.row))
-    });
-  }
 
   const filas = cambios.map(c => {
     const antes = c.original == null ? "Sin nota" : c.original.toFixed(1);
@@ -940,9 +957,8 @@ async function finalizarPosicionamiento() {
     );
   });
 
-  const otras = cambios.filter(c => c.anime !== s.candidate && c.original != null && Math.abs(c.nueva - c.original) >= 0.05);
-  const resumen = otras.length
-    ? `Además, ${otras.length} ${otras.length === 1 ? "nota existente ha cambiado" : "notas existentes han cambiado"}.`
+  const resumen = cambios.length
+    ? `${cambios.length} ${cambios.length === 1 ? "nota existente ha cambiado" : "notas existentes han cambiado"}.`
     : "Ninguna otra nota ha cambiado.";
 
   dlgPosicionarEl.innerHTML = "";
@@ -950,11 +966,12 @@ async function finalizarPosicionamiento() {
   guardarBtn.addEventListener("click", () => {
     // Actualizamos la interfaz inmediatamente y dejamos el guardado remoto
     // ejecutándose en segundo plano.
-    cambios.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
+    const todosCambios = [{ anime: s.candidate, nueva: notaRedondeada(s.working.get(s.candidate.row)) }, ...cambios];
+    todosCambios.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
     dlgPosicionarEl.close();
     render();
     toast("Posicionamiento guardado localmente");
-    Promise.all(cambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
+    Promise.all(todosCambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
       .then(resultados => {
         if (resultados.some(ok => !ok)) toast("Algunas notas no pudieron sincronizarse con Google Sheets");
         else toast("Posicionamiento sincronizado");
@@ -967,7 +984,7 @@ async function finalizarPosicionamiento() {
       el("div", { className: "pos-check", textContent: "✓" }),
       el("h2", { textContent: "¡Serie posicionada!" }),
       el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(s.candidate) }),
-      el("div", { className: "pos-nota-final", textContent: s.working.get(s.candidate.row).toFixed(1) }),
+      el("div", { className: "pos-nota-final", textContent: `${notaNumero(s.candidate) == null ? "Sin nota" : notaNumero(s.candidate).toFixed(1)} → ${s.working.get(s.candidate.row).toFixed(1)}` }),
       el("p", { textContent: `${s.comparaciones} comparaciones realizadas.` })
     ),
     el("div", { className: "pos-cambios-panel" },
