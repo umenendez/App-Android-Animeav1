@@ -1058,7 +1058,9 @@ async function finalizarPosicionamiento() {
 let empateState = null;
 
 function abrirSeparadorEmpates() {
-  const validas = posicionState?.validas || todosLosAnimes;
+  // El separador de empates trabaja exclusivamente con series marcadas como
+  // "Sin ver". Las demás series no deben aparecer en este flujo.
+  const validas = todosLosAnimes.filter(a => a && a.status === "✖" && a.row != null && a.title);
   const mapa = new Map();
   validas.forEach(a => {
     const n = notaNumero(a);
@@ -1209,47 +1211,39 @@ function responderEmpate(tipo) {
 }
 
 function obtenerNotasDisponiblesParaEmpate(s) {
-  const otras = new Set(
-    todosLosAnimes
-      .filter(a => !s.items.includes(a))
-      .map(notaNumero)
-      .filter(n => n != null)
-      .map(n => Math.round(n * 10))
-  );
-  const base = Math.round(s.score * 10);
   const cantidad = s.items.length;
   if (cantidad < 1) return [];
 
-  // Una separación de empate debe permanecer cerca de la nota original.
-  // Antes se buscaba el mejor bloque en TODO 0.0-10.0; si las décimas cercanas
-  // estaban ocupadas, el algoritmo podía terminar encontrando, por ejemplo,
-  // 2.1-2.9 para un empate de 9.0. Eso es conceptualmente incorrecto.
+  // Las décimas NO son un recurso exclusivo: una misma décima puede asignarse
+  // a varias series. Esto es necesario porque 0.0..10.0 con una decimal solo
+  // proporciona 101 valores distintos y la lista puede contener cientos de
+  // series.
   //
-  // Buscamos bloques consecutivos de la longitud necesaria cuyo centro esté
-  // lo más cerca posible de la nota original. Limitamos además la desviación
-  // máxima para no convertir una separación en una renotación global.
-  const maxDesviacion = Math.max(5, Math.ceil((cantidad - 1) / 2) + 3); // décimas
-  let mejor = null;
+  // Para conservar el comportamiento anterior cuando el grupo es pequeño,
+  // usamos tantas décimas distintas como sea posible, centradas alrededor de
+  // la nota original. Cuando hay más de 101 series, reutilizamos las décimas
+  // del rango 0.0..10.0 de forma equilibrada.
+  const base = Math.round(s.score * 10);
+  const maxValores = 101;
+  const cantidadValores = Math.min(cantidad, maxValores);
 
-  for (let start = Math.max(0, base - maxDesviacion - cantidad); start <= Math.min(100 - cantidad + 1, base + maxDesviacion); start++) {
-    const bloque = Array.from({ length: cantidad }, (_, i) => start + i);
-    if (bloque.some(x => otras.has(x))) continue;
+  // Ventana de décimas centrada en la nota original. Si no cabe completa por
+  // los extremos 0.0/10.0, se desplaza hasta entrar en el rango.
+  let inicio = Math.max(0, base - Math.floor((cantidadValores - 1) / 2));
+  inicio = Math.min(inicio, maxValores - cantidadValores);
+  const valores = Array.from({ length: cantidadValores }, (_, i) => inicio + i);
 
-    const centro = (bloque[0] + bloque[bloque.length - 1]) / 2;
-    const distanciaCentro = Math.abs(centro - base);
-    const desviacionMax = Math.max(...bloque.map(x => Math.abs(x - base)));
-    if (desviacionMax > maxDesviacion) continue;
-
-    // Penalizamos ligeramente alejarse de la nota original; el criterio
-    // principal sigue siendo mantener el bloque centrado alrededor de ella.
-    const distanciaTotal = bloque.reduce((sum, x) => sum + Math.abs(x - base), 0);
-    const coste = distanciaCentro * 100 + distanciaTotal;
-    if (!mejor || coste < mejor.coste) mejor = { bloque, coste, distanciaCentro };
+  // Distribuye las series ordenadas entre las décimas. Cada valor puede
+  // repetirse las veces necesarias y la secuencia siempre es descendente,
+  // de modo que el orden obtenido mediante las comparaciones se conserva.
+  const resultado = [];
+  for (let i = 0; i < cantidad; i++) {
+    const indice = Math.floor(i * cantidadValores / cantidad);
+    resultado.push(valores[Math.min(indice, cantidadValores - 1)]);
   }
 
-  return mejor?.bloque || [];
+  return resultado;
 }
-
 function finalizarSeparacionEmpate() {
   const s = empateState;
   if (!s) return;
