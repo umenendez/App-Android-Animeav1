@@ -524,9 +524,18 @@
     return { row: fila, title: titulo, url, cover: cover || "", status: ESTADO_VIENDO };
   }
 
+  function guardarPortadasActivado() {
+    try { return localStorage.getItem("guardarPortadas") !== "false"; } catch (e) { return true; }
+  }
+
   async function precachearImagen(url) {
-    if (!url) return;
-    try { const cache = await caches.open(COVER_CACHE); if (!(await cache.match(url))) { const r=await fetch(url); if(r.ok) await cache.put(url,r.clone()); } } catch(e) {}
+    if (!url || !guardarPortadasActivado()) return;
+    try {
+      const cache = await caches.open(COVER_CACHE);
+      if (await cache.match(url)) return;
+      const r = await fetch(url, { mode: "no-cors", credentials: "omit" });
+      if (r && (r.ok || r.type === "opaque")) await cache.put(url, r.clone());
+    } catch(e) {}
   }
 
   function extraerPortadaDesdeHtml(html) {
