@@ -172,11 +172,11 @@ function aplicarPreferenciaPortadas() {
 
 async function cargarPortada(url, soloCache = false) {
   if (!url) return url;
+
+  // La URL original siempre sigue siendo la fuente de la imagen. La caché
+  // solo añade una copia local; nunca debe impedir que <img> cargue la portada.
   if (!guardarPortadasActivado()) return url;
 
-  // Cache Storage no sustituye automáticamente una URL externa en <img>.
-  // Por eso, cuando encontramos/guardamos una copia, creamos un objectURL
-  // que sí puede utilizar directamente la etiqueta <img>.
   try {
     const cache = await caches.open(COVER_CACHE);
     let respuesta = await cache.match(url);
@@ -193,24 +193,24 @@ async function cargarPortada(url, soloCache = false) {
       } finally {
         clearTimeout(timeoutId);
       }
+
       if (!respuesta || (!respuesta.ok && respuesta.type !== "opaque")) {
         throw new Error(`No se pudo descargar la portada (${respuesta?.status ?? "sin respuesta"})`);
       }
+
       await cache.put(url, respuesta.clone());
     }
-
-    if (!respuesta) return url;
 
     portadasEnCache.add(url);
     actualizarContadorPortadas();
 
-    if (!blobUrls.has(url)) {
-      const blob = await respuesta.blob();
-      blobUrls.set(url, URL.createObjectURL(blob));
-    }
-    return blobUrls.get(url);
+    // No convertimos respuestas opaque del CDN a Blob. El navegador puede
+    // mostrar directamente la URL y el Service Worker servirá la copia
+    // almacenada cuando exista.
+    return url;
   } catch (e) {
-    console.error("[AnimeAV1 Tracker] No se pudo cargar/guardar la portada:", url, e);
+    console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e);
+    // Aunque falle la caché, la portada debe seguir funcionando desde Internet.
     return url;
   }
 }

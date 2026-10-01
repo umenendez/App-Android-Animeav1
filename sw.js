@@ -1,4 +1,4 @@
-const CACHE = "animeav1-pwa-v11";
+const CACHE = "animeav1-pwa-v12";
 const COVER_CACHE = "anime-covers-v1";
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
 
@@ -26,8 +26,15 @@ self.addEventListener("fetch", event => {
   const request = event.request;
   const url = new URL(request.url);
 
-  // Las portadas las gestiona popup.js/pwa-api.js según la preferencia
-  // del usuario. El Service Worker no las guarda automáticamente.
+  // Si ya existe una copia local de una portada, servirla directamente.
+  // Esto permite que <img src="URL-original"> use la copia guardada sin
+  // convertir respuestas CORS/opaque en Blob.
+  if (request.method === "GET" && request.destination === "image") {
+    event.respondWith(
+      caches.match(request).then(cached => cached || fetch(request))
+    );
+    return;
+  }
 
   // Archivos de la propia PWA: red primero (así las actualizaciones llegan
   // solas) y, si no hay conexión, la copia guardada.
