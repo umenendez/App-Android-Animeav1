@@ -1058,9 +1058,9 @@ async function finalizarPosicionamiento() {
 let empateState = null;
 
 function abrirSeparadorEmpates() {
-  // El separador de empates trabaja exclusivamente con series marcadas como
-  // "Sin ver". Las demás series no deben aparecer en este flujo.
-  const validas = todosLosAnimes.filter(a => a && a.status === "✖" && a.row != null && a.title);
+  // El separador de empates excluye las series marcadas como "Sin ver".
+  // Solo las series con otro estado participan en este flujo.
+  const validas = todosLosAnimes.filter(a => a && a.status !== "✖" && a.row != null && a.title);
   const mapa = new Map();
   validas.forEach(a => {
     const n = notaNumero(a);
