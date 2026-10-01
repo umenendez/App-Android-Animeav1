@@ -775,7 +775,7 @@ function renderPosicionInicio() {
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
-    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." }))),
+    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." })), el("button", { className: "btn-mini", type: "button", textContent: "Separar notas iguales", title: "Ordenar series que tienen la misma nota", onclick: abrirSeparadorEmpates })) ,
     el("div", { className: "pos-selector-toolbar" }, buscador, estado, genero, orden),
     lista, mensaje,
     el("div", { className: "pos-help" }, el("strong", { textContent: `${sinNota.length} sin valorar` }), " · Pulsa una tarjeta para comenzar. También puedes recolocar una serie ya valorada."),
@@ -1047,6 +1047,243 @@ async function finalizarPosicionamiento() {
       guardarBtn,
       el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() })
     )
+  );
+}
+
+
+// --- Separador de empates ------------------------------------------------------
+// Ordena únicamente las series que comparten una misma décima. La nota sigue
+// siendo una nota decimal real: al terminar, las series se redistribuyen entre
+// las décimas disponibles más cercanas a su nota original.
+let empateState = null;
+
+function abrirSeparadorEmpates() {
+  const validas = posicionState?.validas || todosLosAnimes;
+  const mapa = new Map();
+  validas.forEach(a => {
+    const n = notaNumero(a);
+    if (n == null) return;
+    const key = notaRedondeada(n).toFixed(1);
+    if (!mapa.has(key)) mapa.set(key, { score: notaRedondeada(n), items: [] });
+    mapa.get(key).items.push(a);
+  });
+  const grupos = Array.from(mapa.values()).filter(g => g.items.length >= 2).sort((a,b) => b.score - a.score);
+  if (!grupos.length) {
+    toast("No hay notas repetidas que separar");
+    return;
+  }
+  mostrarSelectorEmpate(grupos);
+}
+
+function mostrarSelectorEmpate(grupos) {
+  dlgPosicionarEl.innerHTML = "";
+  const lista = el("div", { className: "pos-selector-grid" });
+  grupos.forEach(g => {
+    const card = el("button", { className: "pos-selector-card", type: "button", title: `Separar las ${g.items.length} series con ${g.score.toFixed(1)}` });
+    const portada = el("div", { className: "pos-selector-portada" });
+    const img = el("img", { alt: "" });
+    posicionPortada(g.items[0], img); portada.append(img);
+    const info = el("div", { className: "pos-selector-info" });
+    info.append(el("strong", { textContent: `Nota ${g.score.toFixed(1)}` }), el("span", { className: "pos-selector-nota", textContent: `${g.items.length} series` }), el("small", { textContent: "Pulsa para ordenar este empate" }));
+    card.append(portada, info);
+    card.addEventListener("click", () => iniciarSeparacionEmpate(g.score));
+    lista.append(card);
+  });
+  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgPosicionarEl.close() });
+  dlgPosicionarEl.append(
+    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "↕" }), el("div", {}, el("h2", { textContent: "Separar notas iguales" }), el("p", { textContent: "Compara las series que tienen la misma décima y conviértelas en un orden real con notas decimales." }))),
+    el("p", { className: "pos-help", textContent: "La aplicación usa búsqueda binaria para ordenar el grupo con el menor número de comparaciones posible. Después utiliza las décimas disponibles más cercanas a la nota original." }),
+    lista,
+    el("div", { className: "pos-actions" }, cerrar)
+  );
+  if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
+}
+
+function iniciarSeparacionEmpate(score) {
+  const validas = posicionState?.validas || todosLosAnimes;
+  const grupo = validas.filter(a => notaNumero(a) === score);
+  if (grupo.length < 2) return;
+  empateState = {
+    score,
+    items: grupo,
+    sorted: [],
+    pending: [],
+    comparaciones: 0,
+    historial: [],
+    cambios: []
+  };
+  // Merge sort interactivo: óptimo en número de comparaciones en el peor caso.
+  prepararMergeEmpate();
+}
+
+function prepararMergeEmpate() {
+  const s = empateState;
+  s.runs = s.items.map(a => [a]);
+  s.nextRuns = [];
+  s.runIndex = 0;
+  s.left = null;
+  s.right = null;
+  s.phase = "merge";
+  siguienteMergeEmpate();
+}
+
+function siguienteMergeEmpate() {
+  const s = empateState;
+  if (!s) return;
+  if (s.runs.length <= 1) return finalizarSeparacionEmpate();
+  if (!s.currentLeft) {
+    if (s.runIndex >= s.runs.length) {
+      s.runs = s.nextRuns;
+      s.nextRuns = [];
+      s.runIndex = 0;
+      if (s.runs.length <= 1) return finalizarSeparacionEmpate();
+    }
+    s.currentLeft = s.runs[s.runIndex];
+    s.currentRight = s.runs[s.runIndex + 1] || [];
+    s.merged = [];
+    s.leftIndex = 0;
+    s.rightIndex = 0;
+    s.runIndex += 2;
+  }
+  if (s.leftIndex >= s.currentLeft.length) {
+    s.merged.push(...s.currentRight.slice(s.rightIndex));
+    s.nextRuns.push(s.merged);
+    s.currentLeft = null;
+    s.currentRight = null;
+    return siguienteMergeEmpate();
+  }
+  if (s.rightIndex >= s.currentRight.length) {
+    s.merged.push(...s.currentLeft.slice(s.leftIndex));
+    s.nextRuns.push(s.merged);
+    s.currentLeft = null;
+    s.currentRight = null;
+    return siguienteMergeEmpate();
+  }
+  const a = s.currentLeft[s.leftIndex];
+  const b = s.currentRight[s.rightIndex];
+  mostrarComparacionEmpate(a, b);
+}
+
+function mostrarComparacionEmpate(a, b) {
+  const s = empateState;
+  dlgPosicionarEl.innerHTML = "";
+  const ia = el("img", { className: "pos-cover", alt: "" });
+  const ib = el("img", { className: "pos-cover", alt: "" });
+  posicionPortada(a, ia); posicionPortada(b, ib);
+  const botones = el("div", { className: "pos-votos" });
+  [["a", "↑", "Me gusta más"], ["igual", "=", "Me gustan igual"], ["b", "↓", "Me gusta más"]].forEach(([tipo, icono, texto], i) => {
+    const btt = el("button", { className: `pos-voto ${i === 0 ? "pos-mas" : i === 2 ? "pos-menos" : "pos-igual"}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: i === 1 ? texto : `${texto}: ${i === 0 ? posicionTitulo(a) : posicionTitulo(b)}` }));
+    btt.addEventListener("click", () => responderEmpate(tipo));
+    botones.append(btt);
+  });
+  dlgPosicionarEl.append(
+    el("div", { className: "pos-topline" }, el("span", { textContent: "SEPARAR EMPATE" }), el("span", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}` })),
+    el("div", { className: "pos-estimacion" }, el("span", { textContent: `TODAS TENÍAN ${s.score.toFixed(1)}` }), el("strong", { textContent: String(s.items.length) }), el("small", { textContent: "La nota se mantendrá decimal; se redistribuirán décimas al terminar." })),
+    el("div", { className: "pos-comparacion" },
+      el("div", { className: "pos-serie" }, ia, el("strong", { textContent: posicionTitulo(a) }), el("small", { textContent: "Empate actual" })),
+      el("div", { className: "pos-vs", textContent: "VS" }),
+      el("div", { className: "pos-serie" }, ib, el("strong", { textContent: posicionTitulo(b) }), el("small", { textContent: "Empate actual" }))
+    ),
+    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
+    el("div", { className: "pos-foot" }, el("span", { textContent: "Si son exactamente iguales, puedes conservar el empate." }))
+  );
+}
+
+function responderEmpate(tipo) {
+  const s = empateState;
+  if (!s) return;
+  const a = s.currentLeft[s.leftIndex];
+  const b = s.currentRight[s.rightIndex];
+  s.comparaciones++;
+  s.historial.push({ a: a.row, b: b.row, tipo });
+  if (tipo === "a") {
+    s.merged.push(a); s.leftIndex++;
+  } else if (tipo === "b") {
+    s.merged.push(b); s.rightIndex++;
+  } else {
+    // Un empate subjetivo no necesita otra comparación; mantenemos el orden estable.
+    s.merged.push(a); s.leftIndex++;
+    s.merged.push(b); s.rightIndex++;
+  }
+  siguienteMergeEmpate();
+}
+
+function obtenerNotasDisponiblesParaEmpate(s) {
+  const otras = new Set(
+    todosLosAnimes
+      .filter(a => !s.items.includes(a))
+      .map(notaNumero)
+      .filter(n => n != null)
+      .map(n => Math.round(n * 10))
+  );
+  const base = Math.round(s.score * 10);
+  const cantidad = s.items.length;
+  if (cantidad < 1) return [];
+
+  // Una separación de empate debe permanecer cerca de la nota original.
+  // Antes se buscaba el mejor bloque en TODO 0.0-10.0; si las décimas cercanas
+  // estaban ocupadas, el algoritmo podía terminar encontrando, por ejemplo,
+  // 2.1-2.9 para un empate de 9.0. Eso es conceptualmente incorrecto.
+  //
+  // Buscamos bloques consecutivos de la longitud necesaria cuyo centro esté
+  // lo más cerca posible de la nota original. Limitamos además la desviación
+  // máxima para no convertir una separación en una renotación global.
+  const maxDesviacion = Math.max(5, Math.ceil((cantidad - 1) / 2) + 3); // décimas
+  let mejor = null;
+
+  for (let start = Math.max(0, base - maxDesviacion - cantidad); start <= Math.min(100 - cantidad + 1, base + maxDesviacion); start++) {
+    const bloque = Array.from({ length: cantidad }, (_, i) => start + i);
+    if (bloque.some(x => otras.has(x))) continue;
+
+    const centro = (bloque[0] + bloque[bloque.length - 1]) / 2;
+    const distanciaCentro = Math.abs(centro - base);
+    const desviacionMax = Math.max(...bloque.map(x => Math.abs(x - base)));
+    if (desviacionMax > maxDesviacion) continue;
+
+    // Penalizamos ligeramente alejarse de la nota original; el criterio
+    // principal sigue siendo mantener el bloque centrado alrededor de ella.
+    const distanciaTotal = bloque.reduce((sum, x) => sum + Math.abs(x - base), 0);
+    const coste = distanciaCentro * 100 + distanciaTotal;
+    if (!mejor || coste < mejor.coste) mejor = { bloque, coste, distanciaCentro };
+  }
+
+  return mejor?.bloque || [];
+}
+
+function finalizarSeparacionEmpate() {
+  const s = empateState;
+  if (!s) return;
+  if (s.currentLeft) {
+    s.merged.push(...s.currentLeft.slice(s.leftIndex), ...s.currentRight.slice(s.rightIndex));
+    s.nextRuns.push(s.merged);
+    s.currentLeft = null;
+    s.currentRight = null;
+  }
+  if (s.runs.length > 1) return siguienteMergeEmpate();
+  s.sorted = s.runs[0] || [];
+  const disponibles = obtenerNotasDisponiblesParaEmpate(s);
+  dlgPosicionarEl.innerHTML = "";
+  if (disponibles.length < s.sorted.length) {
+    dlgPosicionarEl.append(
+      el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "!" }), el("h2", { textContent: "No hay suficientes décimas libres" }), el("p", { textContent: `Has ordenado las ${s.sorted.length} series de ${s.score.toFixed(1)}, pero solo hay ${disponibles.length} décimas consecutivas libres sin tocar otras notas. No voy a cambiar notas de otras series sin que las compares.` })),
+      el("div", { className: "pos-actions" }, el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgPosicionarEl.close() }))
+    );
+    return;
+  }
+  const cambios = s.sorted.map((anime, i) => ({ anime, nueva: disponibles[disponibles.length - 1 - i] / 10, original: s.score }));
+  const filas = cambios.map(c => el("div", { className: "pos-cambio" }, el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }), el("span", { className: "pos-cambio-notas", textContent: `${c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })));
+  const guardarBtnEmpate = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar orden" });
+  guardarBtnEmpate.addEventListener("click", () => {
+    cambios.forEach(c => c.anime.score = c.nueva.toFixed(1));
+    dlgPosicionarEl.close();
+    render();
+    Promise.all(cambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score }))).catch(() => toast("No se pudo sincronizar alguna nota"));
+    toast(`${cambios.length} series ordenadas por nota`);
+  });
+  dlgPosicionarEl.append(
+    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}. Las notas siguen usando una sola decimal.` })),
+    el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: `Nuevo orden de ${s.score.toFixed(1)}` }), el("div", { className: "pos-cambios-lista" }, ...filas)),
+    el("div", { className: "pos-actions" }, guardarBtnEmpate, el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }))
   );
 }
 
