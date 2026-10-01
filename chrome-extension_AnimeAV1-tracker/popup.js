@@ -1059,7 +1059,9 @@ async function finalizarPosicionamiento() {
 let empateState = null;
 
 function abrirSeparadorEmpates() {
-  const validas = posicionState?.validas || todosLosAnimes;
+  // "Separar notas iguales" no incluye las series marcadas como "Sin ver".
+  // El resto de estados (Visto, Viendo, Por ver, Dropeado, etc.) sí participa.
+  const validas = todosLosAnimes.filter(a => a && a.status !== "✖" && a.row != null && a.title);
   const mapa = new Map();
   validas.forEach(a => {
     const n = notaNumero(a);
@@ -1101,8 +1103,11 @@ function mostrarSelectorEmpate(grupos) {
 }
 
 function iniciarSeparacionEmpate(score) {
-  const validas = posicionState?.validas || todosLosAnimes;
-  const grupo = validas.filter(a => notaNumero(a) === score);
+  const validas = todosLosAnimes.filter(a => a && a.status !== "✖" && a.row != null && a.title);
+  const grupo = validas.filter(a => {
+    const n = notaNumero(a);
+    return n != null && notaRedondeada(n) === score;
+  });
   if (grupo.length < 2) return;
   empateState = {
     score,
@@ -1210,47 +1215,30 @@ function responderEmpate(tipo) {
 }
 
 function obtenerNotasDisponiblesParaEmpate(s) {
-  const otras = new Set(
-    todosLosAnimes
-      .filter(a => !s.items.includes(a))
-      .map(notaNumero)
-      .filter(n => n != null)
-      .map(n => Math.round(n * 10))
-  );
-  const base = Math.round(s.score * 10);
   const cantidad = s.items.length;
   if (cantidad < 1) return [];
 
-  // Una separación de empate debe permanecer cerca de la nota original.
-  // Antes se buscaba el mejor bloque en TODO 0.0-10.0; si las décimas cercanas
-  // estaban ocupadas, el algoritmo podía terminar encontrando, por ejemplo,
-  // 2.1-2.9 para un empate de 9.0. Eso es conceptualmente incorrecto.
+  // Solo excluimos las notas de las demás series; "Sin ver" ya quedó fuera
+  // del grupo desde abrirSeparadorEmpates(). No exigimos que cada décima sea
+  // distinta: hay 101 valores posibles (0.0-10.0) y puede haber cientos de
+  // series con la misma nota.
   //
-  // Buscamos bloques consecutivos de la longitud necesaria cuyo centro esté
-  // lo más cerca posible de la nota original. Limitamos además la desviación
-  // máxima para no convertir una separación en una renotación global.
-  const maxDesviacion = Math.max(5, Math.ceil((cantidad - 1) / 2) + 3); // décimas
-  let mejor = null;
+  // Elegimos una ventana de hasta 101 décimas centrada alrededor de la nota
+  // original. Si hay más series que décimas disponibles, reutilizamos valores
+  // mediante un reparto monótono. Así se conserva el orden obtenido por las
+  // comparaciones sin producir el error de "no hay suficientes décimas".
+  const cantidadValores = Math.min(101, Math.max(1, cantidad));
+  const base = Math.round(s.score * 10);
+  const inicio = Math.max(0, Math.min(100 - cantidadValores, base - Math.floor(cantidadValores / 2)));
+  const valores = Array.from({ length: cantidadValores }, (_, i) => inicio + i);
 
-  for (let start = Math.max(0, base - maxDesviacion - cantidad); start <= Math.min(100 - cantidad + 1, base + maxDesviacion); start++) {
-    const bloque = Array.from({ length: cantidad }, (_, i) => start + i);
-    if (bloque.some(x => otras.has(x))) continue;
-
-    const centro = (bloque[0] + bloque[bloque.length - 1]) / 2;
-    const distanciaCentro = Math.abs(centro - base);
-    const desviacionMax = Math.max(...bloque.map(x => Math.abs(x - base)));
-    if (desviacionMax > maxDesviacion) continue;
-
-    // Penalizamos ligeramente alejarse de la nota original; el criterio
-    // principal sigue siendo mantener el bloque centrado alrededor de ella.
-    const distanciaTotal = bloque.reduce((sum, x) => sum + Math.abs(x - base), 0);
-    const coste = distanciaCentro * 100 + distanciaTotal;
-    if (!mejor || coste < mejor.coste) mejor = { bloque, coste, distanciaCentro };
-  }
-
-  return mejor?.bloque || [];
+  return Array.from({ length: cantidad }, (_, i) => {
+    const indice = cantidad === 1
+      ? 0
+      : Math.floor(i * (cantidadValores - 1) / (cantidad - 1));
+    return valores[indice];
+  });
 }
-
 function finalizarSeparacionEmpate() {
   const s = empateState;
   if (!s) return;
@@ -1264,13 +1252,7 @@ function finalizarSeparacionEmpate() {
   s.sorted = s.runs[0] || [];
   const disponibles = obtenerNotasDisponiblesParaEmpate(s);
   dlgPosicionarEl.innerHTML = "";
-  if (disponibles.length < s.sorted.length) {
-    dlgPosicionarEl.append(
-      el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "!" }), el("h2", { textContent: "No hay suficientes décimas libres" }), el("p", { textContent: `Has ordenado las ${s.sorted.length} series de ${s.score.toFixed(1)}, pero solo hay ${disponibles.length} décimas consecutivas libres sin tocar otras notas. No voy a cambiar notas de otras series sin que las compares.` })),
-      el("div", { className: "pos-actions" }, el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgPosicionarEl.close() }))
-    );
-    return;
-  }
+
   const cambios = s.sorted.map((anime, i) => ({ anime, nueva: disponibles[disponibles.length - 1 - i] / 10, original: s.score }));
   const filas = cambios.map(c => el("div", { className: "pos-cambio" }, el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }), el("span", { className: "pos-cambio-notas", textContent: `${c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })));
   const guardarBtnEmpate = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar orden" });
