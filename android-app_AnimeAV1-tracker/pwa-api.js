@@ -1,0 +1,593 @@
+/* AnimeAV1 Tracker - capa web para la PWA.
+ * Sustituye chrome.storage/chrome.identity por localStorage + Google Identity Services.
+ */
+(function () {
+  const CFG = window.PWA_CONFIG || {};
+  const COVER_CACHE = "anime-covers-v1";
+  const ESTADO_VIENDO = "-";
+
+  // En Android, si el navegador nota que casi no usas la PWA, puede borrar
+  // sus datos (localStorage incluido) para liberar espacio — eso es lo que
+  // hacía que, pasado un tiempo, se perdiera el enlace del Sheet guardado y
+  // volviera a pedirlo. Pedir almacenamiento "persistente" evita ese borrado
+  // automático. Es un permiso silencioso (no muestra ningún diálogo en la
+  // mayoría de los casos) y si el navegador lo deniega no pasa nada más.
+  try {
+    if (navigator.storage && navigator.storage.persist) {
+      navigator.storage.persisted().then((yaConcedido) => {
+        if (!yaConcedido) navigator.storage.persist().catch(() => {});
+      }).catch(() => {});
+    }
+  } catch (e) {}
+
+  let accessToken = null;
+  let tokenExpiresAt = 0;
+  const WORKER_URL = "https://red-violet-9fed.unaxmenendez.workers.dev";
+  // localStorage (no sessionStorage): tiene que sobrevivir a cerrar del
+  // todo la app y volver a abrirla, no solo a recargar la pestaña. Sigue
+  // sin evitar el aviso pasada la hora de vida del token (eso ya es un
+  // límite de Google, no nuestro), pero si abres/cierras varias veces
+  // dentro de esa hora ya no debería volver a pedir nada.
+  try {
+    const guardado = JSON.parse(localStorage.getItem("gauth") || "null");
+    if (guardado?.token && guardado.exp > Date.now()) {
+      accessToken = guardado.token;
+      tokenExpiresAt = guardado.exp;
+    }
+  } catch (e) {}
+  function guardarTokenSesion() {
+    try { localStorage.setItem("gauth", JSON.stringify({ token: accessToken, exp: tokenExpiresAt })); } catch (e) {}
+  }
+  function borrarTokenSesion() {
+    try { localStorage.removeItem("gauth"); } catch (e) {}
+  }
+  let spreadsheetId = null;
+  let gidConfig = null;
+  let gid = 0;
+  let cachedSheetName = null;
+  let tokenClient = null;
+  let tokenClientId = null;
+  let gisReady = null;
+
+  function parsearEnlaceSheet(texto) {
+    const t = String(texto || "").trim();
+    const m = t.match(/spreadsheets\/d\/([a-zA-Z0-9_-]+)/);
+    const id = m ? m[1] : /^[a-zA-Z0-9_-]{25,}$/.test(t) ? t : null;
+    if (!id) return null;
+    const g = t.match(/[#&?]gid=(\d+)/);
+    return { spreadsheetId: id, gid: g ? parseInt(g[1], 10) : null };
+  }
+
+  // El Client ID de OAuth ya no hace falta pegarlo en config.js: se pide en
+  // el propio formulario junto al enlace del Google Sheet y se guarda en
+  // este dispositivo (localStorage). config.js solo se usa como valor por
+  // defecto si el usuario no ha guardado ninguno todavía.
+  function obtenerClientIdGuardado() {
+    try { return (localStorage.getItem("oauthClientId") || "").trim(); } catch (e) { return ""; }
+  }
+  function guardarClientIdLocal(id) {
+    try {
+      if (id) localStorage.setItem("oauthClientId", id);
+      else localStorage.removeItem("oauthClientId");
+    } catch (e) {}
+  }
+  function obtenerClientId() {
+    return obtenerClientIdGuardado() || CFG.googleClientId || "";
+  }
+
+  function esperarGIS() {
+    if (gisReady) return gisReady;
+    gisReady = new Promise((resolve, reject) => {
+      const start = Date.now();
+      const tick = () => {
+        if (window.google?.accounts?.oauth2) return resolve();
+        if (Date.now() - start > 15000) return reject(new Error("GOOGLE_GIS_NO_CARGA"));
+        setTimeout(tick, 100);
+      };
+      tick();
+    });
+    return gisReady;
+  }
+
+  // --- Inicio de sesión de Google (solo del lado del cliente) -------------
+  // El token de Google dura 1 hora y sin servidor no hay forma de renovarlo
+  // del todo a escondidas. Lo que sí se puede hacer:
+  //  - recordar el correo de la cuenta y pasarlo como "hint": la ventana de
+  //    Google elige esa cuenta sola y, como ya diste permiso, se cierra al
+  //    instante (nada de selector ni de "cambiar de cuenta");
+  //  - renovar el token con el primer toque cuando le queda poco, para que
+  //    no caduque mientras usas la app;
+  //  - si de verdad hace falta iniciar sesión, abrir directamente el
+  //    selector de cuentas de Google.
+  const SCOPES = (CFG.googleScopes || "https://www.googleapis.com/auth/spreadsheets") +
+    " https://www.googleapis.com/auth/userinfo.email";
+  let pendiente = null;
+  let tokenEnCurso = null;
+
+  function emailGuardado() {
+    try { return localStorage.getItem("gemail") || ""; } catch (e) { return ""; }
+  }
+  function guardarEmail(e) {
+    try { if (e) localStorage.setItem("gemail", e); else localStorage.removeItem("gemail"); } catch (x) {}
+  }
+  async function recordarCuenta(token) {
+    try {
+      const r = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: `Bearer ${token}` } });
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d.email) guardarEmail(d.email);
+    } catch (e) {}
+  }
+
+  function crearTokenClient(clientId) {
+    if (tokenClient && tokenClientId === clientId) return tokenClient;
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: SCOPES,
+      callback: (r) => pendiente && pendiente.ok(r),
+      // Sin esto, si el navegador bloquea o se cierra la ventana de Google,
+      // la promesa se quedaba colgada para siempre.
+      error_callback: (e) => pendiente && pendiente.err(new Error(e?.type || "popup_error"))
+    });
+    tokenClientId = clientId;
+    return tokenClient;
+  }
+
+  function pedirToken(clientId, prompt) {
+    return new Promise((resolve, reject) => {
+      const cliente = crearTokenClient(clientId);
+      pendiente = {
+        ok: (r) => {
+          if (r?.error) return reject(new Error(r.error));
+          if (!r?.access_token) return reject(new Error("NO_SE_OBTUVO_TOKEN"));
+          accessToken = r.access_token;
+          tokenExpiresAt = Date.now() + ((r.expires_in || 3600) * 1000);
+          guardarTokenSesion();
+          recordarCuenta(accessToken);
+          resolve(accessToken);
+        },
+        err: reject
+      };
+      const opciones = { prompt };
+      const hint = emailGuardado();
+      if (hint && prompt !== "select_account") opciones.hint = hint;
+      try { cliente.requestAccessToken(opciones); } catch (e) { reject(e); }
+    });
+  }
+
+  function esErrorDeVentana(e) {
+    const m = String(e?.message || e);
+    return m.includes("popup_failed_to_open") || m.includes("popup_closed");
+  }
+
+  // interactive=true: si hace falta, abre el selector de cuentas de Google.
+  // forzar=true: renueva aunque el token actual aún sea válido.
+  function ensureToken(interactive = true, forzar = false) {
+    if (!forzar && accessToken && Date.now() < tokenExpiresAt - 60000) return Promise.resolve(accessToken);
+    if (tokenEnCurso) return tokenEnCurso;
+    tokenEnCurso = (async () => {
+      const clientId = obtenerClientId();
+      if (!clientId) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+      await esperarGIS();
+      try {
+        if (emailGuardado()) {
+          try { return await pedirToken(clientId, ""); }
+          catch (e) { if (esErrorDeVentana(e) || !interactive) throw e; }
+        }
+        if (!interactive) throw new Error("popup_failed_to_open");
+        return await pedirToken(clientId, "select_account");
+      } catch (e) {
+        if (esErrorDeVentana(e)) throw new Error("NECESITA_INICIO_SESION");
+        throw e;
+      }
+    })().finally(() => { tokenEnCurso = null; });
+    return tokenEnCurso;
+  }
+
+  // Mientras usas la app, con el primer toque cuando al token le quedan
+  // menos de 10 minutos (o ya caducó) se renueva en silencio, con la cuenta
+  // recordada. Así casi nunca caduca a mitad de uso.
+  let ultimoRefrescoAuto = 0;
+  document.addEventListener("pointerdown", () => {
+    if (!emailGuardado() || !window.google?.accounts?.oauth2) return;
+    if (accessToken && Date.now() < tokenExpiresAt - 10 * 60 * 1000) return;
+    if (tokenEnCurso || Date.now() - ultimoRefrescoAuto < 60000) return;
+    ultimoRefrescoAuto = Date.now();
+    ensureToken(false, true).catch(() => {});
+  }, { capture: true, passive: true });
+
+  // Botón explícito "Cambiar de cuenta": olvida la cuenta y abre el selector.
+  async function cambiarCuenta() {
+    accessToken = null; tokenExpiresAt = 0; guardarEmail("");
+    guardarTokenSesion();
+    const clientId = obtenerClientId();
+    if (!clientId) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+    await esperarGIS();
+    try { await pedirToken(clientId, "select_account"); }
+    catch (e) { throw esErrorDeVentana(e) ? new Error("NECESITA_INICIO_SESION") : e; }
+    resetConfig();
+    return { cambiada: true };
+  }
+
+  async function sheetsFetch(path, options = {}) {
+    const token = await ensureToken(true);
+    await cargarConfig();
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}${path}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      }
+    });
+    if (res.status === 401) {
+      accessToken = null; tokenExpiresAt = 0; guardarTokenSesion();
+      throw new Error("TOKEN_INVALIDO");
+    }
+    if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
+    if (res.status === 403) throw new Error("SIN_PERMISO");
+    if (!res.ok) throw new Error(`Error de Sheets API (${res.status}): ${await res.text()}`);
+    return res.json();
+  }
+
+  async function cargarConfig() {
+    if (spreadsheetId) return;
+    const config = JSON.parse(localStorage.getItem("config") || "null");
+    if (!config?.spreadsheetId) throw new Error("SIN_CONFIG");
+    spreadsheetId = config.spreadsheetId;
+    gidConfig = config.gid ?? null;
+  }
+
+  function resetConfig() {
+    spreadsheetId = null; gidConfig = null; cachedSheetName = null;
+  }
+  function rango(nombre, celdas) { return `'${nombre.replace(/'/g, "''")}'!${celdas}`; }
+
+  async function getSheetName() {
+    if (cachedSheetName) return cachedSheetName;
+    const data = await sheetsFetch("?fields=sheets.properties");
+    const hojas = (data.sheets || []).map(s => s.properties);
+    const hoja = (gidConfig !== null && hojas.find(h => h.sheetId === gidConfig)) || hojas[0];
+    if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
+    gid = hoja.sheetId; cachedSheetName = hoja.title;
+    return cachedSheetName;
+  }
+
+  async function guardarConfig(enlace, clientId) {
+    const p = parsearEnlaceSheet(enlace);
+    if (!p) throw new Error("ENLACE_INVALIDO");
+    if (clientId !== undefined) {
+      const limpio = String(clientId || "").trim();
+      if (limpio && limpio !== obtenerClientIdGuardado()) {
+        guardarClientIdLocal(limpio);
+        accessToken = null; tokenExpiresAt = 0; borrarTokenSesion();
+      }
+    }
+    if (!obtenerClientId()) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+    const token = await ensureToken(true);
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${p.spreadsheetId}?fields=properties.title,sheets.properties`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.status === 401) throw new Error("TOKEN_INVALIDO");
+    if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
+    if (res.status === 403) throw new Error("SIN_PERMISO");
+    if (!res.ok) throw new Error(`Error de Sheets API (${res.status})`);
+    const data = await res.json();
+    const hojas = (data.sheets || []).map(s => s.properties);
+    const hoja = (p.gid !== null && hojas.find(h => h.sheetId === p.gid)) || hojas[0];
+    if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
+    localStorage.setItem("config", JSON.stringify({
+      spreadsheetId: p.spreadsheetId, gid: p.gid, url: String(enlace).trim(),
+      titulo: data.properties?.title || "", hoja: hoja.title
+    }));
+    resetConfig();
+    const encabezadosCreados = await asegurarEncabezados();
+    return { titulo: data.properties?.title || "", hoja: hoja.title, encabezadosCreados };
+  }
+
+  // --- Varias listas guardadas (por ejemplo, la de un amigo) -------------------
+
+  function obtenerListasArr() {
+    try { return JSON.parse(localStorage.getItem("listas") || "[]"); } catch (e) { return []; }
+  }
+  function guardarListasArr(arr) {
+    try { localStorage.setItem("listas", JSON.stringify(arr)); } catch (e) {}
+  }
+  function idListaActiva() {
+    try { return localStorage.getItem("listaActivaId") || null; } catch (e) { return null; }
+  }
+  function marcarListaActiva(id) {
+    try {
+      if (id) localStorage.setItem("listaActivaId", id);
+      else localStorage.removeItem("listaActivaId");
+    } catch (e) {}
+  }
+  function nuevoIdLista() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  // La primera vez que se abre el gestor de listas, convierte la hoja que ya
+  // tenías configurada en la primera entrada de la lista, para que también
+  // aparezca en el selector.
+  function obtenerListasParaUI() {
+    let listas = obtenerListasArr();
+    const config = JSON.parse(localStorage.getItem("config") || "null");
+    if (listas.length === 0 && config?.spreadsheetId) {
+      const migrada = {
+        id: nuevoIdLista(), name: "Mi lista", url: config.url,
+        spreadsheetId: config.spreadsheetId, gid: config.gid,
+        titulo: config.titulo, hoja: config.hoja
+      };
+      listas = [migrada];
+      guardarListasArr(listas);
+      marcarListaActiva(migrada.id);
+    }
+    const activaId = idListaActiva();
+    return listas.map((l) => ({ ...l, activa: l.id === activaId }));
+  }
+
+  async function verificarAccesoHoja(p) {
+    if (!obtenerClientId()) throw new Error("CONFIGURA_CLIENT_ID_WEB");
+    const token = await ensureToken(true);
+    const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${p.spreadsheetId}?fields=properties.title,sheets.properties`, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (res.status === 401) throw new Error("TOKEN_INVALIDO");
+    if (res.status === 404) throw new Error("HOJA_NO_ENCONTRADA");
+    if (res.status === 403) throw new Error("SIN_PERMISO");
+    if (!res.ok) throw new Error(`Error de Sheets API (${res.status})`);
+    const data = await res.json();
+    const hojas = (data.sheets || []).map(s => s.properties);
+    const hoja = (p.gid !== null && hojas.find(h => h.sheetId === p.gid)) || hojas[0];
+    if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
+    return { titulo: data.properties?.title || "", hoja: hoja.title };
+  }
+
+  async function agregarListaGuardada(nombre, enlace) {
+    const nombreLimpio = String(nombre || "").trim();
+    if (!nombreLimpio) throw new Error("FALTA_NOMBRE");
+    const p = parsearEnlaceSheet(enlace);
+    if (!p) throw new Error("ENLACE_INVALIDO");
+    const { titulo, hoja } = await verificarAccesoHoja(p);
+    obtenerListasParaUI(); // asegura la migración de "Mi lista" si hacía falta
+    const listas = obtenerListasArr();
+    const nueva = {
+      id: nuevoIdLista(), name: nombreLimpio, url: String(enlace).trim(),
+      spreadsheetId: p.spreadsheetId, gid: p.gid, titulo, hoja
+    };
+    listas.push(nueva);
+    guardarListasArr(listas);
+    return { id: nueva.id, name: nueva.name, titulo, hoja };
+  }
+
+  async function eliminarListaGuardada(id) {
+    const listas = obtenerListasArr();
+    const restantes = listas.filter((l) => l.id !== id);
+    if (restantes.length === listas.length) throw new Error("LISTA_NO_ENCONTRADA");
+    guardarListasArr(restantes);
+    if (idListaActiva() === id) marcarListaActiva(restantes[0]?.id || null);
+    return { removed: true };
+  }
+
+  async function cambiarListaActiva(id) {
+    const listas = obtenerListasArr();
+    const lista = listas.find((l) => l.id === id);
+    if (!lista) throw new Error("LISTA_NO_ENCONTRADA");
+    localStorage.setItem("config", JSON.stringify({
+      spreadsheetId: lista.spreadsheetId, gid: lista.gid, url: lista.url,
+      titulo: lista.titulo, hoja: lista.hoja
+    }));
+    marcarListaActiva(id);
+    resetConfig();
+    return { titulo: lista.titulo, hoja: lista.hoja, name: lista.name };
+  }
+
+  async function asegurarEncabezados() {
+    const nombre = await getSheetName();
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(nombre, "A1:K1"))}&fields=sheets.data.rowData.values(formattedValue)`);
+    const fila = data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
+    if (fila.some(c => (c.formattedValue || "").trim())) return false;
+    const encabezados = ["Género", "", "Nota", "Título", "Descripción", "Estado", "", "", "", "Portada", "Último capítulo"];
+    const requests = [{ updateCells: {
+      range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: encabezados.length },
+      rows: [{ values: encabezados.map(t => ({ userEnteredValue: { stringValue: t }, userEnteredFormat: { textFormat: { bold: true } } })) }],
+      fields: "userEnteredValue,userEnteredFormat.textFormat"
+    }}];
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+    return true;
+  }
+
+  async function getFilasDaK(sheetName) {
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "D:K"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink)`);
+    return data.sheets?.[0]?.data?.[0]?.rowData || [];
+  }
+
+  function extraerUrlImagen(celda) {
+    if (!celda) return "";
+    const formula = celda.userEnteredValue?.formulaValue || "";
+    const match = formula.match(/IMAGE\(\s*"([^"]+)"/i);
+    if (match) return match[1];
+    const texto = celda.formattedValue || "";
+    return /^https?:\/\//i.test(texto) ? texto : "";
+  }
+
+  async function obtenerListaCompleta() {
+    const sheetName = await getSheetName();
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "A:K"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink,userEnteredValue)`);
+    const rows = data.sheets?.[0]?.data?.[0]?.rowData || [];
+    const lista = [];
+    rows.forEach((r, i) => {
+      if (i === 0) return;
+      const v = r.values || [];
+      const title = v[3]?.formattedValue || "";
+      if (!title) return;
+      lista.push({ row:i+1, genre:v[0]?.formattedValue || "", score:v[2]?.formattedValue || "", title,
+        url:v[3]?.hyperlink || "", status:(v[5]?.formattedValue || "").trim(), cover:extraerUrlImagen(v[9]),
+        lastEpisodeUrl:v[10]?.formattedValue || v[10]?.hyperlink || "" });
+    });
+    return lista;
+  }
+
+  const COLUMNAS_EDITABLES = { score:2, status:5, genre:0, cover:9, lastEpisodeUrl:10 };
+  async function actualizarCampo(row, campo, valor) {
+    await getSheetName();
+    const colIndex = COLUMNAS_EDITABLES[campo];
+    if (colIndex === undefined) throw new Error("Campo desconocido: " + campo);
+    const celda = { userEnteredValue: null };
+    const fields = ["userEnteredValue"];
+    if (campo === "score") {
+      const num = parseFloat(String(valor).replace(",", "."));
+      celda.userEnteredValue = Number.isNaN(num) ? { stringValue:"" } : { numberValue:num };
+      celda.userEnteredFormat = { numberFormat:{ type:"NUMBER", pattern:"0.0" } };
+      fields.push("userEnteredFormat.numberFormat");
+    } else if (campo === "cover") {
+      celda.userEnteredValue = valor ? { formulaValue:`=IMAGE("${String(valor).replace(/"/g, '""')}",1)` } : { stringValue:"" };
+    } else celda.userEnteredValue = { stringValue:String(valor ?? "") };
+    await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:[{ updateCells:{
+      range:{sheetId:gid,startRowIndex:row-1,endRowIndex:row,startColumnIndex:colIndex,endColumnIndex:colIndex+1},
+      rows:[{values:[celda]}], fields:fields.join(",")
+    }}] }) });
+  }
+
+  // Cambia la columna A de varias filas en una sola petición (renombrar/quitar géneros)
+  async function actualizarGenerosLote(cambios) {
+    await getSheetName();
+    if (!cambios?.length) return;
+    await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:cambios.map(c => ({ updateCells:{
+      range:{sheetId:gid,startRowIndex:c.row-1,endRowIndex:c.row,startColumnIndex:0,endColumnIndex:1},
+      rows:[{values:[{userEnteredValue:{stringValue:String(c.valor ?? "")}}]}], fields:"userEnteredValue"
+    }})) }) });
+  }
+
+  async function actualizarTituloUrl(row, title, url) {
+    await getSheetName();
+    await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:[{ updateCells:{
+      range:{sheetId:gid,startRowIndex:row-1,endRowIndex:row,startColumnIndex:3,endColumnIndex:4},
+      rows:[{values:[{userEnteredValue:{stringValue:title},textFormatRuns:[{startIndex:0,format:{link:{uri:url}}}]}]}],
+      fields:"userEnteredValue,textFormatRuns"
+    }}] }) });
+  }
+
+  async function siguienteFilaLibre(sheetName) {
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "D:D"))}&fields=sheets.data.rowData.values(formattedValue)`);
+    const filas = data.sheets?.[0]?.data?.[0]?.rowData || [];
+    let ultimaConTitulo = 1; // la fila 1 es la cabecera
+    filas.forEach((r, i) => {
+      if ((r?.values?.[0]?.formattedValue || "").trim()) ultimaConTitulo = i + 1;
+    });
+    return ultimaConTitulo + 1;
+  }
+
+  // Añade un anime nuevo a partir de su enlace: descarga la página, saca el
+  // título y la portada, y crea la fila. Sustituye a la detección automática
+  // que hacía la extensión de Chrome al abrir un episodio (no disponible en
+  // una PWA normal).
+  async function registrarAnime(enlace) {
+    const url = String(enlace || "").trim();
+    if (!/^https?:\/\//i.test(url)) throw new Error("ENLACE_ANIME_INVALIDO");
+
+    const existentes = await obtenerListaCompleta();
+    const yaExiste = existentes.some((a) => a.url && a.url.replace(/\/+$/, "") === url.replace(/\/+$/, ""));
+    if (yaExiste) throw new Error("YA_EXISTE");
+
+    let html;
+    try {
+      const r = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(url)}`);
+      // Este Worker siempre responde 200 y mete el status real de la
+      // página de origen en X-Proxy-Upstream-Status (para poder leer el
+      // cuerpo del error en vez de que fetch() lo trate como fallo).
+      const upstream = Number(r.headers.get("X-Proxy-Upstream-Status") || 0);
+      if (!r.ok || (upstream && upstream >= 400)) throw new Error();
+      html = await r.text();
+    } catch (e) { throw new Error("NO_SE_PUDO_LEER_LA_PAGINA"); }
+
+    const m = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
+    const titulo = m ? m[1].trim() : "";
+    if (!titulo) throw new Error("SIN_TITULO");
+    const cover = extraerPortadaDesdeHtml(html);
+
+    const sheetName = await getSheetName();
+    const fila = await siguienteFilaLibre(sheetName);
+
+    const valores = new Array(11).fill(null).map(() => ({}));
+    valores[3] = { userEnteredValue: { stringValue: titulo }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: url } } }] };
+    valores[5] = { userEnteredValue: { stringValue: ESTADO_VIENDO } };
+    if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover}",1)` } };
+
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
+      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+      rows: [{ values: valores }],
+      fields: "userEnteredValue,textFormatRuns"
+    }}] }) });
+
+    if (cover) precachearImagen(cover);
+    return { row: fila, title: titulo, url, cover: cover || "", status: ESTADO_VIENDO };
+  }
+
+  async function precachearImagen(url) {
+    if (!url) return;
+    try { const cache = await caches.open(COVER_CACHE); if (!(await cache.match(url))) { const r=await fetch(url); if(r.ok) await cache.put(url,r.clone()); } } catch(e) {}
+  }
+
+  function extraerPortadaDesdeHtml(html) {
+    const m = html.match(/cdn\.animeav1\.com\/covers\/\d+\.jpg/i);
+    return m ? `https://${m[0]}` : null;
+  }
+
+  async function rellenarPortadas() {
+    const sheetName = await getSheetName();
+    const filas = await getFilasDaK(sheetName);
+    const requests=[]; let encontradas=0, sinImagen=0;
+    for(let i=0;i<filas.length;i++) {
+      const v=filas[i].values||[]; const url=v[0]?.hyperlink; const ya= (v[6]?.formattedValue||"").trim()!=="";
+      if(!url||ya) continue;
+      try { const r=await fetch(url); const html=await r.text(); const img=extraerPortadaDesdeHtml(html); if(!img){sinImagen++;continue;}
+        requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}}); encontradas++; precachearImagen(img);
+      } catch(e){sinImagen++;}
+    }
+    if(requests.length) await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});
+    return {encontradas,sinImagen};
+  }
+
+  function normalizarTitulo(t){return (t||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();}
+  function slugify(t){return normalizarTitulo(t).replace(/\s+/g,"-");}
+  async function buscarEnAnimeAV1(titulo){const slug=slugify(titulo);if(!slug)return null;const url=`https://animeav1.com/media/${slug}`;try{const r=await fetch(url);if(!r.ok)return null;const html=await r.text();const m=html.match(/<h1[^>]*>([^<]+)<\/h1>/i);const h=m?m[1].trim():"";return h&&normalizarTitulo(h)===normalizarTitulo(titulo)?{url,html}:null;}catch(e){return null;}}
+  function extraerPortadaAnimeFlv(html){const a=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);if(a)return a[1];const b=html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);return b?b[1]:null;}
+  async function migrarAnimeFlv(){
+    const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0;
+    for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!enlace.includes("animeflv"))continue;const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo);
+      if(encontrado){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:3,endColumnIndex:4},rows:[{values:[{userEnteredValue:{stringValue:titulo},textFormatRuns:[{startIndex:0,format:{link:{uri:encontrado.url}}}]}]}],fields:"userEnteredValue,textFormatRuns"}});migradas++;if(!ya){const img=extraerPortadaDesdeHtml(encontrado.html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);}}}
+      else if(!ya){try{const r=await fetch(enlace);const html=await r.text();const img=extraerPortadaAnimeFlv(html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasFlv++;}else sinCambios++;}catch(e){sinCambios++;}}
+      else sinCambios++;
+    }
+    if(requests.length)await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});return{migradas,portadasFlv,sinCambios};
+  }
+
+  async function handle(msg){
+    switch(msg.type){
+      case "GET_CONFIG": return {ok:true,config:JSON.parse(localStorage.getItem("config")||"null")};
+      case "LOGIN": {
+        // Si ya hay un intento en marcha (renovación con el primer toque), se espera a él.
+        if (tokenEnCurso) { try { await tokenEnCurso; return {ok:true}; } catch (e) {} }
+        await ensureToken(true);
+        return {ok:true};
+      }
+      case "CAMBIAR_CUENTA": return {ok:true,...await cambiarCuenta()};
+      case "GET_CLIENT_ID": return {ok:true,clientId:obtenerClientId()};
+      case "SAVE_CONFIG": return {ok:true,...await guardarConfig(msg.url,msg.clientId)};
+      case "GET_LISTAS": return {ok:true,listas:obtenerListasParaUI()};
+      case "ADD_LISTA": return {ok:true,...await agregarListaGuardada(msg.name,msg.url)};
+      case "DELETE_LISTA": return {ok:true,...await eliminarListaGuardada(msg.id)};
+      case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
+      case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};
+      case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
+      case "UPDATE_GENRES_BULK": await actualizarGenerosLote(msg.cambios); return {ok:true};
+      case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
+      case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};
+      case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
+      case "REGISTER_ANIME": return {ok:true,...await registrarAnime(msg.url)};
+      default: throw new Error("MENSAJE_DESCONOCIDO");
+    }
+  }
+  window.enviarMensajePWA = async msg => { try{return await handle(msg);}catch(e){return {ok:false,error:String(e?.message||e).replace(/^Error:\s*/,"")};} };
+})();
