@@ -26,28 +26,8 @@ self.addEventListener("fetch", event => {
   const request = event.request;
   const url = new URL(request.url);
 
-  // Portadas: incluye imágenes del CDN externo. Las respuestas opacas
-  // también se pueden guardar en Cache Storage.
-  if (request.destination === "image") {
-    event.respondWith((async () => {
-      const cache = await caches.open(COVER_CACHE);
-      const cached = await cache.match(request);
-      if (cached) return cached;
-
-      try {
-        const response = await fetch(request);
-        if (response.ok || response.type === "opaque") {
-          await cache.put(request, response.clone());
-        }
-        return response;
-      } catch (error) {
-        const fallback = await cache.match(request);
-        if (fallback) return fallback;
-        throw error;
-      }
-    })());
-    return;
-  }
+  // Las portadas las gestiona popup.js/pwa-api.js según la preferencia
+  // del usuario. El Service Worker no las guarda automáticamente.
 
   // Archivos de la propia PWA: red primero (así las actualizaciones llegan
   // solas) y, si no hay conexión, la copia guardada.

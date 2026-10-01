@@ -42,6 +42,8 @@ const busquedaEl = $("busqueda");
 const filtroGeneroEl = $("filtroGenero");
 const ordenEl = $("orden");
 const precargarBtn = $("precargarPortadas");
+const guardarPortadasEl = $("guardarPortadas");
+const borrarPortadasBtn = $("borrarPortadas");
 const precargarStatusEl = $("precargarStatus");
 const fillCoversBtn = $("fillCovers");
 const fillStatusEl = $("fillStatus");
@@ -155,8 +157,22 @@ async function inicializarContadorPortadas() {
 
 // Devuelve una URL usable en <img>. Con soloCache=true solo asegura que
 // la portada esté guardada (para la precarga) sin crear el blob.
+function guardarPortadasActivado() {
+  try { return localStorage.getItem("guardarPortadas") !== "false"; } catch (e) { return true; }
+}
+
+function aplicarPreferenciaPortadas() {
+  const activado = guardarPortadasActivado();
+  if (guardarPortadasEl) guardarPortadasEl.checked = activado;
+  if (precargarBtn) precargarBtn.disabled = !activado;
+  if (borrarPortadasBtn) borrarPortadasBtn.disabled = false;
+  if (precargarStatusEl && !activado) precargarStatusEl.textContent = "El guardado local está desactivado.";
+  actualizarContadorPortadas();
+}
+
 async function cargarPortada(url, soloCache = false) {
   if (!url) return url;
+  if (!guardarPortadasActivado()) return url;
   // Las URLs de las portadas suelen ser de otro dominio (CDN). En una PWA,
   // fetch() normal puede bloquearse por CORS aunque <img> sí pueda mostrarla.
   // Por eso dejamos que el Service Worker intercepte la petición y usamos
@@ -859,9 +875,44 @@ function crearBotonCuenta() {
 
 // --- Herramientas ------------------------------------------------------------
 
+// --- Opciones -----------------------------------------------------------------
+
+if (guardarPortadasEl) {
+  aplicarPreferenciaPortadas();
+  guardarPortadasEl.addEventListener("change", async () => {
+    const activado = guardarPortadasEl.checked;
+    try { localStorage.setItem("guardarPortadas", String(activado)); } catch (e) {}
+    aplicarPreferenciaPortadas();
+    toast(activado ? "Guardado de portadas activado" : "Guardado de portadas desactivado");
+  });
+}
+
+if (borrarPortadasBtn) {
+  borrarPortadasBtn.addEventListener("click", async () => {
+    if (!confirm("¿Borrar todas las portadas guardadas en este dispositivo?")) return;
+    try {
+      const cache = await caches.open(COVER_CACHE);
+      await cache.keys().then(keys => Promise.all(keys.map(k => cache.delete(k))));
+      portadasEnCache.clear();
+      for (const url of blobUrls.values()) URL.revokeObjectURL(url);
+      blobUrls.clear();
+      actualizarContadorPortadas();
+      precargarStatusEl.textContent = "Se han borrado las copias locales de las portadas.";
+      toast("Portadas locales borradas");
+    } catch (e) {
+      precargarStatusEl.textContent = "No se pudieron borrar las portadas guardadas.";
+    }
+  });
+}
+
 // Precarga TODAS las portadas desde el propio popup (no depende del service
 // worker, que Chrome puede matar a mitad). Hay que dejar el popup abierto.
 precargarBtn.addEventListener("click", async () => {
+  if (!guardarPortadasActivado()) {
+    toast("Activa el guardado de portadas primero");
+    aplicarPreferenciaPortadas();
+    return;
+  }
   precargarBtn.disabled = true;
   const pendientes = todosLosAnimes.filter((a) => a.cover);
   const total = pendientes.length;
