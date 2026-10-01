@@ -786,86 +786,139 @@ function renderPosicionInicio() {
 function iniciarPosicionamiento(row) {
   const candidate = posicionState.validas.find(a => Number(a.row) === Number(row));
   if (!candidate) return;
+
   const rated = posicionState.validas.filter(a => a !== candidate && notaNumero(a) != null);
-  if (!rated.length) { toast("Necesitas al menos una serie valorada para compararla"); return; }
-  const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
   const original = notaNumero(candidate);
-  const inicial = original ?? mediana(rated.map(notaNumero));
+  const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
+  const inicial = original ?? (rated.length ? mediana(rated.map(notaNumero)) : 5);
   working.set(candidate.row, inicial);
+
   posicionState = {
-    ...posicionState, candidate, rated, working, usados: [], saltados: [], comparaciones: 0,
-    inferior: null, superior: null, inicial, minComparaciones: 8,
-    maxComparaciones: Math.min(40, Math.max(18, rated.length * 2 + 8)),
-    cambiosReferencias: new Set(), contradicciones: 0, historial: []
+    ...posicionState,
+    candidate,
+    rated,
+    working,
+    grupos: crearGrupos(rated, working),
+    lo: 0,
+    hi: Math.max(-1, crearGrupos(rated, working).length - 1),
+    igualGrupo: null,
+    comparadorGrupo: null,
+    comparaciones: 0,
+    saltados: [],
+    historial: [],
+    inicial,
+    cambiosReferencias: new Set(),
+    finalizadoPorComparaciones: false
   };
+
+  // Sin referencias no hay nada que comparar: la nota neutra es 5.0.
+  if (!rated.length) {
+    sFinalizarPosicionamientoSinComparar();
+    return;
+  }
   mostrarComparacion();
+}
+
+function crearGrupos(items, working) {
+  const mapa = new Map();
+  items.forEach(a => {
+    const n = working.get(a.row);
+    if (n == null) return;
+    const key = notaRedondeada(n).toFixed(1);
+    if (!mapa.has(key)) mapa.set(key, { key, score: notaRedondeada(n), items: [] });
+    mapa.get(key).items.push(a);
+  });
+  return Array.from(mapa.values()).sort((a,b) => b.score - a.score);
+}
+
+function grupoTieneDisponible(s, grupo) {
+  return grupo && grupo.items.some(a => !s.saltados.includes(a.row));
 }
 
 function elegirComparador() {
   const s = posicionState;
-  const disponibles = s.rated.filter(a => a !== s.candidate && !s.saltados.includes(a.row));
-  if (!disponibles.length) return null;
-  const sinUsar = disponibles.filter(a => !s.usados.includes(a.row));
-  const pool = sinUsar.length ? sinUsar : disponibles;
-  let objetivo = s.working.get(s.candidate.row) ?? 5;
-  if (s.inferior != null && s.superior != null) objetivo = (s.inferior + s.superior) / 2;
-  else if (s.superior != null) {
-    const below = pool.map(a => s.working.get(a.row)).filter(v => v != null && v < s.superior - 0.001);
-    objetivo = below.length ? Math.max(...below) : Math.max(0, s.superior / 2);
-  } else if (s.inferior != null) {
-    const above = pool.map(a => s.working.get(a.row)).filter(v => v != null && v > s.inferior + 0.001);
-    objetivo = above.length ? Math.min(...above) : Math.min(10, s.inferior + (10 - s.inferior) / 2);
+  if (!s || s.igualGrupo != null || s.lo > s.hi) return null;
+  if (!s.grupos.length) return null;
+
+  // Búsqueda binaria: siempre intentamos el grupo central del intervalo.
+  const centro = Math.floor((s.lo + s.hi) / 2);
+  const candidatos = [];
+  for (let distancia = 0; distancia < s.grupos.length; distancia++) {
+    const izquierda = centro - distancia;
+    const derecha = centro + distancia;
+    if (izquierda >= s.lo && izquierda <= s.hi && grupoTieneDisponible(s, s.grupos[izquierda])) candidatos.push(s.grupos[izquierda]);
+    if (distancia > 0 && derecha >= s.lo && derecha <= s.hi && grupoTieneDisponible(s, s.grupos[derecha])) candidatos.push(s.grupos[derecha]);
+    if (candidatos.length) break;
   }
-  return pool.slice().sort((a,b) =>
-    Math.abs((s.working.get(a.row) ?? 5) - objetivo) - Math.abs((s.working.get(b.row) ?? 5) - objetivo)
-  )[0];
+  const grupo = candidatos[0];
+  if (!grupo) return null;
+  s.comparadorGrupo = s.grupos.indexOf(grupo);
+  return grupo.items.find(a => !s.saltados.includes(a.row)) || null;
+}
+
+function calcularPosicionFinal(s) {
+  if (s.igualGrupo != null) return { tipo: "igual", indice: s.igualGrupo };
+  return { tipo: "insertar", indice: Math.max(0, Math.min(s.grupos.length, s.lo)) };
+}
+
+function calcularNotaPosicion(s) {
+  // La posición se decide exclusivamente por las comparaciones.
+  // Las notas de las referencias son anclas: no debemos moverlas para
+  // "fabricar" huecos en la escala, porque eso introduce cambios que el
+  // usuario nunca pidió.
+  if (s.igualGrupo != null) {
+    return notaRedondeada(s.grupos[s.igualGrupo].score);
+  }
+
+  const indice = Math.max(0, Math.min(s.grupos.length, s.lo));
+  const superior = indice > 0 ? s.grupos[indice - 1].score : null;
+  const inferior = indice < s.grupos.length ? s.grupos[indice].score : null;
+
+  // Extremos: si ya estamos en 10/0 no existe un valor decimal que pueda
+  // expresar una posición estrictamente superior/inferior. Se satura.
+  if (superior == null) return 10;
+  if (inferior == null) return 0;
+
+  const centro = (superior + inferior) / 2;
+  const redondeado = notaRedondeada(centro);
+
+  // Si el intervalo tiene al menos una décima disponible, el punto medio
+  // redondeado es la mejor estimación. Si no la tiene, ninguna nota de una
+  // sola decimal puede representar una posición estricta; en ese caso
+  // elegimos el extremo más cercano a la nota previa (si existe) para evitar
+  // movimientos artificiales.
+  if (redondeado < superior && redondeado > inferior) return redondeado;
+
+  const previa = notaNumero(s.candidate);
+  if (previa != null) {
+    if (previa < superior && previa > inferior) return notaRedondeada(previa);
+    return Math.abs(previa - superior) <= Math.abs(previa - inferior)
+      ? notaRedondeada(superior)
+      : notaRedondeada(inferior);
+  }
+
+  return redondeado;
+}
+
+function construirResultadoFinal(s) {
+  const pos = calcularPosicionFinal(s);
+  const nueva = calcularNotaPosicion(s);
+
+  s.working.set(s.candidate.row, nueva);
+  s.gruposFinales = s.grupos.map(g => ({
+    key: g.key,
+    score: g.score,
+    items: g.items.slice()
+  }));
+  s.posicionFinal = pos.indice;
+  return nueva;
 }
 
 function posicionTerminada(s) {
-  if (s.comparaciones < s.minComparaciones) return false;
-  if (s.inferior != null && s.superior != null && s.inferior <= s.superior &&
-      (s.superior - s.inferior) <= 0.15) return true;
-  if (s.inferior != null && s.inferior >= 10) return true;
-  if (s.superior != null && s.superior <= 0) return true;
-  return s.comparaciones >= s.maxComparaciones;
+  if (s.igualGrupo != null) return true;
+  return s.lo > s.hi;
 }
 
-function repararContradiccion(s) {
-  if (s.inferior == null || s.superior == null || s.inferior <= s.superior) return;
-  // Las respuestas implican: A > referencia inferior y A < referencia superior,
-  // pero las notas actuales tienen el orden contrario. Ajustamos SOLO esas dos
-  // referencias y en pasos pequeños para hacer compatible el ranking.
-  const lows = s.rated.filter(a => Math.abs((s.working.get(a.row) ?? -99) - s.inferior) < 0.001);
-  const highs = s.rated.filter(a => Math.abs((s.working.get(a.row) ?? 99) - s.superior) < 0.001);
-  const low = lows[0], high = highs[0];
-  if (!low || !high || low === high) return;
-  const oldLow = s.working.get(low.row), oldHigh = s.working.get(high.row);
-  const gap = oldLow - oldHigh;
-  const step = Math.min(0.25, Math.max(0.05, gap / 3));
-  const newLow = Math.max(0, oldLow - step);
-  const newHigh = Math.min(10, oldHigh + step);
-  if (newLow !== oldLow) { s.working.set(low.row, notaRedondeada(newLow)); s.cambiosReferencias.add(low.row); }
-  if (newHigh !== oldHigh) { s.working.set(high.row, notaRedondeada(newHigh)); s.cambiosReferencias.add(high.row); }
-  s.inferior = Math.min(newLow, newHigh);
-  s.superior = Math.max(newLow, newHigh);
-  s.contradicciones++;
-}
-
-function actualizarEstimacion(s, tipo, rivalScore) {
-  if (tipo === "más") s.inferior = Math.max(s.inferior ?? -Infinity, rivalScore);
-  else if (tipo === "menos") s.superior = Math.min(s.superior ?? Infinity, rivalScore);
-  else {
-    s.inferior = Math.max(s.inferior ?? -Infinity, rivalScore - 0.10);
-    s.superior = Math.min(s.superior ?? Infinity, rivalScore + 0.10);
-  }
-  if (s.inferior != null && s.superior != null && s.inferior > s.superior) repararContradiccion(s);
-  let nueva;
-  if (s.inferior != null && s.superior != null && s.inferior <= s.superior) nueva = (s.inferior + s.superior) / 2;
-  else if (s.inferior != null && s.superior == null) nueva = Math.min(10, s.inferior + (10 - s.inferior) * 0.5);
-  else if (s.superior != null && s.inferior == null) nueva = Math.max(0, s.superior * 0.5);
-  else nueva = s.inicial ?? 5;
-  return Math.max(0, Math.min(10, notaRedondeada(nueva)));
-}
 function mostrarComparacion() {
   const s = posicionState;
   const rival = elegirComparador();
@@ -880,7 +933,7 @@ function mostrarComparacion() {
   const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}`;
   const botones = el("div", { className: "pos-votos" });
   [["más", "↑", "pos-mas"],["igual", "=", "pos-igual"],["menos", "↓", "pos-menos"]].forEach(([tipo, icono, clase]) => {
-    const b = el("button", { className: `pos-voto ${clase}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: tipo === "más" ? "Me ha gustado más" : tipo === "menos" ? "Me ha gustado menos" : "Me han gustado igual" }));
+    const b = el("button", { className: `pos-voto ${clase}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: tipo === "más" ? "Me gusta más" : tipo === "menos" ? "Me gusta menos" : "Me gustan lo mismo" }));
     b.addEventListener("click", () => responderPosicionamiento(tipo)); botones.append(b);
   });
   const saltar = el("button", { className: "btn-mini", type: "button", textContent: "Saltar →", title: "No he visto esta serie" });
@@ -889,65 +942,77 @@ function mostrarComparacion() {
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
     el("div", { className: "pos-topline" }, el("span", { textContent: "POSICIONAR" }), el("span", { textContent: progreso })),
-    el("div", { className: "pos-estimacion" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "Se irá ajustando con tus respuestas" })),
+    el("div", { className: "pos-estimacion" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "La estimación se calcula desde la posición actual" })),
     el("div", { className: "pos-comparacion" },
       el("div", { className: "pos-serie" }, leftImg, el("strong", { textContent: posicionTitulo(candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` })),
       el("div", { className: "pos-vs", textContent: "VS" }),
       el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
     ),
-    el("p", { className: "pos-question", textContent: "¿Cuál te ha gustado más?" }), botones,
+    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
     el("div", { className: "pos-foot" }, el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, saltar, cerrar))
   );
 }
 
 async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
+  const grupoIdx = s.comparadorGrupo;
   const b = s.rival;
   const oldB = s.working.get(b.row) ?? 5;
   s.historial.push({ rival: b.row, tipo, score: oldB });
-  const nueva = actualizarEstimacion(s, tipo, oldB);
-  s.working.set(s.candidate.row, nueva);
-  s.usados.push(b.row);
   s.comparaciones++;
+
+  if (tipo === "igual") {
+    s.igualGrupo = grupoIdx;
+  } else if (tipo === "más") {
+    // El candidato queda por encima del grupo comparado.
+    s.hi = grupoIdx - 1;
+  } else {
+    // El candidato queda por debajo del grupo comparado.
+    s.lo = grupoIdx + 1;
+  }
+
+  s.rival = null;
   if (posicionTerminada(s)) await finalizarPosicionamiento();
   else mostrarComparacion();
+}
+
+function sFinalizarPosicionamientoSinComparar() {
+  const s = posicionState;
+  if (!s?.candidate) return;
+  s.working.set(s.candidate.row, 5);
+  finalizarPosicionamiento();
 }
 
 async function finalizarPosicionamiento() {
   const s = posicionState;
   if (!s?.candidate) return;
 
+  construirResultadoFinal(s);
+
   const cambios = [];
   s.working.forEach((valor, row) => {
     const anime = s.validas.find(a => Number(a.row) === Number(row));
-    if (!anime || anime === s.candidate) return;
+    if (!anime) return;
     const original = notaNumero(anime);
     const nueva = notaRedondeada(valor);
-    if (original != null && Math.abs(nueva - original) >= 0.05) {
+    if (anime === s.candidate || (original != null && Math.abs(nueva - original) >= 0.05)) {
       cambios.push({ anime, original, nueva });
     }
   });
 
-  const filas = cambios.map(c => {
-    const antes = c.original == null ? "Sin nota" : c.original.toFixed(1);
-    const despues = c.nueva.toFixed(1);
-    const clase = c.anime === s.candidate ? "pos-cambio-candidato" : "";
-    return el("div", { className: `pos-cambio ${clase}` },
-      el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }),
-      el("span", { className: "pos-cambio-notas", textContent: `${antes} → ${despues}` })
-    );
-  });
-
-  const resumen = cambios.length
-    ? `${cambios.length} ${cambios.length === 1 ? "nota existente ha cambiado" : "notas existentes han cambiado"}.`
+  const referencias = cambios.filter(c => c.anime !== s.candidate);
+  const resumen = referencias.length
+    ? `${referencias.length} ${referencias.length === 1 ? "nota existente ha cambiado" : "notas existentes han cambiado"}.`
     : "Ninguna otra nota ha cambiado.";
 
-  dlgPosicionarEl.innerHTML = "";
+  const filas = referencias.map(c => el("div", { className: "pos-cambio" },
+    el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }),
+    el("span", { className: "pos-cambio-notas", textContent: `${c.original == null ? "Sin nota" : c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })
+  ));
+
   const guardarBtn = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar" });
   guardarBtn.addEventListener("click", () => {
-    // Actualizamos la interfaz inmediatamente y dejamos el guardado remoto
-    // ejecutándose en segundo plano.
-    const todosCambios = [{ anime: s.candidate, nueva: notaRedondeada(s.working.get(s.candidate.row)) }, ...cambios];
+    const todosCambios = cambios.map(c => ({ anime: c.anime, nueva: c.nueva }));
     todosCambios.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
     dlgPosicionarEl.close();
     render();
@@ -960,13 +1025,18 @@ async function finalizarPosicionamiento() {
       .catch(() => toast("No se pudo sincronizar el posicionamiento"));
   });
 
+  const antesCandidato = notaNumero(s.candidate);
+  const textoAntes = antesCandidato == null ? "Sin nota" : antesCandidato.toFixed(1);
+  const textoDespues = notaRedondeada(s.working.get(s.candidate.row)).toFixed(1);
+
+  dlgPosicionarEl.innerHTML = "";
   dlgPosicionarEl.append(
     el("div", { className: "pos-resultado" },
       el("div", { className: "pos-check", textContent: "✓" }),
       el("h2", { textContent: "¡Serie posicionada!" }),
       el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(s.candidate) }),
-      el("div", { className: "pos-nota-final", textContent: `${notaNumero(s.candidate) == null ? "Sin nota" : notaNumero(s.candidate).toFixed(1)} → ${s.working.get(s.candidate.row).toFixed(1)}` }),
-      el("p", { textContent: `${s.comparaciones} comparaciones realizadas.` })
+      el("div", { className: "pos-nota-final", textContent: `${textoAntes} → ${textoDespues}` }),
+      el("p", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"} realizadas.` })
     ),
     el("div", { className: "pos-cambios-panel" },
       el("h3", { textContent: "Cambios de puntuación" }),
