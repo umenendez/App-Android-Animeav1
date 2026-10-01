@@ -786,7 +786,6 @@ function renderPosicionInicio() {
 function iniciarPosicionamiento(row) {
   const candidate = posicionState.validas.find(a => Number(a.row) === Number(row));
   if (!candidate) return;
-  // Una puntuación 0 equivale a "sin valorar".
   const rated = posicionState.validas.filter(a => a !== candidate && notaNumero(a) != null);
   if (!rated.length) { toast("Necesitas al menos una serie valorada para compararla"); return; }
   const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
@@ -794,134 +793,77 @@ function iniciarPosicionamiento(row) {
   const inicial = original ?? mediana(rated.map(notaNumero));
   working.set(candidate.row, inicial);
   posicionState = {
-    ...posicionState, candidate, rated, working,
-    usados: [], saltados: [], comparaciones: 0,
-    inferior: null, superior: null,
-    inicial,
-    minComparaciones: 4,
-    maxComparaciones: Math.min(30, Math.max(12, rated.length + 8)),
-    cambiosReferencias: new Set(),
-    contradicciones: 0,
-    rachaMas: 0, rachaMenos: 0
+    ...posicionState, candidate, rated, working, usados: [], saltados: [], comparaciones: 0,
+    inferior: null, superior: null, inicial, minComparaciones: 8,
+    maxComparaciones: Math.min(40, Math.max(18, rated.length * 2 + 8)),
+    cambiosReferencias: new Set(), contradicciones: 0, historial: []
   };
   mostrarComparacion();
 }
 
 function elegirComparador() {
   const s = posicionState;
-  const disponibles = s.rated.filter(a => a !== s.candidate);
-  const noSaltadas = disponibles.filter(a => !s.saltados.includes(a.row));
-  const sinUsar = noSaltadas.filter(a => !s.usados.includes(a.row));
-  let pool = sinUsar.length ? sinUsar : noSaltadas;
-  if (!pool.length) {
-    // Si hemos usado todas, podemos repetir referencias: las respuestas
-    // acumuladas siguen siendo válidas y son necesarias para afinar el intervalo.
-    pool = disponibles;
-  }
-  if (!pool.length) return null;
-
+  const disponibles = s.rated.filter(a => a !== s.candidate && !s.saltados.includes(a.row));
+  if (!disponibles.length) return null;
+  const sinUsar = disponibles.filter(a => !s.usados.includes(a.row));
+  const pool = sinUsar.length ? sinUsar : disponibles;
   let objetivo = s.working.get(s.candidate.row) ?? 5;
   if (s.inferior != null && s.superior != null) objetivo = (s.inferior + s.superior) / 2;
-  else if (s.inferior != null) {
-    // Cuanto más cerca estamos del extremo superior, más buscamos allí.
-    const mayores = pool.map(a => s.working.get(a.row)).filter(v => v != null && v > s.inferior + 0.001);
-    objetivo = mayores.length ? Math.min(...mayores) : 10;
-  } else if (s.superior != null) {
-    const menores = pool.map(a => s.working.get(a.row)).filter(v => v != null && v < s.superior - 0.001);
-    objetivo = menores.length ? Math.max(...menores) : 0;
+  else if (s.superior != null) {
+    const below = pool.map(a => s.working.get(a.row)).filter(v => v != null && v < s.superior - 0.001);
+    objetivo = below.length ? Math.max(...below) : Math.max(0, s.superior / 2);
+  } else if (s.inferior != null) {
+    const above = pool.map(a => s.working.get(a.row)).filter(v => v != null && v > s.inferior + 0.001);
+    objetivo = above.length ? Math.min(...above) : Math.min(10, s.inferior + (10 - s.inferior) / 2);
   }
-
   return pool.slice().sort((a,b) =>
-    Math.abs((s.working.get(a.row) ?? 5) - objetivo) -
-    Math.abs((s.working.get(b.row) ?? 5) - objetivo)
+    Math.abs((s.working.get(a.row) ?? 5) - objetivo) - Math.abs((s.working.get(b.row) ?? 5) - objetivo)
   )[0];
 }
 
 function posicionTerminada(s) {
-  // Con dos límites cercanos ya tenemos una posición suficientemente precisa.
-  if (s.inferior != null && s.superior != null &&
-      s.superior >= s.inferior &&
-      (s.superior - s.inferior) <= 0.20 &&
-      s.comparaciones >= s.minComparaciones) return true;
-
-  // En los extremos, si ya no existe una referencia por encima/debajo,
-  // la estimación puede llegar realmente a 10 o 0.
+  if (s.comparaciones < s.minComparaciones) return false;
+  if (s.inferior != null && s.superior != null && s.inferior <= s.superior &&
+      (s.superior - s.inferior) <= 0.15) return true;
   if (s.inferior != null && s.inferior >= 10) return true;
   if (s.superior != null && s.superior <= 0) return true;
-
   return s.comparaciones >= s.maxComparaciones;
 }
 
 function repararContradiccion(s) {
   if (s.inferior == null || s.superior == null || s.inferior <= s.superior) return;
-  // Tenemos algo del tipo: A > B (B = inferior) y A < C (C = superior),
-  // pero B tiene más nota que C. Las referencias contradicen las respuestas.
-  const lowCandidates = s.rated.filter(a => Math.abs((s.working.get(a.row) ?? -99) - s.inferior) < 0.001);
-  const highCandidates = s.rated.filter(a => Math.abs((s.working.get(a.row) ?? 99) - s.superior) < 0.001);
-  const b = lowCandidates[0], c = highCandidates[0];
-  if (!b || !c || b === c) return;
-
-  const oldB = s.working.get(b.row);
-  const oldC = s.working.get(c.row);
-  const mid = (oldB + oldC) / 2;
-  // Acercamos ambas referencias hasta invertir su orden, sin hacer saltos grandes.
-  const ajuste = Math.min(0.20, Math.max(0.05, (oldB - oldC) / 2 + 0.01));
-  const nuevoB = Math.max(0, mid - ajuste / 2);
-  const nuevoC = Math.min(10, mid + ajuste / 2);
-  if (nuevoB < oldB) {
-    s.working.set(b.row, notaRedondeada(nuevoB));
-    s.cambiosReferencias.add(b.row);
-  }
-  if (nuevoC > oldC) {
-    s.working.set(c.row, notaRedondeada(nuevoC));
-    s.cambiosReferencias.add(c.row);
-  }
+  // Las respuestas implican: A > referencia inferior y A < referencia superior,
+  // pero las notas actuales tienen el orden contrario. Ajustamos SOLO esas dos
+  // referencias y en pasos pequeños para hacer compatible el ranking.
+  const lows = s.rated.filter(a => Math.abs((s.working.get(a.row) ?? -99) - s.inferior) < 0.001);
+  const highs = s.rated.filter(a => Math.abs((s.working.get(a.row) ?? 99) - s.superior) < 0.001);
+  const low = lows[0], high = highs[0];
+  if (!low || !high || low === high) return;
+  const oldLow = s.working.get(low.row), oldHigh = s.working.get(high.row);
+  const gap = oldLow - oldHigh;
+  const step = Math.min(0.25, Math.max(0.05, gap / 3));
+  const newLow = Math.max(0, oldLow - step);
+  const newHigh = Math.min(10, oldHigh + step);
+  if (newLow !== oldLow) { s.working.set(low.row, notaRedondeada(newLow)); s.cambiosReferencias.add(low.row); }
+  if (newHigh !== oldHigh) { s.working.set(high.row, notaRedondeada(newHigh)); s.cambiosReferencias.add(high.row); }
+  s.inferior = Math.min(newLow, newHigh);
+  s.superior = Math.max(newLow, newHigh);
   s.contradicciones++;
-  s.inferior = Math.min(nuevoB, nuevoC);
-  s.superior = Math.max(nuevoB, nuevoC);
 }
 
 function actualizarEstimacion(s, tipo, rivalScore) {
-  if (tipo === "más") {
-    s.inferior = Math.max(s.inferior ?? -Infinity, rivalScore);
-  } else if (tipo === "menos") {
-    s.superior = Math.min(s.superior ?? Infinity, rivalScore);
-  } else {
-    // "Igual" crea un pequeño intervalo alrededor de la referencia.
+  if (tipo === "más") s.inferior = Math.max(s.inferior ?? -Infinity, rivalScore);
+  else if (tipo === "menos") s.superior = Math.min(s.superior ?? Infinity, rivalScore);
+  else {
     s.inferior = Math.max(s.inferior ?? -Infinity, rivalScore - 0.10);
     s.superior = Math.min(s.superior ?? Infinity, rivalScore + 0.10);
   }
-
-  if (s.inferior != null && s.superior != null && s.inferior > s.superior) {
-    repararContradiccion(s);
-  }
-
+  if (s.inferior != null && s.superior != null && s.inferior > s.superior) repararContradiccion(s);
   let nueva;
-  if (s.inferior != null && s.superior != null) {
-    nueva = (s.inferior + s.superior) / 2;
-  } else if (s.inferior != null) {
-    const candidatos = s.rated.map(a => s.working.get(a.row)).filter(v => v != null && v > s.inferior + 0.001);
-    const siguiente = candidatos.length ? Math.min(...candidatos) : 10;
-    if (!candidatos.length) {
-      // Si no existe ninguna referencia por encima y seguimos diciendo "más",
-      // cada respuesta aporta nueva evidencia y empuja la estimación hacia 10.
-      const actual = s.working.get(s.candidate.row) ?? s.inferior;
-      nueva = Math.min(10, actual + Math.max(0.25, (10 - actual) * 0.45));
-    } else {
-      nueva = s.inferior + (siguiente - s.inferior) * 0.55;
-    }
-  } else if (s.superior != null) {
-    const candidatos = s.rated.map(a => s.working.get(a.row)).filter(v => v != null && v < s.superior - 0.001);
-    const siguiente = candidatos.length ? Math.max(...candidatos) : 0;
-    if (!candidatos.length) {
-      const actual = s.working.get(s.candidate.row) ?? s.superior;
-      nueva = Math.max(0, actual - Math.max(0.25, actual * 0.45));
-    } else {
-      nueva = s.superior - (s.superior - siguiente) * 0.55;
-    }
-  } else {
-    nueva = s.inicial ?? 5;
-  }
+  if (s.inferior != null && s.superior != null && s.inferior <= s.superior) nueva = (s.inferior + s.superior) / 2;
+  else if (s.inferior != null && s.superior == null) nueva = Math.min(10, s.inferior + (10 - s.inferior) * 0.5);
+  else if (s.superior != null && s.inferior == null) nueva = Math.max(0, s.superior * 0.5);
+  else nueva = s.inicial ?? 5;
   return Math.max(0, Math.min(10, notaRedondeada(nueva)));
 }
 function mostrarComparacion() {
@@ -934,7 +876,7 @@ function mostrarComparacion() {
   const leftImg = el("img", { className: "pos-cover", alt: "" });
   const rightImg = el("img", { className: "pos-cover", alt: "" });
   posicionPortada(candidate, leftImg); posicionPortada(rival, rightImg);
-  const scoreActual = s.working.get(candidate.row);
+  const scoreActual = s.working.get(candidate.row) ?? 5;
   const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}`;
   const botones = el("div", { className: "pos-votos" });
   [["más", "↑", "pos-mas"],["igual", "=", "pos-igual"],["menos", "↓", "pos-menos"]].forEach(([tipo, icono, clase]) => {
@@ -960,29 +902,13 @@ function mostrarComparacion() {
 
 async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
-  const a = s.candidate, b = s.rival;
+  const b = s.rival;
   const oldB = s.working.get(b.row) ?? 5;
-  if (tipo === "más") { s.rachaMas++; s.rachaMenos = 0; }
-  else if (tipo === "menos") { s.rachaMenos++; s.rachaMas = 0; }
-  else { s.rachaMas = 0; s.rachaMenos = 0; }
-
-  // Primero incorporamos la evidencia de esta comparación. Las referencias
-  // solo cambian si la nueva evidencia hace que dos referencias queden en
-  // un orden imposible (contradicción).
+  s.historial.push({ rival: b.row, tipo, score: oldB });
   const nueva = actualizarEstimacion(s, tipo, oldB);
-  if (tipo === "más" && s.rachaMas >= 4 && s.inferior != null && s.superior == null) {
-    s.working.set(a.row, 10);
-  } else if (tipo === "menos" && s.rachaMenos >= 4 && s.superior != null && s.inferior == null) {
-    s.working.set(a.row, 0);
-  } else {
-    s.working.set(a.row, nueva);
-  }
+  s.working.set(s.candidate.row, nueva);
   s.usados.push(b.row);
   s.comparaciones++;
-
-  // La estimación ya incorpora toda la evidencia acumulada.
-  // No hacemos una segunda comparación artificial aquí.
-
   if (posicionTerminada(s)) await finalizarPosicionamiento();
   else mostrarComparacion();
 }
