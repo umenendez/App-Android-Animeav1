@@ -715,35 +715,72 @@ function abrirPosicionador() {
   if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
 }
 
+let posicionFiltros = { q: "", genero: "", estado: "", orden: "" };
+
 function renderPosicionInicio() {
   const validas = posicionState.validas;
   dlgPosicionarEl.innerHTML = "";
   const sinNota = validas.filter(a => notaNumero(a) == null);
-  const ordenadas = [...validas].sort((a,b) => {
-    const an = notaNumero(a), bn = notaNumero(b);
-    if (an == null && bn != null) return -1;
-    if (an != null && bn == null) return 1;
-    return (an ?? 0) - (bn ?? 0) || posicionTitulo(a).localeCompare(posicionTitulo(b), "es");
-  });
-  const select = el("select", { className: "pos-selector", ariaLabel: "Serie que quieres posicionar" });
-  ordenadas.forEach(a => {
-    const n = notaNumero(a);
-    select.append(el("option", { value: String(a.row), textContent: `${posicionTitulo(a)}${n == null ? " · Sin valorar" : ` · ${n.toFixed(1)}`}` }));
-  });
-  const preferida = sinNota[0] || ordenadas[0];
-  if (preferida) select.value = String(preferida.row);
-  const start = el("button", { className: "btn pos-primary", type: "button", textContent: "Empezar a posicionar" });
-  start.addEventListener("click", () => iniciarPosicionamiento(Number(select.value)));
+  const generos = unico(validas.flatMap(a => parseGeneros(a.genre))).sort((a,b) => a.localeCompare(b, "es"));
+  const buscador = el("input", { className: "pos-busqueda", type: "search", placeholder: "Buscar por nombre…", ariaLabel: "Buscar serie" });
+  buscador.value = posicionFiltros.q;
+  const estado = el("select", { className: "pos-filtro", ariaLabel: "Filtrar por estado" });
+  estado.append(el("option", { value: "", textContent: "Todos los estados" }));
+  ESTADOS.forEach(e => estado.append(el("option", { value: e.value, textContent: e.label })));
+  estado.value = posicionFiltros.estado;
+  const genero = el("select", { className: "pos-filtro", ariaLabel: "Filtrar por género" });
+  genero.append(el("option", { value: "", textContent: "Todos los géneros" }));
+  generos.forEach(g => genero.append(el("option", { value: g, textContent: g })));
+  genero.value = posicionFiltros.genero;
+  const orden = el("select", { className: "pos-filtro", ariaLabel: "Ordenar series" });
+  [["", "Orden recomendado"],["title-asc", "Nombre: A → Z"],["title-desc", "Nombre: Z → A"],["score-desc", "Nota: mayor a menor"],["score-asc", "Nota: menor a mayor"],["unrated", "Sin valorar primero"]].forEach(([value,label]) => orden.append(el("option", { value, textContent: label })));
+  orden.value = posicionFiltros.orden;
+  const lista = el("div", { className: "pos-selector-grid" });
+  const mensaje = el("div", { className: "pos-lista-vacia", hidden: true });
+  function obtenerLista() {
+    const q = normalizar(posicionFiltros.q);
+    let arr = validas.filter(a => (!q || normalizar(a.title).includes(q)) && (!posicionFiltros.estado || a.status === posicionFiltros.estado) && (!posicionFiltros.genero || parseGeneros(a.genre).includes(posicionFiltros.genero)));
+    const nota = a => notaNumero(a);
+    arr.sort((a,b) => {
+      if (posicionFiltros.orden === "title-asc") return posicionTitulo(a).localeCompare(posicionTitulo(b), "es");
+      if (posicionFiltros.orden === "title-desc") return posicionTitulo(b).localeCompare(posicionTitulo(a), "es");
+      if (posicionFiltros.orden === "score-desc") return (nota(b) ?? -1) - (nota(a) ?? -1);
+      if (posicionFiltros.orden === "score-asc") return (nota(a) ?? 11) - (nota(b) ?? 11);
+      if (posicionFiltros.orden === "unrated") return (nota(a) == null ? 0 : 1) - (nota(b) == null ? 0 : 1) || posicionTitulo(a).localeCompare(posicionTitulo(b), "es");
+      return (nota(a) == null ? 0 : 1) - (nota(b) == null ? 0 : 1) || (nota(b) ?? 0) - (nota(a) ?? 0) || posicionTitulo(a).localeCompare(posicionTitulo(b), "es");
+    });
+    return arr;
+  }
+  function pintarLista() {
+    lista.innerHTML = "";
+    const arr = obtenerLista();
+    mensaje.hidden = arr.length > 0;
+    if (!arr.length) { mensaje.textContent = "No hay series que coincidan con estos filtros."; return; }
+    arr.forEach(a => {
+      const card = el("button", { className: "pos-selector-card", type: "button", title: `Posicionar ${posicionTitulo(a)}` });
+      const portada = el("div", { className: "pos-selector-portada" });
+      if (a.cover) { const img = el("img", { alt: "", loading: "lazy" }); img.src = a.cover; img.addEventListener("error", () => { img.remove(); portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" })); }); portada.append(img); }
+      else portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
+      const info = el("div", { className: "pos-selector-info" });
+      info.append(el("strong", { textContent: posicionTitulo(a) }));
+      const n = notaNumero(a); info.append(el("span", { className: "pos-selector-nota", textContent: n == null ? "Sin valorar" : `⭐ ${n.toFixed(1)}` }));
+      const gs = parseGeneros(a.genre); if (gs.length) info.append(el("small", { textContent: gs.slice(0,2).join(" · ") }));
+      card.append(portada, info); card.addEventListener("click", () => iniciarPosicionamiento(Number(a.row))); lista.append(card);
+    });
+  }
+  buscador.addEventListener("input", () => { posicionFiltros.q = buscador.value; pintarLista(); });
+  estado.addEventListener("change", () => { posicionFiltros.estado = estado.value; pintarLista(); });
+  genero.addEventListener("change", () => { posicionFiltros.genero = genero.value; pintarLista(); });
+  orden.addEventListener("change", () => { posicionFiltros.orden = orden.value; pintarLista(); });
+  pintarLista();
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
-    el("div", { className: "pos-head" },
-      el("div", { className: "pos-mark", textContent: "⚖" }),
-      el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "La aplicación hará varias comparaciones y calculará una nota de 0 a 10." }))
-    ),
-    el("label", { className: "pos-label", textContent: "¿Qué serie quieres posicionar?" }, select),
-    el("div", { className: "pos-help", textContent: "Puedes elegir una serie sin valorar o volver a posicionar una que ya tenga nota." }),
-    el("div", { className: "pos-actions" }, start, cerrar)
+    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." }))),
+    el("div", { className: "pos-selector-toolbar" }, buscador, estado, genero, orden),
+    lista, mensaje,
+    el("div", { className: "pos-help" }, el("strong", { textContent: `${sinNota.length} sin valorar` }), " · Pulsa una tarjeta para comenzar. También puedes recolocar una serie ya valorada."),
+    el("div", { className: "pos-actions" }, cerrar)
   );
 }
 
@@ -812,6 +849,7 @@ function mostrarComparacion() {
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
     el("div", { className: "pos-topline" }, el("span", { textContent: "POSICIONAR" }), el("span", { textContent: progreso })),
+    el("div", { className: "pos-estimacion" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "Se irá ajustando con tus respuestas" })),
     el("div", { className: "pos-comparacion" },
       el("div", { className: "pos-serie" }, leftImg, el("strong", { textContent: posicionTitulo(candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` })),
       el("div", { className: "pos-vs", textContent: "VS" }),
