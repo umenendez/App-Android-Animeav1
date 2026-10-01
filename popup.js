@@ -683,6 +683,210 @@ function abrirDialogoGeneros(anime) {
   if (!dlgGenerosEl.open) dlgGenerosEl.showModal();
 }
 
+// --- Minijuego de posicionamiento ----------------------------------------------
+const dlgPosicionarEl = $("dlgPosicionar");
+let posicionState = null;
+
+function notaNumero(a) {
+  const n = parseFloat(String(a?.score ?? "").replace(",", "."));
+  return Number.isFinite(n) ? Math.min(10, Math.max(0, n)) : null;
+}
+function notaRedondeada(n) { return Math.round(Math.min(10, Math.max(0, n)) * 10) / 10; }
+function mediana(nums) {
+  const a = nums.slice().sort((x,y) => x-y);
+  if (!a.length) return 5;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
+}
+function posicionPortada(anime, img) {
+  if (!anime?.cover) { img.hidden = true; return; }
+  img.hidden = false;
+  img.alt = anime.title || "";
+  img.src = anime.cover;
+  cargarPortada(anime.cover).then(src => { if (img.isConnected) img.src = src; });
+}
+function posicionTitulo(a) { return a?.title || "(sin título)"; }
+
+function abrirPosicionador() {
+  const validas = todosLosAnimes.filter(a => a && a.row != null && a.title);
+  if (validas.length < 2) { toast("Necesitas al menos 2 series para posicionar"); return; }
+  posicionState = { validas };
+  renderPosicionInicio();
+  if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
+}
+
+function renderPosicionInicio() {
+  const validas = posicionState.validas;
+  dlgPosicionarEl.innerHTML = "";
+  const sinNota = validas.filter(a => notaNumero(a) == null);
+  const ordenadas = [...validas].sort((a,b) => {
+    const an = notaNumero(a), bn = notaNumero(b);
+    if (an == null && bn != null) return -1;
+    if (an != null && bn == null) return 1;
+    return (an ?? 0) - (bn ?? 0) || posicionTitulo(a).localeCompare(posicionTitulo(b), "es");
+  });
+  const select = el("select", { className: "pos-selector", ariaLabel: "Serie que quieres posicionar" });
+  ordenadas.forEach(a => {
+    const n = notaNumero(a);
+    select.append(el("option", { value: String(a.row), textContent: `${posicionTitulo(a)}${n == null ? " · Sin valorar" : ` · ${n.toFixed(1)}`}` }));
+  });
+  const preferida = sinNota[0] || ordenadas[0];
+  if (preferida) select.value = String(preferida.row);
+  const start = el("button", { className: "btn pos-primary", type: "button", textContent: "Empezar a posicionar" });
+  start.addEventListener("click", () => iniciarPosicionamiento(Number(select.value)));
+  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar" });
+  cerrar.addEventListener("click", () => dlgPosicionarEl.close());
+  dlgPosicionarEl.append(
+    el("div", { className: "pos-head" },
+      el("div", { className: "pos-mark", textContent: "⚖" }),
+      el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "La aplicación hará varias comparaciones y calculará una nota de 0 a 10." }))
+    ),
+    el("label", { className: "pos-label", textContent: "¿Qué serie quieres posicionar?" }, select),
+    el("div", { className: "pos-help", textContent: "Puedes elegir una serie sin valorar o volver a posicionar una que ya tenga nota." }),
+    el("div", { className: "pos-actions" }, start, cerrar)
+  );
+}
+
+function iniciarPosicionamiento(row) {
+  const candidate = posicionState.validas.find(a => Number(a.row) === Number(row));
+  if (!candidate) return;
+  const rated = posicionState.validas.filter(a => a !== candidate && notaNumero(a) != null);
+  if (!rated.length) {
+    toast("Necesitas al menos una serie valorada para compararla");
+    return;
+  }
+  const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
+  const inicial = notaNumero(candidate) ?? mediana(rated.map(notaNumero));
+  working.set(candidate.row, inicial);
+  posicionState = {
+    ...posicionState,
+    candidate,
+    rated,
+    working,
+    usados: [],
+    comparaciones: 0,
+    estabilidad: 0,
+    anterior: inicial,
+    minComparaciones: 5,
+    maxComparaciones: Math.min(14, Math.max(7, rated.length + 2)),
+  };
+  mostrarComparacion();
+}
+
+function elegirComparador() {
+  const s = posicionState;
+  const disponibles = s.rated.filter(a => a !== s.candidate);
+  const sinUsar = disponibles.filter(a => !s.usados.includes(a.row));
+  const pool = sinUsar.length ? sinUsar : disponibles;
+  const score = s.working.get(s.candidate.row);
+  return pool.slice().sort((a,b) => {
+    const da = Math.abs((s.working.get(a.row) ?? 5) - score);
+    const db = Math.abs((s.working.get(b.row) ?? 5) - score);
+    return da - db;
+  })[0];
+}
+
+function mostrarComparacion() {
+  const s = posicionState;
+  const rival = elegirComparador();
+  if (!rival) return finalizarPosicionamiento();
+  s.rival = rival;
+  const candidate = s.candidate;
+  dlgPosicionarEl.innerHTML = "";
+  const leftImg = el("img", { className: "pos-cover", alt: "" });
+  const rightImg = el("img", { className: "pos-cover", alt: "" });
+  posicionPortada(candidate, leftImg); posicionPortada(rival, rightImg);
+  const scoreActual = s.working.get(candidate.row);
+  const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}`;
+  const botones = el("div", { className: "pos-votos" });
+  [
+    ["más", "↑", "pos-mas"],
+    ["igual", "=", "pos-igual"],
+    ["menos", "↓", "pos-menos"]
+  ].forEach(([tipo, icono, clase]) => {
+    const b = el("button", { className: `pos-voto ${clase}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: tipo === "más" ? "Me ha gustado más" : tipo === "menos" ? "Me ha gustado menos" : "Me han gustado igual" }));
+    b.addEventListener("click", () => responderPosicionamiento(tipo));
+    botones.append(b);
+  });
+  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
+  cerrar.addEventListener("click", () => dlgPosicionarEl.close());
+  dlgPosicionarEl.append(
+    el("div", { className: "pos-topline" }, el("span", { textContent: "POSICIONAR" }), el("span", { textContent: progreso })),
+    el("div", { className: "pos-comparacion" },
+      el("div", { className: "pos-serie" }, leftImg, el("strong", { textContent: posicionTitulo(candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` })),
+      el("div", { className: "pos-vs", textContent: "VS" }),
+      el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
+    ),
+    el("p", { className: "pos-question", textContent: "¿Cuál te ha gustado más?" }),
+    botones,
+    el("div", { className: "pos-foot" }, el("span", { textContent: "La aplicación dejará de preguntar cuando la nota se estabilice." }), cerrar)
+  );
+}
+
+async function responderPosicionamiento(tipo) {
+  const s = posicionState;
+  if (!s?.rival) return;
+  const a = s.candidate, b = s.rival;
+  const oldA = s.working.get(a.row) ?? 5;
+  const oldB = s.working.get(b.row) ?? 5;
+  const diff = oldB - oldA;
+  const expected = 1 / (1 + Math.pow(10, diff / 2));
+  const actual = tipo === "más" ? 1 : tipo === "menos" ? 0 : 0.5;
+  const k = Math.max(0.22, 0.46 - s.comparaciones * 0.025);
+  const cambio = k * (actual - expected);
+  const newA = Math.min(10, Math.max(0, oldA + cambio));
+  // Los títulos ya valorados actúan como anclas: pueden moverse, pero muy poco.
+  const newB = Math.min(10, Math.max(0, oldB - cambio * 0.16));
+  s.working.set(a.row, newA); s.working.set(b.row, newB);
+  s.usados.push(b.row); s.comparaciones++;
+  const delta = Math.abs(newA - s.anterior);
+  s.anterior = newA;
+  s.estabilidad = delta < 0.045 ? s.estabilidad + 1 : 0;
+  if (s.comparaciones >= s.minComparaciones && s.estabilidad >= 3 || s.comparaciones >= s.maxComparaciones) {
+    await finalizarPosicionamiento();
+  } else {
+    mostrarComparacion();
+  }
+}
+
+async function finalizarPosicionamiento() {
+  const s = posicionState;
+  if (!s?.candidate) return;
+  const cambios = [];
+  s.working.forEach((valor, row) => {
+    const anime = s.validas.find(a => Number(a.row) === Number(row));
+    const original = notaNumero(anime);
+    if (!anime) return;
+    const nueva = notaRedondeada(valor);
+    if (original == null || Math.abs(nueva - original) >= 0.05) cambios.push({ anime, valor: String(nueva.toFixed(1)) });
+  });
+  // Siempre guardamos la serie posicionada, aunque su redondeo coincida con la anterior.
+  if (!cambios.some(c => c.anime === s.candidate)) cambios.push({ anime: s.candidate, valor: String(notaRedondeada(s.working.get(s.candidate.row)).toFixed(1)) });
+  dlgPosicionarEl.innerHTML = "";
+  dlgPosicionarEl.append(
+    el("div", { className: "pos-resultado" },
+      el("div", { className: "pos-check", textContent: "✓" }),
+      el("h2", { textContent: "¡Serie posicionada!" }),
+      el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(s.candidate) }),
+      el("div", { className: "pos-nota-final", textContent: notaRedondeada(s.working.get(s.candidate.row)).toFixed(1) }),
+      el("p", { textContent: `${s.comparaciones} comparaciones realizadas. La puntuación se ha ajustado respetando las notas que ya tenías.` })
+    ),
+    el("div", { className: "pos-actions" },
+      el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar", onclick: async () => {
+        const btn = dlgPosicionarEl.querySelector(".pos-primary"); btn.disabled = true;
+        let ok = true;
+        for (const c of cambios) {
+          c.anime.score = c.valor;
+          if (!(await guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.valor }, btn))) ok = false;
+        }
+        if (ok) { dlgPosicionarEl.close(); render(); toast("Posicionamiento guardado"); }
+        else { btn.disabled = false; toast("No se pudieron guardar todas las notas"); }
+      }}),
+      el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() })
+    )
+  );
+}
+
 // --- Cabecera: modo edición y herramientas -------------------------------------
 
 $("btnEdicion").addEventListener("click", (e) => {
@@ -697,6 +901,9 @@ function setHerramientas(abierto) {
   $("btnHerramientas").setAttribute("aria-expanded", String(abierto));
 }
 $("btnHerramientas").addEventListener("click", () => setHerramientas($("herramientas").hidden));
+const btnPosicionarEl = $("btnPosicionar");
+if (btnPosicionarEl) btnPosicionarEl.addEventListener("click", abrirPosicionador);
+
 
 // --- Añadir anime por enlace ---------------------------------------------------
 

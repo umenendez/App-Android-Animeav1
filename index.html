@@ -371,6 +371,38 @@
     }
     #toast.visible { opacity: 1; transform: translate(-50%, 0); }
     @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation-duration: 2s !important; } }
+  
+    /* Posicionador */
+    #dlgPosicionar { width: min(760px, calc(100vw - 24px)); max-width: 760px; border: 1px solid var(--border); border-radius: 18px; padding: 0; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(0,0,0,.32); }
+    #dlgPosicionar::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(2px); }
+    .pos-head { display:flex; gap:12px; align-items:center; padding:18px; border-bottom:1px solid var(--border); }
+    .pos-mark { width:44px; height:44px; display:grid; place-items:center; border-radius:13px; background:color-mix(in srgb,var(--accent) 14%,var(--surface)); color:var(--accent); font-size:25px; }
+    .pos-head h2 { margin:0; font-size:17px; } .pos-head p { margin:3px 0 0; color:var(--muted); font-size:12px; }
+    .pos-selector { width:calc(100% - 36px); margin:16px 18px 7px; height:38px; padding:0 10px; border:1px solid var(--border); border-radius:10px; background:var(--field); }
+    .pos-label { display:block; font-weight:650; font-size:12px; }
+    .pos-help { margin:0 18px 16px; color:var(--muted); font-size:11px; }
+    .pos-actions { display:flex; justify-content:flex-end; gap:8px; padding:12px 18px; border-top:1px solid var(--border); }
+    .pos-primary { background:var(--accent); color:white; border-color:transparent; }
+    .pos-topline { display:flex; justify-content:space-between; padding:13px 18px; color:var(--muted); font-size:11px; font-weight:700; letter-spacing:.04em; }
+    .pos-comparacion { display:grid; grid-template-columns:1fr 52px 1fr; gap:8px; align-items:center; padding:4px 18px 14px; }
+    .pos-serie { min-width:0; display:flex; flex-direction:column; align-items:center; text-align:center; gap:5px; }
+    .pos-cover { width:min(180px, 34vw); aspect-ratio:2/3; object-fit:cover; border-radius:12px; background:var(--field); box-shadow:0 5px 18px rgba(0,0,0,.18); }
+    .pos-serie strong { max-width:100%; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .pos-serie small { color:var(--muted); font-size:10px; }
+    .pos-vs { font-weight:900; color:var(--muted); text-align:center; }
+    .pos-question { text-align:center; margin:2px 18px 12px; font-size:15px; font-weight:750; }
+    .pos-votos { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; padding:0 18px 16px; }
+    .pos-voto { min-height:54px; border:1px solid var(--border); border-radius:11px; background:var(--field); color:var(--text); display:flex; align-items:center; justify-content:center; gap:7px; flex-direction:column; }
+    .pos-voto span { font-size:18px; font-weight:900; } .pos-voto strong { font-size:11px; }
+    .pos-voto:hover { border-color:var(--accent); transform:translateY(-1px); }
+    .pos-foot { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:10px 18px; border-top:1px solid var(--border); color:var(--muted); font-size:10px; }
+    .pos-resultado { text-align:center; padding:28px 20px 10px; }
+    .pos-check { margin:auto; width:52px; height:52px; border-radius:50%; display:grid; place-items:center; background:#22c55e; color:white; font-size:29px; font-weight:900; }
+    .pos-resultado h2 { margin:12px 0 4px; font-size:19px; } .pos-resultado-titulo { font-weight:700; }
+    .pos-nota-final { font-size:46px; line-height:1; font-weight:900; margin:13px 0 7px; color:var(--accent); }
+    .pos-resultado p { max-width:430px; margin:0 auto; color:var(--muted); font-size:11px; }
+    @media (max-width:560px) { .pos-comparacion { grid-template-columns:1fr 30px 1fr; } .pos-cover { width:min(135px,31vw); } .pos-foot span { max-width:65%; } }
+
   </style>
 </head>
 <body>
@@ -387,6 +419,9 @@
       </button>
       <button id="btnEdicion" class="icon-btn" aria-pressed="false" title="Modo edición (portada, título, enlaces)" aria-label="Modo edición">
         <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4z"/></svg>
+      </button>
+      <button id="btnPosicionar" class="icon-btn" title="Posicionar series" aria-label="Posicionar series">
+        <svg viewBox="0 0 24 24"><path d="M12 3v18M5 6h14M7 6l-3 6h6L7 6Zm10 0-3 6h6l-3-6ZM4 12h6M14 12h6"/></svg>
       </button>
       <button id="btnStats" class="icon-btn" title="Estadísticas" aria-label="Estadísticas">
         <svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/><path d="M3 20h18"/></svg>
@@ -414,6 +449,7 @@
 
   <dialog id="dlgStats"></dialog>
   <dialog id="dlgGeneros"></dialog>
+  <dialog id="dlgPosicionar"></dialog>
 
   <section id="agregarPanel" class="config" hidden>
     <h2>Añadir anime por enlace</h2>
