@@ -689,7 +689,7 @@ let posicionState = null;
 
 function notaNumero(a) {
   const n = parseFloat(String(a?.score ?? "").replace(",", "."));
-  return Number.isFinite(n) ? Math.min(10, Math.max(0, n)) : null;
+  return Number.isFinite(n) ? (n <= 0 ? null : Math.min(10, Math.max(0, n))) : null;
 }
 function notaRedondeada(n) { return Math.round(Math.min(10, Math.max(0, n)) * 10) / 10; }
 function mediana(nums) {
@@ -712,7 +712,7 @@ function abrirPosicionador() {
   if (validas.length < 2) { toast("Necesitas al menos 2 series para posicionar"); return; }
   posicionState = { validas };
   renderPosicionInicio();
-  if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
+  if (!dlgPosicionarEl.open) { dlgPosicionarEl.showModal(); dlgPosicionarEl.focus({ preventScroll: true }); }
 }
 
 let posicionFiltros = { q: "", genero: "", estado: "", orden: "" };
@@ -891,7 +891,8 @@ async function responderPosicionamiento(tipo) {
   const cambio = k * (actual - expected);
   const newA = Math.min(10, Math.max(0, oldA + cambio));
   // Los títulos ya valorados actúan como anclas: pueden moverse, pero muy poco.
-  const newB = Math.min(10, Math.max(0, oldB - cambio * 0.16));
+  const movimientoReferencia = cambio * 0.28;
+  const newB = Math.min(10, Math.max(0, oldB - movimientoReferencia));
   s.working.set(a.row, newA); s.working.set(b.row, newB);
   s.usados.push(b.row); s.comparaciones++;
   const delta = Math.abs(newA - s.anterior);
@@ -916,7 +917,7 @@ async function finalizarPosicionamiento() {
     const nueva = notaRedondeada(valor);
     // Las referencias existentes solo aparecen si han cambiado de verdad;
     // la candidata siempre aparece para que el usuario pueda revisar su nota.
-    if (anime === s.candidate || original == null || Math.abs(nueva - original) >= 0.05) {
+    if (anime === s.candidate || original == null || Math.abs(nueva - original) >= 0.01) {
       cambios.push({ anime, original, nueva });
     }
   });
