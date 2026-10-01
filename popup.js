@@ -801,6 +801,7 @@ function iniciarPosicionamiento(row) {
     rated,
     working,
     usados: [],
+    saltados: [],
     comparaciones: 0,
     estabilidad: 0,
     anterior: inicial,
@@ -813,8 +814,16 @@ function iniciarPosicionamiento(row) {
 function elegirComparador() {
   const s = posicionState;
   const disponibles = s.rated.filter(a => a !== s.candidate);
-  const sinUsar = disponibles.filter(a => !s.usados.includes(a.row));
-  const pool = sinUsar.length ? sinUsar : disponibles;
+  // Las referencias que el usuario ha saltado no vuelven a aparecer mientras
+  // haya otras disponibles. Si ya no quedan alternativas, se reciclan.
+  const noSaltadas = disponibles.filter(a => !s.saltados.includes(a.row));
+  const sinUsar = noSaltadas.filter(a => !s.usados.includes(a.row));
+  let pool = sinUsar.length ? sinUsar : noSaltadas;
+  if (!pool.length) {
+    s.saltados = [];
+    const sinUsarRecicladas = disponibles.filter(a => !s.usados.includes(a.row));
+    pool = sinUsarRecicladas.length ? sinUsarRecicladas : disponibles;
+  }
   const score = s.working.get(s.candidate.row);
   return pool.slice().sort((a,b) => {
     const da = Math.abs((s.working.get(a.row) ?? 5) - score);
@@ -845,6 +854,11 @@ function mostrarComparacion() {
     b.addEventListener("click", () => responderPosicionamiento(tipo));
     botones.append(b);
   });
+  const saltar = el("button", { className: "btn-mini", type: "button", textContent: "Saltar →", title: "No he visto esta serie" });
+  saltar.addEventListener("click", () => {
+    if (!s.saltados.includes(rival.row)) s.saltados.push(rival.row);
+    mostrarComparacion();
+  });
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
@@ -857,7 +871,10 @@ function mostrarComparacion() {
     ),
     el("p", { className: "pos-question", textContent: "¿Cuál te ha gustado más?" }),
     botones,
-    el("div", { className: "pos-foot" }, el("span", { textContent: "La aplicación dejará de preguntar cuando la nota se estabilice." }), cerrar)
+    el("div", { className: "pos-foot" },
+      el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }),
+      el("div", { className: "pos-foot-actions" }, saltar, cerrar)
+    )
   );
 }
 
@@ -890,36 +907,75 @@ async function responderPosicionamiento(tipo) {
 async function finalizarPosicionamiento() {
   const s = posicionState;
   if (!s?.candidate) return;
+
   const cambios = [];
   s.working.forEach((valor, row) => {
     const anime = s.validas.find(a => Number(a.row) === Number(row));
-    const original = notaNumero(anime);
     if (!anime) return;
+    const original = notaNumero(anime);
     const nueva = notaRedondeada(valor);
-    if (original == null || Math.abs(nueva - original) >= 0.05) cambios.push({ anime, valor: String(nueva.toFixed(1)) });
+    // Las referencias existentes solo aparecen si han cambiado de verdad;
+    // la candidata siempre aparece para que el usuario pueda revisar su nota.
+    if (anime === s.candidate || original == null || Math.abs(nueva - original) >= 0.05) {
+      cambios.push({ anime, original, nueva });
+    }
   });
-  // Siempre guardamos la serie posicionada, aunque su redondeo coincida con la anterior.
-  if (!cambios.some(c => c.anime === s.candidate)) cambios.push({ anime: s.candidate, valor: String(notaRedondeada(s.working.get(s.candidate.row)).toFixed(1)) });
+
+  if (!cambios.some(c => c.anime === s.candidate)) {
+    cambios.push({
+      anime: s.candidate,
+      original: notaNumero(s.candidate),
+      nueva: notaRedondeada(s.working.get(s.candidate.row))
+    });
+  }
+
+  const filas = cambios.map(c => {
+    const antes = c.original == null ? "Sin nota" : c.original.toFixed(1);
+    const despues = c.nueva.toFixed(1);
+    const clase = c.anime === s.candidate ? "pos-cambio-candidato" : "";
+    return el("div", { className: `pos-cambio ${clase}` },
+      el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }),
+      el("span", { className: "pos-cambio-notas", textContent: `${antes} → ${despues}` })
+    );
+  });
+
+  const otras = cambios.filter(c => c.anime !== s.candidate && c.original != null && Math.abs(c.nueva - c.original) >= 0.05);
+  const resumen = otras.length
+    ? `Además, ${otras.length} ${otras.length === 1 ? "nota existente ha cambiado" : "notas existentes han cambiado"}.`
+    : "Ninguna otra nota ha cambiado.";
+
   dlgPosicionarEl.innerHTML = "";
+  const guardarBtn = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar" });
+  guardarBtn.addEventListener("click", () => {
+    // Actualizamos la interfaz inmediatamente y dejamos el guardado remoto
+    // ejecutándose en segundo plano.
+    cambios.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
+    dlgPosicionarEl.close();
+    render();
+    toast("Posicionamiento guardado localmente");
+    Promise.all(cambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
+      .then(resultados => {
+        if (resultados.some(ok => !ok)) toast("Algunas notas no pudieron sincronizarse con Google Sheets");
+        else toast("Posicionamiento sincronizado");
+      })
+      .catch(() => toast("No se pudo sincronizar el posicionamiento"));
+  });
+
   dlgPosicionarEl.append(
     el("div", { className: "pos-resultado" },
       el("div", { className: "pos-check", textContent: "✓" }),
       el("h2", { textContent: "¡Serie posicionada!" }),
       el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(s.candidate) }),
-      el("div", { className: "pos-nota-final", textContent: notaRedondeada(s.working.get(s.candidate.row)).toFixed(1) }),
-      el("p", { textContent: `${s.comparaciones} comparaciones realizadas. La puntuación se ha ajustado respetando las notas que ya tenías.` })
+      el("div", { className: "pos-nota-final", textContent: s.working.get(s.candidate.row).toFixed(1) }),
+      el("p", { textContent: `${s.comparaciones} comparaciones realizadas.` })
+    ),
+    el("div", { className: "pos-cambios-panel" },
+      el("h3", { textContent: "Cambios de puntuación" }),
+      el("p", { className: "pos-cambios-resumen", textContent: resumen }),
+      el("div", { className: "pos-cambios-lista" }, ...filas)
     ),
     el("div", { className: "pos-actions" },
-      el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar", onclick: async () => {
-        const btn = dlgPosicionarEl.querySelector(".pos-primary"); btn.disabled = true;
-        let ok = true;
-        for (const c of cambios) {
-          c.anime.score = c.valor;
-          if (!(await guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.valor }, btn))) ok = false;
-        }
-        if (ok) { dlgPosicionarEl.close(); render(); toast("Posicionamiento guardado"); }
-        else { btn.disabled = false; toast("No se pudieron guardar todas las notas"); }
-      }}),
+      guardarBtn,
       el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() })
     )
   );

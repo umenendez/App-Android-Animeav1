@@ -420,7 +420,18 @@
     @media (max-width:680px) { .pos-selector-toolbar { grid-template-columns:1fr 1fr; } .pos-selector-toolbar .pos-busqueda { grid-column:1 / -1; } }
     @media (max-width:560px) { .pos-selector-grid { grid-template-columns:repeat(2,minmax(0,1fr)); max-height:390px; } .pos-comparacion { grid-template-columns:1fr 30px 1fr; } .pos-cover { width:min(135px,31vw); } .pos-foot span { max-width:65%; } }
 
-  </style>
+  
+    .pos-foot-actions { display:flex; align-items:center; gap:7px; }
+    .pos-cambios-panel { margin:0 18px 14px; border:1px solid var(--border); border-radius:13px; background:var(--field); overflow:hidden; }
+    .pos-cambios-panel h3 { margin:0; padding:11px 13px 4px; font-size:13px; }
+    .pos-cambios-resumen { margin:0; padding:0 13px 9px; color:var(--muted); font-size:10px; }
+    .pos-cambios-lista { border-top:1px solid var(--border); max-height:190px; overflow:auto; }
+    .pos-cambio { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 13px; border-bottom:1px solid color-mix(in srgb,var(--border) 65%,transparent); font-size:11px; }
+    .pos-cambio:last-child { border-bottom:0; }
+    .pos-cambio-nombre { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .pos-cambio-notas { font-weight:800; white-space:nowrap; }
+    .pos-cambio-candidato { background:color-mix(in srgb,var(--accent) 8%,var(--field)); }
+</style>
 </head>
 <body>
   <header class="cabecera">
