@@ -431,6 +431,13 @@
     .pos-cambio-nombre { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .pos-cambio-notas { font-weight:800; white-space:nowrap; }
     .pos-cambio-candidato { background:color-mix(in srgb,var(--accent) 8%,var(--field)); }
+    .btn-posicionar { position: absolute; right: 5px; bottom: 8px; z-index: 10; width: 24px; height: 24px; padding: 0; border: none; border-radius: 50%; background: rgba(15,20,29,.72); color: #fff; font-size: 13px; line-height: 1; cursor: pointer; }
+    .btn-posicionar:hover, .btn-posicionar:focus-visible { background: var(--accent); outline: none; }
+    .pos-serie-btn { padding: 8px 4px; border: 1px solid var(--border); border-radius: 14px; background: var(--field); color: var(--text); cursor: pointer; transition: transform .15s, border-color .15s, box-shadow .15s; }
+    .pos-serie-btn:hover, .pos-serie-btn:focus-visible { border-color: var(--accent); transform: translateY(-2px); box-shadow: 0 7px 20px rgba(0,0,0,.16); outline: none; }
+    .pos-serie-btn:active { transform: scale(.98); }
+    .pos-eligela { margin-top: 2px; padding: 4px 9px; border-radius: 999px; font-size: 10px; font-weight: 800; color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+    .pos-votos { grid-template-columns: 1fr; }
 </style>
 </head>
 <body>

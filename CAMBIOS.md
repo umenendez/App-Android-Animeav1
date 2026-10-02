@@ -1,4 +1,8 @@
 
+- Posicionador: las portadas son ahora los botones de voto (tocas la que más te gusta) con etiqueta «Me gusta más ésta»; queda un único botón «Me gustan lo mismo». Misma mecánica en «Separar notas iguales».
+- Posicionador: nuevo «↻ Otro rival» (rota por otras series de la misma nota sin descartarlas), indicador «≈ N más» de comparaciones restantes, y en el resultado se muestra entre qué series queda (por encima/por debajo) antes de guardar. Nuevo «Guardar y posicionar otra».
+- Botón ⚖ en la portada de cada serie para posicionarla directamente; el botón «Separar notas iguales» indica cuántos grupos empatados hay.
+
 - Corrección separador de empates: la redistribución de décimas queda limitada a un rango cercano a la nota original; nunca puede saltar de 9.x a valores alejados como 2.x por buscar un bloque libre global. Si no hay suficiente espacio cercano, se cancela la redistribución en lugar de alterar la escala.
 
 - Posicionador: la "nota estimada" ahora se actualiza tras cada comparación (antes mostraba siempre la nota inicial). Si se saltan series y el tramo queda sin resolver, la estimación va al centro del tramo dudoso en lugar de pegarse a un extremo.
