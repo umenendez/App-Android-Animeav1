@@ -556,7 +556,12 @@ function renderItem(anime) {
   selectGenero.ariaLabel = "Géneros";
   selectGenero.addEventListener("click", () => abrirDialogoGeneros(anime));
 
-  info.append(link, selectEstado, selectGenero);
+  const btnPosicionar = el("button", {
+    className: "btn-posicionar-fila", type: "button", textContent: "⚖ Posicionar",
+    title: `Posicionar ${anime.title || "esta serie"}`, ariaLabel: `Posicionar ${anime.title || "esta serie"}`
+  });
+  btnPosicionar.addEventListener("click", () => abrirPosicionador(anime.row));
+  info.append(link, selectEstado, selectGenero, btnPosicionar);
 
   // Bloque de edición (solo con "Modo edición" activado)
   if (modoEdicion) {
@@ -706,10 +711,17 @@ function posicionPortada(anime, img) {
 }
 function posicionTitulo(a) { return a?.title || "(sin título)"; }
 
-function abrirPosicionador() {
+function abrirPosicionador(row = null) {
   const validas = todosLosAnimes.filter(a => a && a.row != null && a.title);
   if (validas.length < 2) { toast("Necesitas al menos 2 series para posicionar"); return; }
   posicionState = { validas };
+  if (row != null) {
+    const candidate = validas.find(a => Number(a.row) === Number(row));
+    if (!candidate) return;
+    if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
+    iniciarPosicionamiento(Number(candidate.row));
+    return;
+  }
   renderPosicionInicio();
   if (!dlgPosicionarEl.open) { dlgPosicionarEl.showModal(); dlgPosicionarEl.focus({ preventScroll: true }); }
 }
@@ -808,7 +820,9 @@ function iniciarPosicionamiento(row) {
     historial: [],
     inicial,
     cambiosReferencias: new Set(),
-    finalizadoPorComparaciones: false
+    finalizadoPorComparaciones: false,
+    turnosComparador: new Map(),
+    confirmacion: null
   };
 
   // Sin referencias no hay nada que comparar: la nota neutra es 5.0.
@@ -853,7 +867,16 @@ function elegirComparador() {
   const grupo = candidatos[0];
   if (!grupo) return null;
   s.comparadorGrupo = s.grupos.indexOf(grupo);
-  return grupo.items.find(a => !s.saltados.includes(a.row)) || null;
+
+  // Rota los rivales dentro del mismo grupo para no comparar siempre
+  // contra la primera serie de la nota.
+  const disponibles = grupo.items.filter(a => !s.saltados.includes(a.row));
+  if (!disponibles.length) return null;
+  const clave = grupo.key;
+  const siguiente = s.turnosComparador.get(clave) ?? 0;
+  const rival = disponibles[siguiente % disponibles.length];
+  s.turnosComparador.set(clave, (siguiente + 1) % disponibles.length);
+  return rival;
 }
 
 function calcularPosicionFinal(s) {
@@ -935,6 +958,81 @@ function deshacerPosicionamiento() {
   mostrarComparacion();
 }
 
+function enfocarDialogoPosicion() {
+  requestAnimationFrame(() => {
+    const objetivo = dlgPosicionarEl.querySelector(".pos-voto, .pos-confirmacion-btn");
+    if (objetivo) objetivo.focus();
+    else dlgPosicionarEl.focus({ preventScroll: true });
+  });
+}
+
+function mostrarConfirmacionPosicion() {
+  const s = posicionState;
+  const pos = calcularPosicionFinal(s);
+  const indice = pos.indice;
+  const superior = indice > 0 ? s.grupos[indice - 1]?.items?.[0] : null;
+  const inferior = indice < s.grupos.length ? s.grupos[indice]?.items?.[0] : null;
+
+  // Si el usuario ha declarado un empate exacto, no lo reinterpretamos como
+  // una comparación estricta con una vecina.
+  if (s.igualGrupo != null) return finalizarPosicionamiento();
+
+  // Una segunda vecina puede venir ya indicada por la primera comprobación.
+  const confirmacionActual = s.confirmacion;
+  const rival = confirmacionActual?.rival || superior || inferior;
+  const lado = confirmacionActual?.lado || (superior ? "superior" : "inferior");
+  if (!rival) return finalizarPosicionamiento();
+  s.confirmacion = { rival, lado, indice };
+  s.rival = null;
+
+  dlgPosicionarEl.innerHTML = "";
+  const leftImg = el("img", { className: "pos-cover", alt: "" });
+  const rightImg = el("img", { className: "pos-cover", alt: "" });
+  posicionPortada(s.candidate, leftImg);
+  posicionPortada(rival, rightImg);
+  const scoreActual = calcularNotaPosicion(s);
+  const botones = el("div", { className: "pos-votos" });
+  const prefieroCandidato = el("button", {
+    className: "pos-voto pos-confirmacion-btn pos-mas", type: "button",
+    ariaLabel: `Prefiero ${posicionTitulo(s.candidate)}`
+  }, el("span", { textContent: "←" }), el("strong", { textContent: "Prefiero la izquierda" }));
+  const prefieroRival = el("button", {
+    className: "pos-voto pos-confirmacion-btn pos-menos", type: "button",
+    ariaLabel: `Prefiero ${posicionTitulo(rival)}`
+  }, el("span", { textContent: "→" }), el("strong", { textContent: "Prefiero la derecha" }));
+  prefieroCandidato.addEventListener("click", () => responderConfirmacionPosicion(true));
+  prefieroRival.addEventListener("click", () => responderConfirmacionPosicion(false));
+  botones.append(prefieroCandidato, prefieroRival);
+
+  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
+  cerrar.addEventListener("click", () => dlgPosicionarEl.close());
+  dlgPosicionarEl.append(
+    el("div", { className: "pos-topline" }, el("span", { textContent: "COMPROBAR POSICIÓN" }), el("span", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}` })),
+    el("div", { className: "pos-estimacion", ariaLive: "polite" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "Una última comprobación antes de guardar" })),
+    el("div", { className: "pos-comparacion" },
+      el("div", { className: "pos-serie" }, leftImg, el("strong", { textContent: posicionTitulo(s.candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` })),
+      el("div", { className: "pos-vs", textContent: "VS" }),
+      el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
+    ),
+    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }),
+    botones,
+    el("div", { className: "pos-foot" }, el("span", { textContent: s.confirmacion.lado === "superior" ? "Comprobando la serie inmediatamente superior." : "Comprobando la serie inmediatamente inferior." }), el("div", { className: "pos-foot-actions" }, cerrar))
+  );
+  enfocarDialogoPosicion();
+}
+
+function posicionVisual(anime) {
+  const cont = el("div", { className: "pos-visual" });
+  if (!anime?.cover) {
+    cont.append(el("div", { className: "sin-portada pos-sin-portada", textContent: "Sin portada" }));
+    return cont;
+  }
+  const img = el("img", { className: "pos-cover", alt: posicionTitulo(anime) });
+  posicionPortada(anime, img);
+  cont.append(img);
+  return cont;
+}
+
 function mostrarComparacion() {
   const s = posicionState;
   const rival = elegirComparador();
@@ -942,16 +1040,26 @@ function mostrarComparacion() {
   s.rival = rival;
   const candidate = s.candidate;
   dlgPosicionarEl.innerHTML = "";
-  const leftImg = el("img", { className: "pos-cover", alt: "" });
-  const rightImg = el("img", { className: "pos-cover", alt: "" });
-  posicionPortada(candidate, leftImg); posicionPortada(rival, rightImg);
   const scoreActual = calcularNotaPosicion(s);
-  const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}`;
-  const botones = el("div", { className: "pos-votos" });
-  [["más", "↑", "pos-mas"],["igual", "=", "pos-igual"],["menos", "↓", "pos-menos"]].forEach(([tipo, icono, clase]) => {
-    const b = el("button", { className: `pos-voto ${clase}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: tipo === "más" ? "Me gusta más" : tipo === "menos" ? "Me gusta menos" : "Me gustan lo mismo" }));
-    b.addEventListener("click", () => responderPosicionamiento(tipo)); botones.append(b);
-  });
+  const restantes = Math.max(1, Math.ceil(Math.log2(Math.max(1, s.grupos.length))));
+  const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"} · ~${restantes} restantes`;
+
+  const izquierda = el("button", {
+    className: "pos-serie pos-serie-btn", type: "button",
+    ariaLabel: `Prefiero ${posicionTitulo(candidate)}`
+  }, posicionVisual(candidate), el("strong", { textContent: posicionTitulo(candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` }));
+  const igual = el("button", {
+    className: "pos-voto pos-igual pos-igual-centro", type: "button",
+    ariaLabel: `Me gustan igual ${posicionTitulo(candidate)} y ${posicionTitulo(rival)}`
+  }, el("span", { textContent: "=" }), el("strong", { textContent: "Igual" }));
+  const derecha = el("button", {
+    className: "pos-serie pos-serie-btn", type: "button",
+    ariaLabel: `Prefiero ${posicionTitulo(rival)}`
+  }, posicionVisual(rival), el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }));
+  izquierda.addEventListener("click", () => responderPosicionamiento("más"));
+  igual.addEventListener("click", () => responderPosicionamiento("igual"));
+  derecha.addEventListener("click", () => responderPosicionamiento("menos"));
+
   const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta" });
   atras.disabled = !s.historial.length;
   atras.addEventListener("click", deshacerPosicionamiento);
@@ -963,19 +1071,22 @@ function mostrarComparacion() {
   });
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
+
   dlgPosicionarEl.append(
     el("div", { className: "pos-topline" }, el("span", { textContent: "POSICIONAR" }), el("span", { textContent: progreso })),
-    el("div", { className: "pos-estimacion" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "La estimación se calcula desde la posición actual" })),
-    el("div", { className: "pos-comparacion" },
-      el("div", { className: "pos-serie" }, leftImg, el("strong", { textContent: posicionTitulo(candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` })),
-      el("div", { className: "pos-vs", textContent: "VS" }),
-      el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
-    ),
-    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
-    el("div", { className: "pos-foot" }, el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, atras, saltar, cerrar))
+    el("div", { className: "pos-estimacion", ariaLive: "polite" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "La estimación se calcula desde la posición actual" })),
+    el("div", { className: "pos-comparacion" }, izquierda, igual, derecha),
+    el("p", { className: "pos-question", textContent: "Toca la portada que prefieras · = si te gustan igual" }),
+    el("div", { className: "pos-foot" }, el("span", { textContent: "← / → para elegir · ↓ para empate. Si no has visto la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, atras, saltar, cerrar))
   );
-}
 
+  dlgPosicionarEl.onkeydown = (e) => {
+    if (e.key === "ArrowLeft" || e.key === "1") { e.preventDefault(); responderPosicionamiento("más"); }
+    else if (e.key === "ArrowRight" || e.key === "2") { e.preventDefault(); responderPosicionamiento("menos"); }
+    else if (e.key === "ArrowDown" || e.key === "3" || e.key === "=") { e.preventDefault(); responderPosicionamiento("igual"); }
+  };
+  enfocarDialogoPosicion();
+}
 async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
   const grupoIdx = s.comparadorGrupo;
@@ -993,8 +1104,42 @@ async function responderPosicionamiento(tipo) {
   }
 
   s.rival = null;
-  if (posicionTerminada(s)) await finalizarPosicionamiento();
+  if (posicionTerminada(s)) mostrarConfirmacionPosicion();
   else mostrarComparacion();
+}
+
+async function responderConfirmacionPosicion(prefiereCandidato) {
+  const s = posicionState;
+  if (!s?.confirmacion) return;
+  const { lado, indice } = s.confirmacion;
+  s.confirmacion = null;
+
+  // Si la comprobación contradice el límite, reabrimos la búsqueda alrededor
+  // de la vecina que ha fallado. Si coincide, pasamos a guardar.
+  if ((lado === "superior" && !prefiereCandidato) || (lado === "inferior" && prefiereCandidato)) {
+    s.igualGrupo = null;
+    if (lado === "superior") {
+      s.hi = Math.max(0, indice - 1);
+      s.lo = 0;
+    } else {
+      s.lo = Math.min(s.grupos.length - 1, indice + 1);
+      s.hi = s.grupos.length - 1;
+    }
+    s.rival = null;
+    mostrarComparacion();
+    return;
+  }
+
+  // Si queda una segunda vecina por comprobar, la mostramos antes de guardar.
+  const segunda = lado === "superior" && indice < s.grupos.length - 1
+    ? s.grupos[indice]?.items?.[0]
+    : null;
+  if (segunda) {
+    s.confirmacion = { rival: segunda, lado: "inferior", indice };
+    mostrarConfirmacionPosicion();
+    return;
+  }
+  await finalizarPosicionamiento();
 }
 
 function sFinalizarPosicionamientoSinComparar() {

@@ -177,6 +177,14 @@
       min-height: 25px;
     }
     a.titulo:hover { text-decoration: underline; }
+    .btn-posicionar-fila {
+      width: 100%; min-height: 28px; padding: 4px 7px; font-size: 10.5px;
+      border: 1px solid var(--border); border-radius: 7px; background: var(--field);
+      color: var(--muted); cursor: pointer; text-align: left;
+    }
+    .btn-posicionar-fila:hover, .btn-posicionar-fila:focus-visible {
+      color: var(--accent); border-color: var(--accent); outline: none;
+    }
     .info select, .info input:not(.nota) {
       width: 100%; height: 23px; padding: 0 6px; font-size: 10.5px;
       border: 1px solid var(--border); border-radius: 6px; background-color: var(--field);
@@ -402,7 +410,19 @@
     .pos-estimacion small { font-size:10px; color:var(--muted); }
     .pos-comparacion { display:grid; grid-template-columns:1fr 52px 1fr; gap:8px; align-items:center; padding:4px 18px 14px; }
     .pos-serie { min-width:0; display:flex; flex-direction:column; align-items:center; text-align:center; gap:5px; }
+    .pos-serie-btn {
+      border:1px solid var(--border); background:var(--field); color:var(--text);
+      padding:8px; border-radius:12px; cursor:pointer; width:100%; transition:transform .15s,border-color .15s,box-shadow .15s;
+    }
+    .pos-serie-btn:hover, .pos-serie-btn:focus-visible {
+      border-color:var(--accent); transform:translateY(-2px); box-shadow:0 7px 20px rgba(0,0,0,.14); outline:none;
+    }
+    .pos-igual-centro { align-self:center; width:52px; padding:6px; cursor:pointer; }
+    .pos-visual { width:100%; display:grid; place-items:center; }
     .pos-cover { width:min(180px, 34vw); aspect-ratio:2/3; object-fit:cover; border-radius:12px; background:var(--field); box-shadow:0 5px 18px rgba(0,0,0,.18); }
+    .pos-serie .sin-portada { width:min(180px, 34vw); aspect-ratio:2/3; display:grid; place-items:center; border-radius:12px; background:var(--field); color:var(--muted); font-size:11px; }
+    .pos-voto { min-height:62px; cursor:pointer; }
+    .pos-voto strong { font-size:12px; }
     .pos-serie strong { max-width:100%; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .pos-serie small { color:var(--muted); font-size:10px; }
     .pos-vs { font-weight:900; color:var(--muted); text-align:center; }
