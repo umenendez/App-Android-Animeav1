@@ -862,41 +862,42 @@ function calcularPosicionFinal(s) {
 }
 
 function calcularNotaPosicion(s) {
-  // La posición se decide exclusivamente por las comparaciones.
-  // Las notas de las referencias son anclas: no debemos moverlas para
-  // "fabricar" huecos en la escala, porque eso introduce cambios que el
-  // usuario nunca pidió.
+  // La posición se decide exclusivamente por las comparaciones. Las notas de
+  // las referencias son anclas: nunca se mueven para "fabricar" huecos.
   if (s.igualGrupo != null) {
     return notaRedondeada(s.grupos[s.igualGrupo].score);
   }
+  // Sin comparaciones no hay información: se mantiene la nota de partida.
+  if (s.comparaciones === 0) return notaRedondeada(s.inicial);
 
-  const indice = Math.max(0, Math.min(s.grupos.length, s.lo));
-  const superior = indice > 0 ? s.grupos[indice - 1].score : null;
-  const inferior = indice < s.grupos.length ? s.grupos[indice].score : null;
+  // La serie está por debajo de grupos[lo-1] y por encima de grupos[hi+1].
+  // Si el intervalo está resuelto (lo > hi) son vecinos directos; si quedó
+  // sin resolver (series saltadas) se estima en el centro del tramo dudoso.
+  const resuelto = s.lo > s.hi;
+  const superior = s.lo > 0 ? s.grupos[s.lo - 1].score : null;
+  const inferior = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : null;
 
-  // Extremos: si ya estamos en 10/0 no existe un valor decimal que pueda
-  // expresar una posición estrictamente superior/inferior. Se satura.
-  if (superior == null) return 10;
-  if (inferior == null) return 0;
-
-  const centro = (superior + inferior) / 2;
-  const redondeado = notaRedondeada(centro);
-
-  // Si el intervalo tiene al menos una décima disponible, el punto medio
-  // redondeado es la mejor estimación. Si no la tiene, ninguna nota de una
-  // sola decimal puede representar una posición estricta; en ese caso
-  // elegimos el extremo más cercano a la nota previa (si existe) para evitar
-  // movimientos artificiales.
-  if (redondeado < superior && redondeado > inferior) return redondeado;
-
-  const previa = notaNumero(s.candidate);
-  if (previa != null) {
-    if (previa < superior && previa > inferior) return notaRedondeada(previa);
-    return Math.abs(previa - superior) <= Math.abs(previa - inferior)
-      ? notaRedondeada(superior)
-      : notaRedondeada(inferior);
+  // Extremos ya resueltos: no existe una décima estrictamente superior a 10
+  // ni inferior a 0, así que se satura.
+  if (resuelto) {
+    if (superior == null) return 10;
+    if (inferior == null) return 0;
   }
 
+  const sup = superior ?? 10;
+  const inf = inferior ?? 0;
+  const redondeado = notaRedondeada((sup + inf) / 2);
+  if (redondeado < sup && redondeado > inf) return redondeado;
+
+  // No cabe ninguna décima entre las dos notas vecinas. Se acepta que la nota
+  // se repita: se queda con la previa si encaja, o con la vecina más cercana.
+  const previa = notaNumero(s.candidate);
+  if (previa != null) {
+    if (previa < sup && previa > inf) return notaRedondeada(previa);
+    return Math.abs(previa - sup) <= Math.abs(previa - inf)
+      ? notaRedondeada(sup)
+      : notaRedondeada(inf);
+  }
   return redondeado;
 }
 
@@ -919,6 +920,21 @@ function posicionTerminada(s) {
   return s.lo > s.hi;
 }
 
+// Foto del estado de la búsqueda antes de cada respuesta, para poder deshacer.
+function instantaneaPosicion(s) {
+  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, comparaciones: s.comparaciones, saltados: s.saltados.slice() };
+}
+
+function deshacerPosicionamiento() {
+  const s = posicionState;
+  const prev = s?.historial?.pop();
+  if (!prev) return;
+  s.lo = prev.lo; s.hi = prev.hi; s.igualGrupo = prev.igualGrupo;
+  s.comparaciones = prev.comparaciones; s.saltados = prev.saltados;
+  s.rival = null;
+  mostrarComparacion();
+}
+
 function mostrarComparacion() {
   const s = posicionState;
   const rival = elegirComparador();
@@ -929,15 +945,22 @@ function mostrarComparacion() {
   const leftImg = el("img", { className: "pos-cover", alt: "" });
   const rightImg = el("img", { className: "pos-cover", alt: "" });
   posicionPortada(candidate, leftImg); posicionPortada(rival, rightImg);
-  const scoreActual = s.working.get(candidate.row) ?? 5;
+  const scoreActual = calcularNotaPosicion(s);
   const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}`;
   const botones = el("div", { className: "pos-votos" });
   [["más", "↑", "pos-mas"],["igual", "=", "pos-igual"],["menos", "↓", "pos-menos"]].forEach(([tipo, icono, clase]) => {
     const b = el("button", { className: `pos-voto ${clase}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: tipo === "más" ? "Me gusta más" : tipo === "menos" ? "Me gusta menos" : "Me gustan lo mismo" }));
     b.addEventListener("click", () => responderPosicionamiento(tipo)); botones.append(b);
   });
+  const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta" });
+  atras.disabled = !s.historial.length;
+  atras.addEventListener("click", deshacerPosicionamiento);
   const saltar = el("button", { className: "btn-mini", type: "button", textContent: "Saltar →", title: "No he visto esta serie" });
-  saltar.addEventListener("click", () => { if (!s.saltados.includes(rival.row)) s.saltados.push(rival.row); mostrarComparacion(); });
+  saltar.addEventListener("click", () => {
+    s.historial.push(instantaneaPosicion(s));
+    if (!s.saltados.includes(rival.row)) s.saltados.push(rival.row);
+    mostrarComparacion();
+  });
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
@@ -949,16 +972,14 @@ function mostrarComparacion() {
       el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
     ),
     el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
-    el("div", { className: "pos-foot" }, el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, saltar, cerrar))
+    el("div", { className: "pos-foot" }, el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, atras, saltar, cerrar))
   );
 }
 
 async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
   const grupoIdx = s.comparadorGrupo;
-  const b = s.rival;
-  const oldB = s.working.get(b.row) ?? 5;
-  s.historial.push({ rival: b.row, tipo, score: oldB });
+  s.historial.push(instantaneaPosicion(s));
   s.comparaciones++;
 
   if (tipo === "igual") {
@@ -977,9 +998,9 @@ async function responderPosicionamiento(tipo) {
 }
 
 function sFinalizarPosicionamientoSinComparar() {
-  const s = posicionState;
-  if (!s?.candidate) return;
-  s.working.set(s.candidate.row, 5);
+  // Sin referencias no hay nada que comparar: se conserva la nota actual de
+  // la serie o, si no tenía, la neutra (5.0). Ambas ya están en s.inicial.
+  if (!posicionState?.candidate) return;
   finalizarPosicionamiento();
 }
 
@@ -987,69 +1008,47 @@ async function finalizarPosicionamiento() {
   const s = posicionState;
   if (!s?.candidate) return;
 
-  construirResultadoFinal(s);
-
-  const cambios = [];
-  s.working.forEach((valor, row) => {
-    const anime = s.validas.find(a => Number(a.row) === Number(row));
-    if (!anime) return;
-    const original = notaNumero(anime);
-    const nueva = notaRedondeada(valor);
-    if (anime === s.candidate || (original != null && Math.abs(nueva - original) >= 0.05)) {
-      cambios.push({ anime, original, nueva });
-    }
-  });
-
-  const referencias = cambios.filter(c => c.anime !== s.candidate);
-  const resumen = referencias.length
-    ? `${referencias.length} ${referencias.length === 1 ? "nota existente ha cambiado" : "notas existentes han cambiado"}.`
-    : "Ninguna otra nota ha cambiado.";
-
-  const filas = referencias.map(c => el("div", { className: "pos-cambio" },
-    el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }),
-    el("span", { className: "pos-cambio-notas", textContent: `${c.original == null ? "Sin nota" : c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })
-  ));
+  const nueva = notaRedondeada(construirResultadoFinal(s));
+  const anime = s.candidate;
+  const antes = notaNumero(anime);
+  const textoAntes = antes == null ? "Sin nota" : antes.toFixed(1);
+  const comparten = s.validas.filter(a => a !== anime && notaNumero(a) != null && notaRedondeada(notaNumero(a)) === nueva).length;
+  const resumen = "Solo cambia la nota de esta serie; las demás no se modifican."
+    + (comparten ? ` Comparte nota con ${comparten} ${comparten === 1 ? "serie" : "series"}; puedes usar «Separar notas iguales» para ordenarlas.` : "");
 
   const guardarBtn = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar" });
   guardarBtn.addEventListener("click", () => {
-    const todosCambios = cambios.map(c => ({ anime: c.anime, nueva: c.nueva }));
-    todosCambios.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
+    anime.score = nueva.toFixed(1);
     dlgPosicionarEl.close();
     render();
     toast("Posicionamiento guardado localmente");
-    Promise.all(todosCambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
-      .then(resultados => {
-        if (resultados.some(ok => !ok)) toast("Algunas notas no pudieron sincronizarse con Google Sheets");
-        else toast("Posicionamiento sincronizado");
-      })
+    guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor: anime.score })
+      .then(ok => toast(ok ? "Posicionamiento sincronizado" : "No se pudo sincronizar con Google Sheets"))
       .catch(() => toast("No se pudo sincronizar el posicionamiento"));
   });
 
-  const antesCandidato = notaNumero(s.candidate);
-  const textoAntes = antesCandidato == null ? "Sin nota" : antesCandidato.toFixed(1);
-  const textoDespues = notaRedondeada(s.working.get(s.candidate.row)).toFixed(1);
+  const acciones = el("div", { className: "pos-actions" }, guardarBtn);
+  if (s.historial.length) {
+    acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "← Corregir última respuesta", onclick: deshacerPosicionamiento }));
+  }
+  acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }));
 
   dlgPosicionarEl.innerHTML = "";
   dlgPosicionarEl.append(
     el("div", { className: "pos-resultado" },
       el("div", { className: "pos-check", textContent: "✓" }),
       el("h2", { textContent: "¡Serie posicionada!" }),
-      el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(s.candidate) }),
-      el("div", { className: "pos-nota-final", textContent: `${textoAntes} → ${textoDespues}` }),
+      el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(anime) }),
+      el("div", { className: "pos-nota-final", textContent: `${textoAntes} → ${nueva.toFixed(1)}` }),
       el("p", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"} realizadas.` })
     ),
     el("div", { className: "pos-cambios-panel" },
       el("h3", { textContent: "Cambios de puntuación" }),
-      el("p", { className: "pos-cambios-resumen", textContent: resumen }),
-      el("div", { className: "pos-cambios-lista" }, ...filas)
+      el("p", { className: "pos-cambios-resumen", textContent: resumen })
     ),
-    el("div", { className: "pos-actions" },
-      guardarBtn,
-      el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() })
-    )
+    acciones
   );
 }
-
 
 // --- Separador de empates ------------------------------------------------------
 // Ordena únicamente las series que comparten una misma décima. La nota sigue
@@ -1058,9 +1057,7 @@ async function finalizarPosicionamiento() {
 let empateState = null;
 
 function abrirSeparadorEmpates() {
-  // El separador de empates excluye las series marcadas como "Sin ver".
-  // Solo las series con otro estado participan en este flujo.
-  const validas = todosLosAnimes.filter(a => a && a.status !== "✖" && a.row != null && a.title);
+  const validas = posicionState?.validas || todosLosAnimes;
   const mapa = new Map();
   validas.forEach(a => {
     const n = notaNumero(a);
@@ -1094,7 +1091,7 @@ function mostrarSelectorEmpate(grupos) {
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgPosicionarEl.close() });
   dlgPosicionarEl.append(
     el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "↕" }), el("div", {}, el("h2", { textContent: "Separar notas iguales" }), el("p", { textContent: "Compara las series que tienen la misma décima y conviértelas en un orden real con notas decimales." }))),
-    el("p", { className: "pos-help", textContent: "La aplicación usa búsqueda binaria para ordenar el grupo con el menor número de comparaciones posible. Después utiliza las décimas disponibles más cercanas a la nota original." }),
+    el("p", { className: "pos-help", textContent: "Ordenas el grupo con el menor número de comparaciones posible. Después se reparten las décimas libres que hay entre las notas vecinas, sin cruzar otras series; si no caben todas, algunas seguirán empatadas." }),
     lista,
     el("div", { className: "pos-actions" }, cerrar)
   );
@@ -1103,19 +1100,31 @@ function mostrarSelectorEmpate(grupos) {
 
 function iniciarSeparacionEmpate(score) {
   const validas = posicionState?.validas || todosLosAnimes;
-  const grupo = validas.filter(a => notaNumero(a) === score);
+  const grupo = validas.filter(a => { const n = notaNumero(a); return n != null && notaRedondeada(n) === score; });
   if (grupo.length < 2) return;
   empateState = {
     score,
     items: grupo,
     sorted: [],
-    pending: [],
     comparaciones: 0,
-    historial: [],
-    cambios: []
+    undo: [],
+    // Unión de series que el usuario ha marcado como "iguales" (union-find).
+    padre: new Map(grupo.map(a => [a.row, a.row]))
   };
   // Merge sort interactivo: óptimo en número de comparaciones en el peor caso.
   prepararMergeEmpate();
+}
+
+function empateRaiz(s, row) {
+  while (s.padre.get(row) !== row) {
+    s.padre.set(row, s.padre.get(s.padre.get(row)));
+    row = s.padre.get(row);
+  }
+  return row;
+}
+function empateUnir(s, rowA, rowB) {
+  const ra = empateRaiz(s, rowA), rb = empateRaiz(s, rowB);
+  if (ra !== rb) s.padre.set(rb, ra);
 }
 
 function prepararMergeEmpate() {
@@ -1166,6 +1175,27 @@ function siguienteMergeEmpate() {
   mostrarComparacionEmpate(a, b);
 }
 
+// Foto del estado del merge antes de cada respuesta, para poder deshacer.
+function instantaneaEmpate(s) {
+  const copia = r => r.slice();
+  return {
+    runs: s.runs.map(copia), nextRuns: s.nextRuns.map(copia), runIndex: s.runIndex,
+    currentLeft: s.currentLeft ? copia(s.currentLeft) : null,
+    currentRight: s.currentRight ? copia(s.currentRight) : null,
+    merged: s.merged ? copia(s.merged) : null,
+    leftIndex: s.leftIndex, rightIndex: s.rightIndex,
+    comparaciones: s.comparaciones, padre: new Map(s.padre)
+  };
+}
+
+function deshacerEmpate() {
+  const s = empateState;
+  const prev = s?.undo?.pop();
+  if (!prev) return;
+  Object.assign(s, prev);
+  mostrarComparacionEmpate(s.currentLeft[s.leftIndex], s.currentRight[s.rightIndex]);
+}
+
 function mostrarComparacionEmpate(a, b) {
   const s = empateState;
   dlgPosicionarEl.innerHTML = "";
@@ -1178,6 +1208,10 @@ function mostrarComparacionEmpate(a, b) {
     btt.addEventListener("click", () => responderEmpate(tipo));
     botones.append(btt);
   });
+  const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta" });
+  atras.disabled = !s.undo.length;
+  atras.addEventListener("click", deshacerEmpate);
+  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() });
   dlgPosicionarEl.append(
     el("div", { className: "pos-topline" }, el("span", { textContent: "SEPARAR EMPATE" }), el("span", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}` })),
     el("div", { className: "pos-estimacion" }, el("span", { textContent: `TODAS TENÍAN ${s.score.toFixed(1)}` }), el("strong", { textContent: String(s.items.length) }), el("small", { textContent: "La nota se mantendrá decimal; se redistribuirán décimas al terminar." })),
@@ -1187,7 +1221,7 @@ function mostrarComparacionEmpate(a, b) {
       el("div", { className: "pos-serie" }, ib, el("strong", { textContent: posicionTitulo(b) }), el("small", { textContent: "Empate actual" }))
     ),
     el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
-    el("div", { className: "pos-foot" }, el("span", { textContent: "Si son exactamente iguales, puedes conservar el empate." }))
+    el("div", { className: "pos-foot" }, el("span", { textContent: "Si son exactamente iguales, conservarán la misma nota." }), el("div", { className: "pos-foot-actions" }, atras, cerrar))
   );
 }
 
@@ -1196,54 +1230,72 @@ function responderEmpate(tipo) {
   if (!s) return;
   const a = s.currentLeft[s.leftIndex];
   const b = s.currentRight[s.rightIndex];
+  s.undo.push(instantaneaEmpate(s));
   s.comparaciones++;
-  s.historial.push({ a: a.row, b: b.row, tipo });
   if (tipo === "a") {
     s.merged.push(a); s.leftIndex++;
   } else if (tipo === "b") {
     s.merged.push(b); s.rightIndex++;
   } else {
-    // Un empate subjetivo no necesita otra comparación; mantenemos el orden estable.
+    // Iguales: se recuerda el vínculo para que acaben con la misma nota.
+    empateUnir(s, a.row, b.row);
     s.merged.push(a); s.leftIndex++;
     s.merged.push(b); s.rightIndex++;
   }
   siguienteMergeEmpate();
 }
 
-function obtenerNotasDisponiblesParaEmpate(s) {
-  const cantidad = s.items.length;
-  if (cantidad < 1) return [];
-
-  // Las décimas NO son un recurso exclusivo: una misma décima puede asignarse
-  // a varias series. Esto es necesario porque 0.0..10.0 con una decimal solo
-  // proporciona 101 valores distintos y la lista puede contener cientos de
-  // series.
-  //
-  // Para conservar el comportamiento anterior cuando el grupo es pequeño,
-  // usamos tantas décimas distintas como sea posible, centradas alrededor de
-  // la nota original. Cuando hay más de 101 series, reutilizamos las décimas
-  // del rango 0.0..10.0 de forma equilibrada.
-  const base = Math.round(s.score * 10);
-  const maxValores = 101;
-  const cantidadValores = Math.min(cantidad, maxValores);
-
-  // Ventana de décimas centrada en la nota original. Si no cabe completa por
-  // los extremos 0.0/10.0, se desplaza hasta entrar en el rango.
-  let inicio = Math.max(0, base - Math.floor((cantidadValores - 1) / 2));
-  inicio = Math.min(inicio, maxValores - cantidadValores);
-  const valores = Array.from({ length: cantidadValores }, (_, i) => inicio + i);
-
-  // Distribuye las series ordenadas entre las décimas. Cada valor puede
-  // repetirse las veces necesarias y la secuencia siempre es descendente,
-  // de modo que el orden obtenido mediante las comparaciones se conserva.
-  const resultado = [];
-  for (let i = 0; i < cantidad; i++) {
-    const indice = Math.floor(i * cantidadValores / cantidad);
-    resultado.push(valores[Math.min(indice, cantidadValores - 1)]);
-  }
-
-  return resultado;
+// Agrupa la lista ya ordenada en "escalones": las series marcadas como iguales
+// y contiguas comparten escalón y, por tanto, nota final.
+function agruparEscalonesEmpate(s) {
+  const escalones = [];
+  s.sorted.forEach((a, i) => {
+    if (i > 0 && empateRaiz(s, a.row) === empateRaiz(s, s.sorted[i - 1].row)) escalones[escalones.length - 1].push(a);
+    else escalones.push([a]);
+  });
+  return escalones;
 }
+
+// Reparte las décimas para N escalones SIN salir del hueco que dejan las
+// series vecinas: la nota inmediatamente inferior y la inmediatamente superior
+// al empate (de otras series) son un muro que no se cruza. Si caben, se elige
+// el bloque consecutivo más centrado en la nota original; si no caben, se
+// reparten por todo el hueco y algunos escalones seguirán empatados.
+// Devuelve las notas en décimas, del mejor escalón al peor.
+function calcularRepartoEmpate(s, nEscalones) {
+  const filasGrupo = new Set(s.items.map(a => a.row));
+  const base = Math.round(s.score * 10);
+  let vecinaInf = 0, vecinaSup = 101;
+  todosLosAnimes.forEach(a => {
+    if (!a || filasGrupo.has(a.row)) return;
+    const n = notaNumero(a);
+    if (n == null) return;
+    const t = Math.round(n * 10);
+    if (t < base && t > vecinaInf) vecinaInf = t;
+    if (t > base && t < vecinaSup) vecinaSup = t;
+  });
+  const desde = Math.max(1, vecinaInf + 1);
+  const hasta = Math.min(100, vecinaSup - 1);
+  const ancho = hasta - desde + 1;
+  const asignacion = [];
+
+  if (ancho < 1) {
+    for (let i = 0; i < nEscalones; i++) asignacion.push(base);
+    return { asignacion, comprimido: nEscalones > 1, desde: base, hasta: base, ancho: 1 };
+  }
+  if (nEscalones <= ancho) {
+    let mejorInicio = desde, mejorCoste = Infinity;
+    for (let inicio = desde; inicio + nEscalones - 1 <= hasta; inicio++) {
+      const coste = Math.abs(inicio + (nEscalones - 1) / 2 - base);
+      if (coste < mejorCoste) { mejorCoste = coste; mejorInicio = inicio; }
+    }
+    for (let i = 0; i < nEscalones; i++) asignacion.push(mejorInicio + nEscalones - 1 - i);
+    return { asignacion, comprimido: false, desde, hasta, ancho };
+  }
+  for (let i = 0; i < nEscalones; i++) asignacion.push(hasta - Math.floor(i * ancho / nEscalones));
+  return { asignacion, comprimido: true, desde, hasta, ancho };
+}
+
 function finalizarSeparacionEmpate() {
   const s = empateState;
   if (!s) return;
@@ -1255,29 +1307,56 @@ function finalizarSeparacionEmpate() {
   }
   if (s.runs.length > 1) return siguienteMergeEmpate();
   s.sorted = s.runs[0] || [];
-  const disponibles = obtenerNotasDisponiblesParaEmpate(s);
+
+  const escalones = agruparEscalonesEmpate(s);
+  const reparto = calcularRepartoEmpate(s, escalones.length);
+  const cambios = [];
+  escalones.forEach((grupo, i) => grupo.forEach(anime => cambios.push({ anime, nueva: reparto.asignacion[i] / 10, original: s.score })));
+  const aCambiar = cambios.filter(c => Math.abs(c.nueva - c.original) >= 0.05);
+
+  const acciones = el("div", { className: "pos-actions" });
+  const corregir = s.undo.length
+    ? el("button", { className: "btn-mini", type: "button", textContent: "← Corregir última respuesta", onclick: deshacerEmpate })
+    : null;
+  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: aCambiar.length ? "Cancelar" : "Cerrar", onclick: () => dlgPosicionarEl.close() });
+
   dlgPosicionarEl.innerHTML = "";
-  if (disponibles.length < s.sorted.length) {
+
+  if (!aCambiar.length) {
+    const motivo = escalones.length === 1
+      ? "Has indicado que todas te gustan lo mismo, así que conservan la misma nota."
+      : `Entre las notas vecinas no queda ninguna décima libre, así que no se puede separar sin tocar otras series.`;
+    acciones.append(...[corregir, cerrar].filter(Boolean));
     dlgPosicionarEl.append(
-      el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "!" }), el("h2", { textContent: "No hay suficientes décimas libres" }), el("p", { textContent: `Has ordenado las ${s.sorted.length} series de ${s.score.toFixed(1)}, pero solo hay ${disponibles.length} décimas consecutivas libres sin tocar otras notas. No voy a cambiar notas de otras series sin que las compares.` })),
-      el("div", { className: "pos-actions" }, el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgPosicionarEl.close() }))
+      el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "=" }), el("h2", { textContent: "Sin cambios de nota" }), el("p", { textContent: motivo })),
+      acciones
     );
     return;
   }
-  const cambios = s.sorted.map((anime, i) => ({ anime, nueva: disponibles[disponibles.length - 1 - i] / 10, original: s.score }));
+
   const filas = cambios.map(c => el("div", { className: "pos-cambio" }, el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }), el("span", { className: "pos-cambio-notas", textContent: `${c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })));
   const guardarBtnEmpate = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar orden" });
   guardarBtnEmpate.addEventListener("click", () => {
-    cambios.forEach(c => c.anime.score = c.nueva.toFixed(1));
+    aCambiar.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
     dlgPosicionarEl.close();
     render();
-    Promise.all(cambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score }))).catch(() => toast("No se pudo sincronizar alguna nota"));
-    toast(`${cambios.length} series ordenadas por nota`);
+    toast(`${aCambiar.length} series ordenadas por nota`);
+    Promise.all(aCambiar.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
+      .then(resultados => { if (resultados.some(ok => !ok)) toast("Algunas notas no pudieron sincronizarse con Google Sheets"); })
+      .catch(() => toast("No se pudo sincronizar alguna nota"));
   });
+  acciones.append(...[guardarBtnEmpate, corregir, cerrar].filter(Boolean));
+
+  const aviso = reparto.comprimido
+    ? el("p", { className: "pos-cambios-resumen", textContent: `Entre las notas vecinas solo caben ${reparto.ancho} décimas (${(reparto.desde / 10).toFixed(1)}–${(reparto.hasta / 10).toFixed(1)}) para ${escalones.length} posiciones, así que algunas series seguirán con la misma nota.` })
+    : (escalones.length < s.items.length
+      ? el("p", { className: "pos-cambios-resumen", textContent: "Las series que marcaste como iguales comparten nota." })
+      : null);
+
   dlgPosicionarEl.append(
-    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}. Las notas siguen usando una sola decimal.` })),
-    el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: `Nuevo orden de ${s.score.toFixed(1)}` }), el("div", { className: "pos-cambios-lista" }, ...filas)),
-    el("div", { className: "pos-actions" }, guardarBtnEmpate, el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }))
+    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}. Las notas siguen usando una sola decimal y no cruzan a otras series.` })),
+    el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: `Nuevo orden de ${s.score.toFixed(1)}` }), aviso, el("div", { className: "pos-cambios-lista" }, ...filas)),
+    acciones
   );
 }
 
