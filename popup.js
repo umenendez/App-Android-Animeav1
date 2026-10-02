@@ -85,11 +85,19 @@ const normalizar = (s) => String(s || "").normalize("NFD").replace(/\p{Diacritic
 
 const toastEl = $("toast");
 let toastTimer;
-function toast(texto) {
-  toastEl.textContent = texto;
+// accion: { texto, onclick } muestra un botón dentro del aviso (p. ej. «Deshacer»).
+function toast(texto, accion, ms) {
+  toastEl.replaceChildren(texto);
+  if (accion) {
+    toastEl.append(el("button", {
+      className: "toast-accion", type: "button", textContent: accion.texto,
+      onclick: () => { clearTimeout(toastTimer); toastEl.classList.remove("visible"); accion.onclick(); }
+    }));
+  }
+  toastEl.classList.toggle("con-accion", !!accion);
   toastEl.classList.add("visible");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => toastEl.classList.remove("visible"), 1800);
+  toastTimer = setTimeout(() => toastEl.classList.remove("visible"), ms || (accion ? 7000 : 1800));
 }
 
 // --- Tema claro / oscuro / automático ----------------------------------------
@@ -418,7 +426,17 @@ function renderPanelGeneros() {
   panelGenerosEl.append(cabecera, busqueda, lista, pie);
 }
 
+function actualizarInsigniaEmpates() {
+  const badge = $("badgeEmpates");
+  if (!badge) return;
+  const n = PosCore.contarEmpates(todosLosAnimes.filter((a) => a && a.row != null && a.title));
+  badge.hidden = !n;
+  badge.textContent = n > 99 ? "99+" : String(n);
+  $("btnPosicionar").title = n ? `Posicionar series (${PosCore.plural(n, "serie empatada", "series empatadas")})` : "Posicionar series";
+}
+
 function render() {
+  actualizarInsigniaEmpates();
   const orden = ordenEl.value;
   const q = normalizar(busquedaEl.value.trim());
 
@@ -525,7 +543,12 @@ function renderItem(anime) {
     }
     anime.score = valor;
     aplicarColorNota(inputScore);
-    guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor }, inputScore);
+    guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor }, inputScore).then((ok) => {
+      // Sugerencia: colocarla comparándola con otras series (solo si hay con qué).
+      if (ok && valor !== "" && todosLosAnimes.some((a) => a !== anime && notaNumero(a) != null)) {
+        toast(`Nota ${valor} guardada`, { texto: "⚖ Posicionar", onclick: () => abrirPosicionador(anime.row) }, 6000);
+      }
+    });
   });
 
   const btnUltimoCap = el("a", { className: "btn-ultimo-cap", target: "_blank", title: "Ir al último capítulo visto", ariaLabel: "Último capítulo visto", textContent: "▶" });
@@ -535,7 +558,9 @@ function renderItem(anime) {
     btnUltimoCap.style.display = visible ? "flex" : "none";
   }
   actualizarBotonUltimoCap();
-  portada.append(inputScore, btnUltimoCap);
+  const btnPosicionar = el("button", { className: "btn-posicionar", type: "button", textContent: "⚖", title: "Posicionar esta serie comparándola con otras", ariaLabel: `Posicionar ${anime.title || "serie"}` });
+  btnPosicionar.addEventListener("click", () => abrirPosicionador(anime.row));
+  portada.append(inputScore, btnUltimoCap, btnPosicionar);
 
   // Info
   const info = el("div", { className: "info" });
@@ -556,12 +581,7 @@ function renderItem(anime) {
   selectGenero.ariaLabel = "Géneros";
   selectGenero.addEventListener("click", () => abrirDialogoGeneros(anime));
 
-  const btnPosicionar = el("button", {
-    className: "btn-posicionar-fila", type: "button", textContent: "⚖ Posicionar",
-    title: `Posicionar ${anime.title || "esta serie"}`, ariaLabel: `Posicionar ${anime.title || "esta serie"}`
-  });
-  btnPosicionar.addEventListener("click", () => abrirPosicionador(anime.row));
-  info.append(link, selectEstado, selectGenero, btnPosicionar);
+  info.append(link, selectEstado, selectGenero);
 
   // Bloque de edición (solo con "Modo edición" activado)
   if (modoEdicion) {
@@ -688,20 +708,16 @@ function abrirDialogoGeneros(anime) {
 }
 
 // --- Minijuego de posicionamiento ----------------------------------------------
+// La lógica (grupos, búsqueda binaria, nota, reparto de décimas) vive en
+// posicion-core.js; aquí solo está la interfaz.
 const dlgPosicionarEl = $("dlgPosicionar");
+const { notaNumero, notaRedondeada, plural } = PosCore;
 let posicionState = null;
+let versusActivo = null;
 
-function notaNumero(a) {
-  const n = parseFloat(String(a?.score ?? "").replace(",", "."));
-  return Number.isFinite(n) ? (n <= 0 ? null : Math.min(10, Math.max(0, n))) : null;
-}
-function notaRedondeada(n) { return Math.round(Math.min(10, Math.max(0, n)) * 10) / 10; }
-function mediana(nums) {
-  const a = nums.slice().sort((x,y) => x-y);
-  if (!a.length) return 5;
-  const m = Math.floor(a.length / 2);
-  return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
-}
+const filasValidas = () => todosLosAnimes.filter(a => a && a.row != null && a.title);
+function posicionTitulo(a) { return a?.title || "(sin título)"; }
+
 function posicionPortada(anime, img) {
   if (!anime?.cover) { img.hidden = true; return; }
   img.hidden = false;
@@ -709,21 +725,170 @@ function posicionPortada(anime, img) {
   img.src = anime.cover;
   cargarPortada(anime.cover).then(src => { if (img.isConnected) img.src = src; });
 }
-function posicionTitulo(a) { return a?.title || "(sin título)"; }
+// Calienta la caché de una portada para que aparezca sin parpadeo.
+function precargarPortada(anime) {
+  if (!anime?.cover) return;
+  try { new Image().src = anime.cover; } catch (e) {}
+  cargarPortada(anime.cover).catch(() => {});
+}
 
-function abrirPosicionador(row = null) {
-  const validas = todosLosAnimes.filter(a => a && a.row != null && a.title);
+// Sincroniza notas con Sheets en UNA sola petición. Si falla, ofrece reintentar.
+async function sincronizarNotas(cambios) {
+  const res = await enviarMensaje({ type: "UPDATE_SCORES_BULK", cambios });
+  return !!res?.ok;
+}
+async function sincronizarConReintento(cambios) {
+  if (await sincronizarNotas(cambios)) return true;
+  toast("No se pudo sincronizar con Google Sheets", {
+    texto: "Reintentar",
+    onclick: () => sincronizarConReintento(cambios).then(ok => { if (ok) toast("Sincronizado"); })
+  }, 9000);
+  return false;
+}
+// cambios: [{ anime, previa, nueva }] con las notas como texto. Aplica en local,
+// sincroniza y deja unos segundos el botón «Deshacer».
+function guardarNotasConDeshacer(cambios, mensaje) {
+  cambios.forEach(c => { c.anime.score = c.nueva; });
+  render();
+  toast(mensaje, {
+    texto: "Deshacer",
+    onclick: () => {
+      cambios.forEach(c => { c.anime.score = c.previa; });
+      render();
+      toast("Cambio deshecho");
+      sincronizarConReintento(cambios.map(c => ({ row: c.anime.row, valor: c.previa })));
+    }
+  }, 8000);
+  return sincronizarConReintento(cambios.map(c => ({ row: c.anime.row, valor: c.nueva })));
+}
+
+// --- Pantalla "versus" compartida (posicionador y separador de empates) ----------
+// Las dos portadas son los botones de respuesta; el "=" va en el centro. Se crea
+// una vez y después solo se actualiza lo que cambia (sin parpadeo).
+function crearLadoVersus(clase) {
+  const img = el("img", { className: "pos-cover", alt: "", draggable: false });
+  const vacia = el("div", { className: "pos-cover-vacia", hidden: true });
+  const badge = el("span", { className: "pos-badge", hidden: true });
+  const titulo = el("strong", { className: "pos-lado-titulo" });
+  const sub = el("small", {});
+  const btn = el("button", { className: `pos-lado ${clase}`, type: "button" },
+    el("div", { className: "pos-cover-wrap" }, img, vacia, badge), titulo, sub,
+    el("span", { className: "pos-prefiero", textContent: "Prefiero esta" }));
+  return { btn, img, vacia, badge, titulo, sub, row: null };
+}
+
+function crearVersus() {
+  const izq = crearLadoVersus("pos-lado-izq");
+  const der = crearLadoVersus("pos-lado-der");
+  const igual = el("button", { className: "pos-igual-btn", type: "button", ariaLabel: "Me gustan igual", title: "Me gustan igual" },
+    el("span", { textContent: "=" }), el("small", { textContent: "Igual" }));
+  const tTitulo = el("span"), tProgreso = el("span");
+  const barraFill = el("i");
+  const eLabel = el("span"), eValor = el("strong", { ariaLive: "polite" }), eNota = el("small");
+  const pregunta = el("p", { className: "pos-question" });
+  const pie = el("span", { className: "pos-pie-texto" });
+  const atajos = el("span", { className: "pos-atajos", textContent: "← → elegir · ↓ igual · Z atrás · S saltar" });
+  const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta (Z)" });
+  const saltar = el("button", { className: "btn-mini", type: "button", textContent: "Saltar →", title: "No he visto esta serie (S)" });
+  const omitir = el("button", { className: "btn-mini", type: "button", textContent: "Terminar ya", title: "Omitir la comprobación", hidden: true });
+  const cancelar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
+  const ui = { acc: {}, izq, der, igual, tTitulo, tProgreso, barraFill, eLabel, eValor, eNota, pregunta, pie, atras, saltar, omitir };
+  izq.btn.addEventListener("click", () => ui.acc.izq?.());
+  der.btn.addEventListener("click", () => ui.acc.der?.());
+  igual.addEventListener("click", () => ui.acc.igual?.());
+  atras.addEventListener("click", () => ui.acc.atras?.());
+  saltar.addEventListener("click", () => ui.acc.saltar?.());
+  omitir.addEventListener("click", () => ui.acc.omitir?.());
+  cancelar.addEventListener("click", () => dlgPosicionarEl.close());
+  ui.root = el("div", { className: "pos-versus" },
+    el("div", { className: "pos-topline" }, tTitulo, tProgreso),
+    el("div", { className: "pos-barra" }, barraFill),
+    el("div", { className: "pos-estimacion" }, eLabel, eValor, eNota),
+    el("div", { className: "pos-comparacion" }, izq.btn, igual, der.btn),
+    pregunta,
+    el("div", { className: "pos-foot" }, el("div", { className: "pos-pie" }, pie, atajos),
+      el("div", { className: "pos-foot-actions" }, atras, saltar, omitir, cancelar)));
+  dlgPosicionarEl.replaceChildren(ui.root);
+  versusActivo = ui;
+  izq.btn.focus({ preventScroll: true });
+  return ui;
+}
+
+function pintarLadoVersus(lado, anime, sub, etiqueta) {
+  const cambio = lado.row !== anime.row;
+  lado.row = anime.row;
+  const titulo = posicionTitulo(anime);
+  lado.titulo.textContent = titulo;
+  lado.titulo.title = titulo;
+  lado.sub.textContent = sub || "";
+  lado.badge.textContent = etiqueta || "";
+  lado.badge.hidden = !etiqueta;
+  lado.btn.setAttribute("aria-label", `Prefiero ${titulo}`);
+  if (!cambio) return;
+  lado.vacia.textContent = titulo;
+  const sinPortada = () => { lado.img.hidden = true; lado.vacia.hidden = false; };
+  if (!anime.cover) { sinPortada(); return; }
+  lado.img.hidden = false; lado.vacia.hidden = true;
+  lado.img.style.opacity = "0";
+  lado.img.alt = titulo;
+  lado.img.onload = () => { lado.img.style.opacity = "1"; };
+  lado.img.onerror = sinPortada;
+  lado.img.src = anime.cover;
+  cargarPortada(anime.cover).then(src => {
+    if (lado.row === anime.row && lado.img.isConnected && src && src !== anime.cover) lado.img.src = src;
+  }).catch(() => {});
+}
+
+function pintarVersus(ui, d) {
+  ui.tTitulo.textContent = d.titulo;
+  ui.tProgreso.textContent = d.progreso;
+  ui.barraFill.style.width = `${Math.round(Math.max(0, Math.min(1, d.barra)) * 100)}%`;
+  ui.eLabel.textContent = d.estimLabel;
+  ui.eValor.textContent = d.estimValor;
+  ui.eNota.textContent = d.estimNota;
+  pintarLadoVersus(ui.izq, d.izq.anime, d.izq.sub, d.izq.badge);
+  pintarLadoVersus(ui.der, d.der.anime, d.der.sub, d.der.badge);
+  ui.pregunta.textContent = d.pregunta;
+  ui.pie.textContent = d.pie;
+  ui.atras.disabled = !d.puedeAtras;
+  ui.saltar.hidden = !d.puedeSaltar;
+  ui.omitir.hidden = !d.puedeOmitir;
+  ui.root.classList.toggle("confirmando", !!d.confirmando);
+}
+
+// Atajos de teclado (escritorio): ← / 1 = la izquierda, → / 3 = la derecha,
+// ↓ / 2 / = igual, Z o Retroceso = atrás, S = saltar.
+dlgPosicionarEl.addEventListener("keydown", (e) => {
+  const ui = versusActivo;
+  if (!ui || !ui.root.isConnected || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (/^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  let accion = null;
+  if (k === "ArrowLeft" || k === "1") accion = "izq";
+  else if (k === "ArrowRight" || k === "3") accion = "der";
+  else if (k === "ArrowDown" || k === "2" || k === "=") accion = "igual";
+  else if (k === "Backspace" || k === "z") accion = "atras";
+  else if (k === "s") accion = "saltar";
+  if (!accion || !ui.acc[accion]) return;
+  if (accion === "atras" && ui.atras.disabled) return;
+  if (accion === "saltar" && ui.saltar.hidden) return;
+  e.preventDefault();
+  ui.acc[accion]();
+});
+dlgPosicionarEl.addEventListener("close", () => { versusActivo = null; posicionState = null; empateState = null; });
+
+// row: si se indica, salta directamente a posicionar esa serie (botón de la fila).
+function abrirPosicionador(row) {
+  const validas = filasValidas();
   if (validas.length < 2) { toast("Necesitas al menos 2 series para posicionar"); return; }
-  posicionState = { validas };
-  if (row != null) {
-    const candidate = validas.find(a => Number(a.row) === Number(row));
-    if (!candidate) return;
-    if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
-    iniciarPosicionamiento(Number(candidate.row));
+  if (row != null && !validas.some(a => a.row !== row && notaNumero(a) != null)) {
+    toast("Aún no hay otras series con nota para compararla");
     return;
   }
-  renderPosicionInicio();
-  if (!dlgPosicionarEl.open) { dlgPosicionarEl.showModal(); dlgPosicionarEl.focus({ preventScroll: true }); }
+  posicionState = { validas };
+  if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
+  if (row != null) iniciarPosicionamiento(row); else renderPosicionInicio();
+  if (!versusActivo) dlgPosicionarEl.focus({ preventScroll: true });
 }
 
 let posicionFiltros = { q: "", genero: "", estado: "", orden: "" };
@@ -787,7 +952,7 @@ function renderPosicionInicio() {
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
-    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." })), el("button", { className: "btn-mini", type: "button", textContent: "Separar notas iguales", title: "Ordenar series que tienen la misma nota", onclick: abrirSeparadorEmpates })) ,
+    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." })), el("button", { className: "btn-mini", type: "button", title: "Ordenar series que tienen la misma nota", onclick: abrirSeparadorEmpates }, "Separar notas iguales", PosCore.contarEmpates(validas) ? el("span", { className: "pos-badge-n", textContent: String(PosCore.contarEmpates(validas)) }) : null)) ,
     el("div", { className: "pos-selector-toolbar" }, buscador, estado, genero, orden),
     lista, mensaje,
     el("div", { className: "pos-help" }, el("strong", { textContent: `${sinNota.length} sin valorar` }), " · Pulsa una tarjeta para comenzar. También puedes recolocar una serie ya valorada."),
@@ -797,379 +962,127 @@ function renderPosicionInicio() {
 
 function iniciarPosicionamiento(row) {
   const candidate = posicionState.validas.find(a => Number(a.row) === Number(row));
-  if (!candidate) return;
-
-  const rated = posicionState.validas.filter(a => a !== candidate && notaNumero(a) != null);
-  const original = notaNumero(candidate);
-  const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
-  const inicial = original ?? (rated.length ? mediana(rated.map(notaNumero)) : 5);
-  working.set(candidate.row, inicial);
-
-  posicionState = {
-    ...posicionState,
-    candidate,
-    rated,
-    working,
-    grupos: crearGrupos(rated, working),
-    lo: 0,
-    hi: Math.max(-1, crearGrupos(rated, working).length - 1),
-    igualGrupo: null,
-    comparadorGrupo: null,
-    comparaciones: 0,
-    saltados: [],
-    historial: [],
-    inicial,
-    cambiosReferencias: new Set(),
-    finalizadoPorComparaciones: false,
-    turnosComparador: new Map(),
-    confirmacion: null
-  };
-
-  // Sin referencias no hay nada que comparar: la nota neutra es 5.0.
-  if (!rated.length) {
-    sFinalizarPosicionamientoSinComparar();
-    return;
-  }
+  if (!candidate) { renderPosicionInicio(); return; }
+  posicionState = Object.assign(PosCore.crearEstado(posicionState.validas, candidate), { ui: null });
+  // Sin referencias no hay nada que comparar: se conserva la nota o se pone 5.0.
+  if (!posicionState.rated.length) { finalizarPosicionamiento(); return; }
   mostrarComparacion();
-}
-
-function crearGrupos(items, working) {
-  const mapa = new Map();
-  items.forEach(a => {
-    const n = working.get(a.row);
-    if (n == null) return;
-    const key = notaRedondeada(n).toFixed(1);
-    if (!mapa.has(key)) mapa.set(key, { key, score: notaRedondeada(n), items: [] });
-    mapa.get(key).items.push(a);
-  });
-  return Array.from(mapa.values()).sort((a,b) => b.score - a.score);
-}
-
-function grupoTieneDisponible(s, grupo) {
-  return grupo && grupo.items.some(a => !s.saltados.includes(a.row));
-}
-
-function elegirComparador() {
-  const s = posicionState;
-  if (!s || s.igualGrupo != null || s.lo > s.hi) return null;
-  if (!s.grupos.length) return null;
-
-  // Búsqueda binaria: siempre intentamos el grupo central del intervalo.
-  const centro = Math.floor((s.lo + s.hi) / 2);
-  const candidatos = [];
-  for (let distancia = 0; distancia < s.grupos.length; distancia++) {
-    const izquierda = centro - distancia;
-    const derecha = centro + distancia;
-    if (izquierda >= s.lo && izquierda <= s.hi && grupoTieneDisponible(s, s.grupos[izquierda])) candidatos.push(s.grupos[izquierda]);
-    if (distancia > 0 && derecha >= s.lo && derecha <= s.hi && grupoTieneDisponible(s, s.grupos[derecha])) candidatos.push(s.grupos[derecha]);
-    if (candidatos.length) break;
-  }
-  const grupo = candidatos[0];
-  if (!grupo) return null;
-  s.comparadorGrupo = s.grupos.indexOf(grupo);
-
-  // Rota los rivales dentro del mismo grupo para no comparar siempre
-  // contra la primera serie de la nota.
-  const disponibles = grupo.items.filter(a => !s.saltados.includes(a.row));
-  if (!disponibles.length) return null;
-  const clave = grupo.key;
-  const siguiente = s.turnosComparador.get(clave) ?? 0;
-  const rival = disponibles[siguiente % disponibles.length];
-  s.turnosComparador.set(clave, (siguiente + 1) % disponibles.length);
-  return rival;
-}
-
-function calcularPosicionFinal(s) {
-  if (s.igualGrupo != null) return { tipo: "igual", indice: s.igualGrupo };
-  return { tipo: "insertar", indice: Math.max(0, Math.min(s.grupos.length, s.lo)) };
-}
-
-function calcularNotaPosicion(s) {
-  // La posición se decide exclusivamente por las comparaciones. Las notas de
-  // las referencias son anclas: nunca se mueven para "fabricar" huecos.
-  if (s.igualGrupo != null) {
-    return notaRedondeada(s.grupos[s.igualGrupo].score);
-  }
-  // Sin comparaciones no hay información: se mantiene la nota de partida.
-  if (s.comparaciones === 0) return notaRedondeada(s.inicial);
-
-  // La serie está por debajo de grupos[lo-1] y por encima de grupos[hi+1].
-  // Si el intervalo está resuelto (lo > hi) son vecinos directos; si quedó
-  // sin resolver (series saltadas) se estima en el centro del tramo dudoso.
-  const resuelto = s.lo > s.hi;
-  const superior = s.lo > 0 ? s.grupos[s.lo - 1].score : null;
-  const inferior = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : null;
-
-  // Extremos ya resueltos: no existe una décima estrictamente superior a 10
-  // ni inferior a 0, así que se satura.
-  if (resuelto) {
-    if (superior == null) return 10;
-    if (inferior == null) return 0;
-  }
-
-  const sup = superior ?? 10;
-  const inf = inferior ?? 0;
-  const redondeado = notaRedondeada((sup + inf) / 2);
-  if (redondeado < sup && redondeado > inf) return redondeado;
-
-  // No cabe ninguna décima entre las dos notas vecinas. Se acepta que la nota
-  // se repita: se queda con la previa si encaja, o con la vecina más cercana.
-  const previa = notaNumero(s.candidate);
-  if (previa != null) {
-    if (previa < sup && previa > inf) return notaRedondeada(previa);
-    return Math.abs(previa - sup) <= Math.abs(previa - inf)
-      ? notaRedondeada(sup)
-      : notaRedondeada(inf);
-  }
-  return redondeado;
-}
-
-function construirResultadoFinal(s) {
-  const pos = calcularPosicionFinal(s);
-  const nueva = calcularNotaPosicion(s);
-
-  s.working.set(s.candidate.row, nueva);
-  s.gruposFinales = s.grupos.map(g => ({
-    key: g.key,
-    score: g.score,
-    items: g.items.slice()
-  }));
-  s.posicionFinal = pos.indice;
-  return nueva;
-}
-
-function posicionTerminada(s) {
-  if (s.igualGrupo != null) return true;
-  return s.lo > s.hi;
-}
-
-// Foto del estado de la búsqueda antes de cada respuesta, para poder deshacer.
-function instantaneaPosicion(s) {
-  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, comparaciones: s.comparaciones, saltados: s.saltados.slice() };
-}
-
-function deshacerPosicionamiento() {
-  const s = posicionState;
-  const prev = s?.historial?.pop();
-  if (!prev) return;
-  s.lo = prev.lo; s.hi = prev.hi; s.igualGrupo = prev.igualGrupo;
-  s.comparaciones = prev.comparaciones; s.saltados = prev.saltados;
-  s.rival = null;
-  mostrarComparacion();
-}
-
-function enfocarDialogoPosicion() {
-  requestAnimationFrame(() => {
-    const objetivo = dlgPosicionarEl.querySelector(".pos-voto, .pos-confirmacion-btn");
-    if (objetivo) objetivo.focus();
-    else dlgPosicionarEl.focus({ preventScroll: true });
-  });
-}
-
-function mostrarConfirmacionPosicion() {
-  const s = posicionState;
-  const pos = calcularPosicionFinal(s);
-  const indice = pos.indice;
-  const superior = indice > 0 ? s.grupos[indice - 1]?.items?.[0] : null;
-  const inferior = indice < s.grupos.length ? s.grupos[indice]?.items?.[0] : null;
-
-  // Si el usuario ha declarado un empate exacto, no lo reinterpretamos como
-  // una comparación estricta con una vecina.
-  if (s.igualGrupo != null) return finalizarPosicionamiento();
-
-  // Una segunda vecina puede venir ya indicada por la primera comprobación.
-  const confirmacionActual = s.confirmacion;
-  const rival = confirmacionActual?.rival || superior || inferior;
-  const lado = confirmacionActual?.lado || (superior ? "superior" : "inferior");
-  if (!rival) return finalizarPosicionamiento();
-  s.confirmacion = { rival, lado, indice };
-  s.rival = null;
-
-  dlgPosicionarEl.innerHTML = "";
-  const leftImg = el("img", { className: "pos-cover", alt: "" });
-  const rightImg = el("img", { className: "pos-cover", alt: "" });
-  posicionPortada(s.candidate, leftImg);
-  posicionPortada(rival, rightImg);
-  const scoreActual = calcularNotaPosicion(s);
-  const botones = el("div", { className: "pos-votos" });
-  const prefieroCandidato = el("button", {
-    className: "pos-voto pos-confirmacion-btn pos-mas", type: "button",
-    ariaLabel: `Prefiero ${posicionTitulo(s.candidate)}`
-  }, el("span", { textContent: "←" }), el("strong", { textContent: "Prefiero la izquierda" }));
-  const prefieroRival = el("button", {
-    className: "pos-voto pos-confirmacion-btn pos-menos", type: "button",
-    ariaLabel: `Prefiero ${posicionTitulo(rival)}`
-  }, el("span", { textContent: "→" }), el("strong", { textContent: "Prefiero la derecha" }));
-  prefieroCandidato.addEventListener("click", () => responderConfirmacionPosicion(true));
-  prefieroRival.addEventListener("click", () => responderConfirmacionPosicion(false));
-  botones.append(prefieroCandidato, prefieroRival);
-
-  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
-  cerrar.addEventListener("click", () => dlgPosicionarEl.close());
-  dlgPosicionarEl.append(
-    el("div", { className: "pos-topline" }, el("span", { textContent: "COMPROBAR POSICIÓN" }), el("span", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}` })),
-    el("div", { className: "pos-estimacion", ariaLive: "polite" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "Una última comprobación antes de guardar" })),
-    el("div", { className: "pos-comparacion" },
-      el("div", { className: "pos-serie" }, leftImg, el("strong", { textContent: posicionTitulo(s.candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` })),
-      el("div", { className: "pos-vs", textContent: "VS" }),
-      el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
-    ),
-    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }),
-    botones,
-    el("div", { className: "pos-foot" }, el("span", { textContent: s.confirmacion.lado === "superior" ? "Comprobando la serie inmediatamente superior." : "Comprobando la serie inmediatamente inferior." }), el("div", { className: "pos-foot-actions" }, cerrar))
-  );
-  enfocarDialogoPosicion();
-}
-
-function posicionVisual(anime) {
-  const cont = el("div", { className: "pos-visual" });
-  if (!anime?.cover) {
-    cont.append(el("div", { className: "sin-portada pos-sin-portada", textContent: "Sin portada" }));
-    return cont;
-  }
-  const img = el("img", { className: "pos-cover", alt: posicionTitulo(anime) });
-  posicionPortada(anime, img);
-  cont.append(img);
-  return cont;
 }
 
 function mostrarComparacion() {
   const s = posicionState;
-  const rival = elegirComparador();
-  if (!rival) return finalizarPosicionamiento();
-  s.rival = rival;
-  const candidate = s.candidate;
-  dlgPosicionarEl.innerHTML = "";
-  const scoreActual = calcularNotaPosicion(s);
-  const restantes = Math.max(1, Math.ceil(Math.log2(Math.max(1, s.grupos.length))));
-  const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"} · ~${restantes} restantes`;
-
-  const izquierda = el("button", {
-    className: "pos-serie pos-serie-btn", type: "button",
-    ariaLabel: `Prefiero ${posicionTitulo(candidate)}`
-  }, posicionVisual(candidate), el("strong", { textContent: posicionTitulo(candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` }));
-  const igual = el("button", {
-    className: "pos-voto pos-igual pos-igual-centro", type: "button",
-    ariaLabel: `Me gustan igual ${posicionTitulo(candidate)} y ${posicionTitulo(rival)}`
-  }, el("span", { textContent: "=" }), el("strong", { textContent: "Igual" }));
-  const derecha = el("button", {
-    className: "pos-serie pos-serie-btn", type: "button",
-    ariaLabel: `Prefiero ${posicionTitulo(rival)}`
-  }, posicionVisual(rival), el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }));
-  izquierda.addEventListener("click", () => responderPosicionamiento("más"));
-  igual.addEventListener("click", () => responderPosicionamiento("igual"));
-  derecha.addEventListener("click", () => responderPosicionamiento("menos"));
-
-  const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta" });
-  atras.disabled = !s.historial.length;
-  atras.addEventListener("click", deshacerPosicionamiento);
-  const saltar = el("button", { className: "btn-mini", type: "button", textContent: "Saltar →", title: "No he visto esta serie" });
-  saltar.addEventListener("click", () => {
-    s.historial.push(instantaneaPosicion(s));
-    if (!s.saltados.includes(rival.row)) s.saltados.push(rival.row);
-    mostrarComparacion();
+  if (!s) return;
+  const paso = PosCore.siguientePaso(s);
+  if (!paso) { finalizarPosicionamiento(); return; }
+  s.paso = paso; s.rival = paso.rival;
+  if (!s.ui || !s.ui.root.isConnected) s.ui = crearVersus();
+  const ui = s.ui;
+  const estimada = PosCore.calcularNota(s);
+  const resto = PosCore.restantes(s);
+  const confirmando = paso.tipo === "confirmar";
+  const hechas = s.comparaciones;
+  pintarVersus(ui, {
+    titulo: confirmando ? "COMPROBACIÓN" : "POSICIONAR",
+    progreso: `${plural(hechas, "comparación", "comparaciones")}${resto ? ` · ~${resto} más` : ""}`,
+    barra: hechas / (hechas + Math.max(resto, 1)),
+    estimLabel: "NOTA ESTIMADA",
+    estimValor: estimada.toFixed(1),
+    estimNota: "Se actualiza con cada respuesta",
+    izq: { anime: s.candidate, sub: "", badge: "A posicionar" },
+    der: {
+      anime: paso.rival,
+      sub: `Nota ${(s.working.get(paso.rival.row) ?? 0).toFixed(1)}`,
+      badge: confirmando ? (paso.lado === "sup" ? "Vecina de arriba" : "Vecina de abajo") : ""
+    },
+    pregunta: confirmando ? "Comprobación: ¿cuál te gusta más?" : "Toca la que te guste más",
+    pie: confirmando ? "Comprueba que queda bien entre sus vecinas." : "¿No has visto la de la derecha? Pulsa «Saltar».",
+    puedeAtras: s.historial.length > 0,
+    puedeSaltar: true,
+    puedeOmitir: confirmando,
+    confirmando
   });
-  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
-  cerrar.addEventListener("click", () => dlgPosicionarEl.close());
-
-  dlgPosicionarEl.append(
-    el("div", { className: "pos-topline" }, el("span", { textContent: "POSICIONAR" }), el("span", { textContent: progreso })),
-    el("div", { className: "pos-estimacion", ariaLive: "polite" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "La estimación se calcula desde la posición actual" })),
-    el("div", { className: "pos-comparacion" }, izquierda, igual, derecha),
-    el("p", { className: "pos-question", textContent: "Toca la portada que prefieras · = si te gustan igual" }),
-    el("div", { className: "pos-foot" }, el("span", { textContent: "← / → para elegir · ↓ para empate. Si no has visto la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, atras, saltar, cerrar))
-  );
-
-  dlgPosicionarEl.onkeydown = (e) => {
-    if (e.key === "ArrowLeft" || e.key === "1") { e.preventDefault(); responderPosicionamiento("más"); }
-    else if (e.key === "ArrowRight" || e.key === "2") { e.preventDefault(); responderPosicionamiento("menos"); }
-    else if (e.key === "ArrowDown" || e.key === "3" || e.key === "=") { e.preventDefault(); responderPosicionamiento("igual"); }
+  ui.acc = {
+    izq: () => responderPosicionamiento("más"),
+    igual: () => responderPosicionamiento("igual"),
+    der: () => responderPosicionamiento("menos"),
+    atras: deshacerPosicionamiento,
+    saltar: saltarPosicionamiento,
+    omitir: () => { s.omitirConfirmacion = true; mostrarComparacion(); }
   };
-  enfocarDialogoPosicion();
-}
-async function responderPosicionamiento(tipo) {
-  const s = posicionState; if (!s?.rival) return;
-  const grupoIdx = s.comparadorGrupo;
-  s.historial.push(instantaneaPosicion(s));
-  s.comparaciones++;
-
-  if (tipo === "igual") {
-    s.igualGrupo = grupoIdx;
-  } else if (tipo === "más") {
-    // El candidato queda por encima del grupo comparado.
-    s.hi = grupoIdx - 1;
-  } else {
-    // El candidato queda por debajo del grupo comparado.
-    s.lo = grupoIdx + 1;
-  }
-
-  s.rival = null;
-  if (posicionTerminada(s)) mostrarConfirmacionPosicion();
-  else mostrarComparacion();
+  PosCore.proximosRivales(s, paso).forEach(precargarPortada);
 }
 
-async function responderConfirmacionPosicion(prefiereCandidato) {
+function responderPosicionamiento(tipo) {
   const s = posicionState;
-  if (!s?.confirmacion) return;
-  const { lado, indice } = s.confirmacion;
-  s.confirmacion = null;
-
-  // Si la comprobación contradice el límite, reabrimos la búsqueda alrededor
-  // de la vecina que ha fallado. Si coincide, pasamos a guardar.
-  if ((lado === "superior" && !prefiereCandidato) || (lado === "inferior" && prefiereCandidato)) {
-    s.igualGrupo = null;
-    if (lado === "superior") {
-      s.hi = Math.max(0, indice - 1);
-      s.lo = 0;
-    } else {
-      s.lo = Math.min(s.grupos.length - 1, indice + 1);
-      s.hi = s.grupos.length - 1;
-    }
-    s.rival = null;
-    mostrarComparacion();
-    return;
-  }
-
-  // Si queda una segunda vecina por comprobar, la mostramos antes de guardar.
-  const segunda = lado === "superior" && indice < s.grupos.length - 1
-    ? s.grupos[indice]?.items?.[0]
-    : null;
-  if (segunda) {
-    s.confirmacion = { rival: segunda, lado: "inferior", indice };
-    mostrarConfirmacionPosicion();
-    return;
-  }
-  await finalizarPosicionamiento();
+  if (!s?.rival) return;
+  const paso = s.paso;
+  s.rival = null;
+  PosCore.responder(s, paso, tipo);
+  mostrarComparacion();
 }
 
-function sFinalizarPosicionamientoSinComparar() {
-  // Sin referencias no hay nada que comparar: se conserva la nota actual de
-  // la serie o, si no tenía, la neutra (5.0). Ambas ya están en s.inicial.
-  if (!posicionState?.candidate) return;
-  finalizarPosicionamiento();
+function saltarPosicionamiento() {
+  const s = posicionState;
+  if (!s?.rival) return;
+  PosCore.saltar(s, s.rival);
+  mostrarComparacion();
 }
 
-async function finalizarPosicionamiento() {
+function deshacerPosicionamiento() {
+  const s = posicionState;
+  if (!s || !PosCore.deshacer(s)) return;
+  mostrarComparacion();
+}
+
+function finalizarPosicionamiento() {
   const s = posicionState;
   if (!s?.candidate) return;
-
-  const nueva = notaRedondeada(construirResultadoFinal(s));
+  s.ui = null; versusActivo = null;
   const anime = s.candidate;
   const antes = notaNumero(anime);
-  const textoAntes = antes == null ? "Sin nota" : antes.toFixed(1);
-  const comparten = s.validas.filter(a => a !== anime && notaNumero(a) != null && notaRedondeada(notaNumero(a)) === nueva).length;
-  const resumen = "Solo cambia la nota de esta serie; las demás no se modifican."
-    + (comparten ? ` Comparte nota con ${comparten} ${comparten === 1 ? "serie" : "series"}; puedes usar «Separar notas iguales» para ordenarlas.` : "");
+  const vec = PosCore.vecinas(s);
+  const extremo = PosCore.extremo(s);
+  let nueva = PosCore.calcularNota(s);
+
+  const valorEl = el("div", { className: "pos-nota-final", ariaLive: "polite" });
+  const menos = el("button", { className: "pos-step", type: "button", textContent: "−", title: "Bajar 0,1", ariaLabel: "Bajar 0,1" });
+  const mas = el("button", { className: "pos-step", type: "button", textContent: "+", title: "Subir 0,1", ariaLabel: "Subir 0,1" });
+  const contexto = el("div", { className: "pos-cambios-lista" });
+  const resumenEl = el("p", { className: "pos-cambios-resumen" });
+  const extremoBtn = extremo ? el("button", {
+    className: "btn-mini", type: "button", textContent: extremo === "arriba" ? "Subir a 10.0" : "Bajar a 0.1",
+    onclick: () => { nueva = extremo === "arriba" ? 10 : 0.1; pintar(); }
+  }) : null;
+
+  const fila = (simbolo, titulo, nota, actual) => el("div", { className: "pos-cambio" + (actual ? " pos-cambio-actual" : "") },
+    el("span", { className: "pos-cambio-nombre", textContent: `${simbolo} ${titulo}` }),
+    el("span", { className: "pos-cambio-notas", textContent: nota }));
+
+  function pintar() {
+    valorEl.textContent = nueva.toFixed(1);
+    menos.disabled = nueva <= 0.1 + 1e-9;
+    mas.disabled = nueva >= 10 - 1e-9;
+    if (extremoBtn) extremoBtn.hidden = extremo === "arriba" ? nueva >= 10 - 1e-9 : nueva <= 0.1 + 1e-9;
+    contexto.replaceChildren();
+    if (vec.sup) contexto.append(fila("↑", posicionTitulo(vec.sup.anime), vec.sup.nota.toFixed(1)));
+    if (vec.igual) contexto.append(fila("=", posicionTitulo(vec.igual.anime), vec.igual.nota.toFixed(1)));
+    contexto.append(fila("●", posicionTitulo(anime), nueva.toFixed(1), true));
+    if (vec.inf) contexto.append(fila("↓", posicionTitulo(vec.inf.anime), vec.inf.nota.toFixed(1)));
+    const comparten = PosCore.contarComparten(s.validas, anime, nueva);
+    resumenEl.textContent = (s.entreIguales ? "Está entre dos series con la misma nota, así que hereda esa nota. " : "")
+      + "Solo cambia la nota de esta serie."
+      + (comparten ? ` Comparte nota con ${plural(comparten, "serie", "series")}; puedes usar «Separar notas iguales».` : "")
+      + (vec.incierto ? " Saltaste alguna serie, así que la posición es aproximada." : "");
+  }
+  menos.addEventListener("click", () => { nueva = Math.max(0.1, notaRedondeada(nueva - 0.1)); pintar(); });
+  mas.addEventListener("click", () => { nueva = Math.min(10, notaRedondeada(nueva + 0.1)); pintar(); });
 
   const guardarBtn = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar" });
   guardarBtn.addEventListener("click", () => {
-    anime.score = nueva.toFixed(1);
+    const previa = String(anime.score ?? "");
+    const final = nueva.toFixed(1);
     dlgPosicionarEl.close();
-    render();
-    toast("Posicionamiento guardado localmente");
-    guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor: anime.score })
-      .then(ok => toast(ok ? "Posicionamiento sincronizado" : "No se pudo sincronizar con Google Sheets"))
-      .catch(() => toast("No se pudo sincronizar el posicionamiento"));
+    guardarNotasConDeshacer([{ anime, previa, nueva: final }], `${posicionTitulo(anime)}: ${final}`);
   });
 
   const acciones = el("div", { className: "pos-actions" }, guardarBtn);
@@ -1178,21 +1091,21 @@ async function finalizarPosicionamiento() {
   }
   acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }));
 
-  dlgPosicionarEl.innerHTML = "";
-  dlgPosicionarEl.append(
+  dlgPosicionarEl.replaceChildren(
     el("div", { className: "pos-resultado" },
       el("div", { className: "pos-check", textContent: "✓" }),
       el("h2", { textContent: "¡Serie posicionada!" }),
       el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(anime) }),
-      el("div", { className: "pos-nota-final", textContent: `${textoAntes} → ${nueva.toFixed(1)}` }),
-      el("p", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"} realizadas.` })
+      el("div", { className: "pos-nota-fila" }, menos, valorEl, mas),
+      el("div", { className: "pos-antes", textContent: antes == null ? "Antes: sin nota" : `Antes: ${antes.toFixed(1)}` }),
+      extremoBtn,
+      el("p", { textContent: `${plural(s.comparaciones, "comparación realizada", "comparaciones realizadas")}. Puedes ajustar la nota con − y +.` })
     ),
-    el("div", { className: "pos-cambios-panel" },
-      el("h3", { textContent: "Cambios de puntuación" }),
-      el("p", { className: "pos-cambios-resumen", textContent: resumen })
-    ),
+    el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: "Dónde queda" }), resumenEl, contexto),
     acciones
   );
+  pintar();
+  guardarBtn.focus({ preventScroll: true });
 }
 
 // --- Separador de empates ------------------------------------------------------
@@ -1202,16 +1115,7 @@ async function finalizarPosicionamiento() {
 let empateState = null;
 
 function abrirSeparadorEmpates() {
-  const validas = posicionState?.validas || todosLosAnimes;
-  const mapa = new Map();
-  validas.forEach(a => {
-    const n = notaNumero(a);
-    if (n == null) return;
-    const key = notaRedondeada(n).toFixed(1);
-    if (!mapa.has(key)) mapa.set(key, { score: notaRedondeada(n), items: [] });
-    mapa.get(key).items.push(a);
-  });
-  const grupos = Array.from(mapa.values()).filter(g => g.items.length >= 2).sort((a,b) => b.score - a.score);
+  const grupos = PosCore.gruposEmpate(filasValidas());
   if (!grupos.length) {
     toast("No hay notas repetidas que separar");
     return;
@@ -1244,7 +1148,7 @@ function mostrarSelectorEmpate(grupos) {
 }
 
 function iniciarSeparacionEmpate(score) {
-  const validas = posicionState?.validas || todosLosAnimes;
+  const validas = filasValidas();
   const grupo = validas.filter(a => { const n = notaNumero(a); return n != null && notaRedondeada(n) === score; });
   if (grupo.length < 2) return;
   empateState = {
@@ -1253,6 +1157,7 @@ function iniciarSeparacionEmpate(score) {
     sorted: [],
     comparaciones: 0,
     undo: [],
+    ui: null,
     // Unión de series que el usuario ha marcado como "iguales" (union-find).
     padre: new Map(grupo.map(a => [a.row, a.row]))
   };
@@ -1343,31 +1248,33 @@ function deshacerEmpate() {
 
 function mostrarComparacionEmpate(a, b) {
   const s = empateState;
-  dlgPosicionarEl.innerHTML = "";
-  const ia = el("img", { className: "pos-cover", alt: "" });
-  const ib = el("img", { className: "pos-cover", alt: "" });
-  posicionPortada(a, ia); posicionPortada(b, ib);
-  const botones = el("div", { className: "pos-votos" });
-  [["a", "↑", "Me gusta más"], ["igual", "=", "Me gustan igual"], ["b", "↓", "Me gusta más"]].forEach(([tipo, icono, texto], i) => {
-    const btt = el("button", { className: `pos-voto ${i === 0 ? "pos-mas" : i === 2 ? "pos-menos" : "pos-igual"}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: i === 1 ? texto : `${texto}: ${i === 0 ? posicionTitulo(a) : posicionTitulo(b)}` }));
-    btt.addEventListener("click", () => responderEmpate(tipo));
-    botones.append(btt);
+  if (!s.ui || !s.ui.root.isConnected) s.ui = crearVersus();
+  const ui = s.ui;
+  const peor = PosCore.peorCasoMerge(s.items.length);
+  const resto = Math.max(0, peor - s.comparaciones);
+  pintarVersus(ui, {
+    titulo: "SEPARAR EMPATE",
+    progreso: `${plural(s.comparaciones, "comparación", "comparaciones")}${resto ? ` · como mucho ~${resto} más` : ""}`,
+    barra: s.comparaciones / Math.max(peor, s.comparaciones + 1),
+    estimLabel: `TODAS TENÍAN ${s.score.toFixed(1)}`,
+    estimValor: String(s.items.length),
+    estimNota: "Se repartirán décimas al terminar",
+    izq: { anime: a, sub: "Empate actual", badge: "" },
+    der: { anime: b, sub: "Empate actual", badge: "" },
+    pregunta: "Toca la que te guste más",
+    pie: "Si son iguales, conservarán la misma nota.",
+    puedeAtras: s.undo.length > 0,
+    puedeSaltar: false,
+    puedeOmitir: false
   });
-  const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta" });
-  atras.disabled = !s.undo.length;
-  atras.addEventListener("click", deshacerEmpate);
-  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() });
-  dlgPosicionarEl.append(
-    el("div", { className: "pos-topline" }, el("span", { textContent: "SEPARAR EMPATE" }), el("span", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}` })),
-    el("div", { className: "pos-estimacion" }, el("span", { textContent: `TODAS TENÍAN ${s.score.toFixed(1)}` }), el("strong", { textContent: String(s.items.length) }), el("small", { textContent: "La nota se mantendrá decimal; se redistribuirán décimas al terminar." })),
-    el("div", { className: "pos-comparacion" },
-      el("div", { className: "pos-serie" }, ia, el("strong", { textContent: posicionTitulo(a) }), el("small", { textContent: "Empate actual" })),
-      el("div", { className: "pos-vs", textContent: "VS" }),
-      el("div", { className: "pos-serie" }, ib, el("strong", { textContent: posicionTitulo(b) }), el("small", { textContent: "Empate actual" }))
-    ),
-    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
-    el("div", { className: "pos-foot" }, el("span", { textContent: "Si son exactamente iguales, conservarán la misma nota." }), el("div", { className: "pos-foot-actions" }, atras, cerrar))
-  );
+  ui.acc = {
+    izq: () => responderEmpate("a"),
+    igual: () => responderEmpate("igual"),
+    der: () => responderEmpate("b"),
+    atras: deshacerEmpate
+  };
+  precargarPortada(s.currentRight[s.rightIndex + 1]);
+  precargarPortada(s.currentLeft[s.leftIndex + 1]);
 }
 
 function responderEmpate(tipo) {
@@ -1401,46 +1308,6 @@ function agruparEscalonesEmpate(s) {
   return escalones;
 }
 
-// Reparte las décimas para N escalones SIN salir del hueco que dejan las
-// series vecinas: la nota inmediatamente inferior y la inmediatamente superior
-// al empate (de otras series) son un muro que no se cruza. Si caben, se elige
-// el bloque consecutivo más centrado en la nota original; si no caben, se
-// reparten por todo el hueco y algunos escalones seguirán empatados.
-// Devuelve las notas en décimas, del mejor escalón al peor.
-function calcularRepartoEmpate(s, nEscalones) {
-  const filasGrupo = new Set(s.items.map(a => a.row));
-  const base = Math.round(s.score * 10);
-  let vecinaInf = 0, vecinaSup = 101;
-  todosLosAnimes.forEach(a => {
-    if (!a || filasGrupo.has(a.row)) return;
-    const n = notaNumero(a);
-    if (n == null) return;
-    const t = Math.round(n * 10);
-    if (t < base && t > vecinaInf) vecinaInf = t;
-    if (t > base && t < vecinaSup) vecinaSup = t;
-  });
-  const desde = Math.max(1, vecinaInf + 1);
-  const hasta = Math.min(100, vecinaSup - 1);
-  const ancho = hasta - desde + 1;
-  const asignacion = [];
-
-  if (ancho < 1) {
-    for (let i = 0; i < nEscalones; i++) asignacion.push(base);
-    return { asignacion, comprimido: nEscalones > 1, desde: base, hasta: base, ancho: 1 };
-  }
-  if (nEscalones <= ancho) {
-    let mejorInicio = desde, mejorCoste = Infinity;
-    for (let inicio = desde; inicio + nEscalones - 1 <= hasta; inicio++) {
-      const coste = Math.abs(inicio + (nEscalones - 1) / 2 - base);
-      if (coste < mejorCoste) { mejorCoste = coste; mejorInicio = inicio; }
-    }
-    for (let i = 0; i < nEscalones; i++) asignacion.push(mejorInicio + nEscalones - 1 - i);
-    return { asignacion, comprimido: false, desde, hasta, ancho };
-  }
-  for (let i = 0; i < nEscalones; i++) asignacion.push(hasta - Math.floor(i * ancho / nEscalones));
-  return { asignacion, comprimido: true, desde, hasta, ancho };
-}
-
 function finalizarSeparacionEmpate() {
   const s = empateState;
   if (!s) return;
@@ -1452,9 +1319,10 @@ function finalizarSeparacionEmpate() {
   }
   if (s.runs.length > 1) return siguienteMergeEmpate();
   s.sorted = s.runs[0] || [];
+  s.ui = null; versusActivo = null;
 
   const escalones = agruparEscalonesEmpate(s);
-  const reparto = calcularRepartoEmpate(s, escalones.length);
+  const reparto = PosCore.calcularReparto(todosLosAnimes, s.items, s.score, escalones.length);
   const cambios = [];
   escalones.forEach((grupo, i) => grupo.forEach(anime => cambios.push({ anime, nueva: reparto.asignacion[i] / 10, original: s.score })));
   const aCambiar = cambios.filter(c => Math.abs(c.nueva - c.original) >= 0.05);
@@ -1482,13 +1350,9 @@ function finalizarSeparacionEmpate() {
   const filas = cambios.map(c => el("div", { className: "pos-cambio" }, el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }), el("span", { className: "pos-cambio-notas", textContent: `${c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })));
   const guardarBtnEmpate = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar orden" });
   guardarBtnEmpate.addEventListener("click", () => {
-    aCambiar.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
+    const cambiosNotas = aCambiar.map(c => ({ anime: c.anime, previa: String(c.anime.score ?? ""), nueva: c.nueva.toFixed(1) }));
     dlgPosicionarEl.close();
-    render();
-    toast(`${aCambiar.length} series ordenadas por nota`);
-    Promise.all(aCambiar.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
-      .then(resultados => { if (resultados.some(ok => !ok)) toast("Algunas notas no pudieron sincronizarse con Google Sheets"); })
-      .catch(() => toast("No se pudo sincronizar alguna nota"));
+    guardarNotasConDeshacer(cambiosNotas, `${plural(cambiosNotas.length, "serie ordenada", "series ordenadas")}`);
   });
   acciones.append(...[guardarBtnEmpate, corregir, cerrar].filter(Boolean));
 
@@ -1499,7 +1363,7 @@ function finalizarSeparacionEmpate() {
       : null);
 
   dlgPosicionarEl.append(
-    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}. Las notas siguen usando una sola decimal y no cruzan a otras series.` })),
+    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${plural(s.comparaciones, "comparación", "comparaciones")}. Las notas siguen usando una sola decimal y no cruzan a otras series.` })),
     el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: `Nuevo orden de ${s.score.toFixed(1)}` }), aviso, el("div", { className: "pos-cambios-lista" }, ...filas)),
     acciones
   );
@@ -1520,7 +1384,7 @@ function setHerramientas(abierto) {
 }
 $("btnHerramientas").addEventListener("click", () => setHerramientas($("herramientas").hidden));
 const btnPosicionarEl = $("btnPosicionar");
-if (btnPosicionarEl) btnPosicionarEl.addEventListener("click", abrirPosicionador);
+if (btnPosicionarEl) btnPosicionarEl.addEventListener("click", () => abrirPosicionador());
 
 
 // --- Añadir anime por enlace ---------------------------------------------------
