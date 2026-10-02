@@ -535,9 +535,7 @@ function renderItem(anime) {
     btnUltimoCap.style.display = visible ? "flex" : "none";
   }
   actualizarBotonUltimoCap();
-  const btnPos = el("button", { className: "btn-posicionar", type: "button", textContent: "⚖", title: "Posicionar esta serie", ariaLabel: "Posicionar esta serie" });
-  btnPos.addEventListener("click", () => posicionarDesdeFila(anime));
-  portada.append(inputScore, btnUltimoCap, btnPos);
+  portada.append(inputScore, btnUltimoCap);
 
   // Info
   const info = el("div", { className: "info" });
@@ -708,27 +706,6 @@ function posicionPortada(anime, img) {
 }
 function posicionTitulo(a) { return a?.title || "(sin título)"; }
 
-// Portada pulsable: tocar la serie que más te gusta es el voto.
-function serieVotable(img, titulo, sub, etiqueta, onClick) {
-  const b = el("button", { className: "pos-serie pos-serie-btn", type: "button", title: `${etiqueta}: ${titulo}`, ariaLabel: `${etiqueta}: ${titulo}` });
-  b.append(img, el("strong", { textContent: titulo }), el("small", { textContent: sub }), el("span", { className: "pos-eligela", textContent: `👍 ${etiqueta}` }));
-  b.addEventListener("click", onClick);
-  return b;
-}
-function contarGruposEmpate(validas) {
-  const m = new Map();
-  validas.forEach(a => { const n = notaNumero(a); if (n == null) return; const k = notaRedondeada(n).toFixed(1); m.set(k, (m.get(k) || 0) + 1); });
-  return [...m.values()].filter(c => c >= 2).length;
-}
-// Posicionar directamente desde el botón ⚖ de la fila de cada serie.
-function posicionarDesdeFila(anime) {
-  const validas = todosLosAnimes.filter(a => a && a.row != null && a.title);
-  if (validas.length < 2) { toast("Necesitas al menos 2 series para posicionar"); return; }
-  posicionState = { validas };
-  iniciarPosicionamiento(Number(anime.row));
-  if (!dlgPosicionarEl.open) dlgPosicionarEl.showModal();
-}
-
 function abrirPosicionador() {
   const validas = todosLosAnimes.filter(a => a && a.row != null && a.title);
   if (validas.length < 2) { toast("Necesitas al menos 2 series para posicionar"); return; }
@@ -798,7 +775,7 @@ function renderPosicionInicio() {
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
-    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." })), el("button", { className: "btn-mini", type: "button", textContent: "Separar notas iguales" + (contarGruposEmpate(validas) ? ` (${contarGruposEmpate(validas)})` : ""), title: "Ordenar series que tienen la misma nota", onclick: abrirSeparadorEmpates })) ,
+    el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." })), el("button", { className: "btn-mini", type: "button", textContent: "Separar notas iguales", title: "Ordenar series que tienen la misma nota", onclick: abrirSeparadorEmpates })) ,
     el("div", { className: "pos-selector-toolbar" }, buscador, estado, genero, orden),
     lista, mensaje,
     el("div", { className: "pos-help" }, el("strong", { textContent: `${sinNota.length} sin valorar` }), " · Pulsa una tarjeta para comenzar. También puedes recolocar una serie ya valorada."),
@@ -828,7 +805,6 @@ function iniciarPosicionamiento(row) {
     comparadorGrupo: null,
     comparaciones: 0,
     saltados: [],
-    rotacion: 0,
     historial: [],
     inicial,
     cambiosReferencias: new Set(),
@@ -877,9 +853,7 @@ function elegirComparador() {
   const grupo = candidatos[0];
   if (!grupo) return null;
   s.comparadorGrupo = s.grupos.indexOf(grupo);
-  const disp = grupo.items.filter(a => !s.saltados.includes(a.row));
-  s.rivalesDisponibles = disp.length;
-  return disp[(s.rotacion || 0) % disp.length] || null;
+  return grupo.items.find(a => !s.saltados.includes(a.row)) || null;
 }
 
 function calcularPosicionFinal(s) {
@@ -957,7 +931,7 @@ function deshacerPosicionamiento() {
   if (!prev) return;
   s.lo = prev.lo; s.hi = prev.hi; s.igualGrupo = prev.igualGrupo;
   s.comparaciones = prev.comparaciones; s.saltados = prev.saltados;
-  s.rival = null; s.rotacion = 0;
+  s.rival = null;
   mostrarComparacion();
 }
 
@@ -974,10 +948,10 @@ function mostrarComparacion() {
   const scoreActual = calcularNotaPosicion(s);
   const progreso = `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}`;
   const botones = el("div", { className: "pos-votos" });
-  const igual = el("button", { className: "pos-voto pos-igual", type: "button" }, el("span", { textContent: "=" }), el("strong", { textContent: "Me gustan lo mismo" }));
-  igual.addEventListener("click", () => responderPosicionamiento("igual"));
-  botones.append(igual);
-  const restantes = Math.max(0, Math.ceil(Math.log2(Math.max(0, s.hi - s.lo + 1) + 1)));
+  [["más", "↑", "pos-mas"],["igual", "=", "pos-igual"],["menos", "↓", "pos-menos"]].forEach(([tipo, icono, clase]) => {
+    const b = el("button", { className: `pos-voto ${clase}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: tipo === "más" ? "Me gusta más" : tipo === "menos" ? "Me gusta menos" : "Me gustan lo mismo" }));
+    b.addEventListener("click", () => responderPosicionamiento(tipo)); botones.append(b);
+  });
   const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta" });
   atras.disabled = !s.historial.length;
   atras.addEventListener("click", deshacerPosicionamiento);
@@ -985,24 +959,20 @@ function mostrarComparacion() {
   saltar.addEventListener("click", () => {
     s.historial.push(instantaneaPosicion(s));
     if (!s.saltados.includes(rival.row)) s.saltados.push(rival.row);
-    s.rotacion = 0;
     mostrarComparacion();
   });
-  const otro = el("button", { className: "btn-mini", type: "button", textContent: "↻ Otro rival", title: "Cambiar por otra serie con una nota parecida" });
-  otro.hidden = (s.rivalesDisponibles || 0) < 2;
-  otro.addEventListener("click", () => { s.rotacion = (s.rotacion || 0) + 1; mostrarComparacion(); });
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar" });
   cerrar.addEventListener("click", () => dlgPosicionarEl.close());
   dlgPosicionarEl.append(
-    el("div", { className: "pos-topline" }, el("span", { textContent: "POSICIONAR" }), el("span", { textContent: `${progreso} · ≈ ${restantes} más` })),
+    el("div", { className: "pos-topline" }, el("span", { textContent: "POSICIONAR" }), el("span", { textContent: progreso })),
     el("div", { className: "pos-estimacion" }, el("span", { textContent: "NOTA ESTIMADA" }), el("strong", { textContent: scoreActual.toFixed(1) }), el("small", { textContent: "La estimación se calcula desde la posición actual" })),
     el("div", { className: "pos-comparacion" },
-      serieVotable(leftImg, posicionTitulo(candidate), `Estimación: ${scoreActual.toFixed(1)}`, "Me gusta más ésta", () => responderPosicionamiento("más")),
+      el("div", { className: "pos-serie" }, leftImg, el("strong", { textContent: posicionTitulo(candidate) }), el("small", { textContent: `Estimación: ${scoreActual.toFixed(1)}` })),
       el("div", { className: "pos-vs", textContent: "VS" }),
-      serieVotable(rightImg, posicionTitulo(rival), `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}`, "Me gusta más ésta", () => responderPosicionamiento("menos"))
+      el("div", { className: "pos-serie" }, rightImg, el("strong", { textContent: posicionTitulo(rival) }), el("small", { textContent: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` }))
     ),
-    el("p", { className: "pos-question", textContent: "Toca la portada de la que más te guste" }), botones,
-    el("div", { className: "pos-foot" }, el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, atras, otro, saltar, cerrar))
+    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
+    el("div", { className: "pos-foot" }, el("span", { textContent: "Si no has visto la serie de la derecha, puedes saltarla." }), el("div", { className: "pos-foot-actions" }, atras, saltar, cerrar))
   );
 }
 
@@ -1010,7 +980,7 @@ async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
   const grupoIdx = s.comparadorGrupo;
   s.historial.push(instantaneaPosicion(s));
-  s.comparaciones++; s.rotacion = 0;
+  s.comparaciones++;
 
   if (tipo === "igual") {
     s.igualGrupo = grupoIdx;
@@ -1046,7 +1016,8 @@ async function finalizarPosicionamiento() {
   const resumen = "Solo cambia la nota de esta serie; las demás no se modifican."
     + (comparten ? ` Comparte nota con ${comparten} ${comparten === 1 ? "serie" : "series"}; puedes usar «Separar notas iguales» para ordenarlas.` : "");
 
-  const aplicar = (otra) => {
+  const guardarBtn = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar" });
+  guardarBtn.addEventListener("click", () => {
     anime.score = nueva.toFixed(1);
     dlgPosicionarEl.close();
     render();
@@ -1054,21 +1025,9 @@ async function finalizarPosicionamiento() {
     guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor: anime.score })
       .then(ok => toast(ok ? "Posicionamiento sincronizado" : "No se pudo sincronizar con Google Sheets"))
       .catch(() => toast("No se pudo sincronizar el posicionamiento"));
-    if (otra) abrirPosicionador();
-  };
-  const guardarBtn = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar y terminar", onclick: () => aplicar(false) });
-  const guardarOtraBtn = el("button", { className: "btn-mini", type: "button", textContent: "Guardar y posicionar otra", onclick: () => aplicar(true) });
-  // Contexto: entre qué series queda (comprobación visual antes de guardar).
-  const nombreGrupo = g => `${posicionTitulo(g.items[0])}${g.items.length > 1 ? ` (+${g.items.length - 1})` : ""}`;
-  const vecinos = [];
-  if (s.igualGrupo != null) vecinos.push(["Igual que", s.grupos[s.igualGrupo]]);
-  else {
-    if (s.lo > 0) vecinos.push(["Por encima", s.grupos[s.lo - 1]]);
-    if (s.hi + 1 < s.grupos.length) vecinos.push(["Por debajo", s.grupos[s.hi + 1]]);
-  }
-  const filasVecinos = vecinos.map(([et, g]) => el("div", { className: "pos-cambio" }, el("span", { className: "pos-cambio-nombre", textContent: `${et}: ${nombreGrupo(g)}` }), el("span", { className: "pos-cambio-notas", textContent: g.score.toFixed(1) })));
+  });
 
-  const acciones = el("div", { className: "pos-actions" }, guardarBtn, guardarOtraBtn);
+  const acciones = el("div", { className: "pos-actions" }, guardarBtn);
   if (s.historial.length) {
     acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "← Corregir última respuesta", onclick: deshacerPosicionamiento }));
   }
@@ -1085,8 +1044,7 @@ async function finalizarPosicionamiento() {
     ),
     el("div", { className: "pos-cambios-panel" },
       el("h3", { textContent: "Cambios de puntuación" }),
-      el("p", { className: "pos-cambios-resumen", textContent: resumen }),
-      filasVecinos.length ? el("div", { className: "pos-cambios-lista" }, ...filasVecinos) : null
+      el("p", { className: "pos-cambios-resumen", textContent: resumen })
     ),
     acciones
   );
@@ -1245,9 +1203,11 @@ function mostrarComparacionEmpate(a, b) {
   const ib = el("img", { className: "pos-cover", alt: "" });
   posicionPortada(a, ia); posicionPortada(b, ib);
   const botones = el("div", { className: "pos-votos" });
-  const igualE = el("button", { className: "pos-voto pos-igual", type: "button" }, el("span", { textContent: "=" }), el("strong", { textContent: "Me gustan igual" }));
-  igualE.addEventListener("click", () => responderEmpate("igual"));
-  botones.append(igualE);
+  [["a", "↑", "Me gusta más"], ["igual", "=", "Me gustan igual"], ["b", "↓", "Me gusta más"]].forEach(([tipo, icono, texto], i) => {
+    const btt = el("button", { className: `pos-voto ${i === 0 ? "pos-mas" : i === 2 ? "pos-menos" : "pos-igual"}`, type: "button" }, el("span", { textContent: icono }), el("strong", { textContent: i === 1 ? texto : `${texto}: ${i === 0 ? posicionTitulo(a) : posicionTitulo(b)}` }));
+    btt.addEventListener("click", () => responderEmpate(tipo));
+    botones.append(btt);
+  });
   const atras = el("button", { className: "btn-mini", type: "button", textContent: "← Atrás", title: "Deshacer la última respuesta" });
   atras.disabled = !s.undo.length;
   atras.addEventListener("click", deshacerEmpate);
@@ -1256,11 +1216,11 @@ function mostrarComparacionEmpate(a, b) {
     el("div", { className: "pos-topline" }, el("span", { textContent: "SEPARAR EMPATE" }), el("span", { textContent: `${s.comparaciones} comparación${s.comparaciones === 1 ? "" : "es"}` })),
     el("div", { className: "pos-estimacion" }, el("span", { textContent: `TODAS TENÍAN ${s.score.toFixed(1)}` }), el("strong", { textContent: String(s.items.length) }), el("small", { textContent: "La nota se mantendrá decimal; se redistribuirán décimas al terminar." })),
     el("div", { className: "pos-comparacion" },
-      serieVotable(ia, posicionTitulo(a), "Empate actual", "Me gusta más ésta", () => responderEmpate("a")),
+      el("div", { className: "pos-serie" }, ia, el("strong", { textContent: posicionTitulo(a) }), el("small", { textContent: "Empate actual" })),
       el("div", { className: "pos-vs", textContent: "VS" }),
-      serieVotable(ib, posicionTitulo(b), "Empate actual", "Me gusta más ésta", () => responderEmpate("b"))
+      el("div", { className: "pos-serie" }, ib, el("strong", { textContent: posicionTitulo(b) }), el("small", { textContent: "Empate actual" }))
     ),
-    el("p", { className: "pos-question", textContent: "Toca la portada de la que más te guste" }), botones,
+    el("p", { className: "pos-question", textContent: "¿Cuál te gusta más?" }), botones,
     el("div", { className: "pos-foot" }, el("span", { textContent: "Si son exactamente iguales, conservarán la misma nota." }), el("div", { className: "pos-foot-actions" }, atras, cerrar))
   );
 }
