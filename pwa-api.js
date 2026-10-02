@@ -459,25 +459,6 @@
     }})) }) });
   }
 
-  // Cambia las notas (columna C) de varias filas en UNA sola petición. Es todo o nada:
-  // el posicionador y el separador de empates la usan en lugar de una llamada por serie.
-  async function actualizarNotasLote(cambios) {
-    await getSheetName();
-    if (!cambios?.length) return;
-    const col = COLUMNAS_EDITABLES.score;
-    await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:cambios.map(c => {
-      const num = parseFloat(String(c.valor ?? "").replace(",", "."));
-      return { updateCells:{
-        range:{sheetId:gid,startRowIndex:c.row-1,endRowIndex:c.row,startColumnIndex:col,endColumnIndex:col+1},
-        rows:[{values:[{
-          userEnteredValue: Number.isNaN(num) ? { stringValue:"" } : { numberValue:num },
-          userEnteredFormat:{ numberFormat:{ type:"NUMBER", pattern:"0.0" } }
-        }]}],
-        fields:"userEnteredValue,userEnteredFormat.numberFormat"
-      }};
-    }) }) });
-  }
-
   async function actualizarTituloUrl(row, title, url) {
     await getSheetName();
     await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:[{ updateCells:{
@@ -609,7 +590,6 @@
       case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
       case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};
       case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
-      case "UPDATE_SCORES_BULK": await actualizarNotasLote(msg.cambios); return {ok:true};
       case "UPDATE_GENRES_BULK": await actualizarGenerosLote(msg.cambios); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};

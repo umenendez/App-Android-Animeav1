@@ -1,14 +1,4 @@
 
-- Posicionador: las dos portadas son ahora los botones de respuesta (izquierda = "prefiero esta", derecha = "prefiero esa") y el "=" está en el centro. Cada lado lleva su título y la etiqueta "Prefiero esta"; si una serie no tiene portada se muestra un recuadro con el título. En el separador de empates pasa lo mismo.
-- Posicionador: los rivales rotan. Se prefieren series que aún no se hayan usado en la sesión y, entre ellas, las vistas (✔) antes que las demás; ya no se compara siempre con la primera del grupo.
-- Posicionador: paso de comprobación al terminar. Se compara con una serie distinta de la vecina de arriba y de la de abajo (solo si esos grupos tienen más de una serie). Si contradice a la búsqueda, la serie hereda la nota de ese grupo. Hay un botón "Terminar ya" para omitirlo.
-- Posicionador: botón ⚖ en cada tarjeta para posicionar esa serie directamente. Al escribir una nota a mano aparece un aviso con "⚖ Posicionar".
-- Posicionador: pantalla final con las series vecinas, botones − / + para ajustar la nota en 0,1 y, si queda por encima de todas o por debajo de todas, queda justo por encima/debajo de la vecina (antes saltaba a 10.0; el mínimo ya no es 0, que la app trataba como "sin nota") con un botón para subir a 10.0 / bajar a 0.1.
-- Posicionador: barra de progreso y "~N más" (cálculo con log₂ de los grupos que quedan); atajos de teclado ← / 1, → / 3, ↓ / 2 / =, Z o Retroceso (atrás), S (saltar); la portada del siguiente rival se precarga y solo se repinta el lado que cambia (sin parpadeo); la nota estimada tiene aria-live.
-- Guardado: el posicionador y el separador envían todas las notas en una sola petición (`UPDATE_SCORES_BULK` → un solo `batchUpdate`), muestran "Deshacer" durante 8 s y, si Sheets falla, ofrecen "Reintentar".
-- Separador de empates: usa siempre la lista actual de series (antes una foto de cuando se abrió el diálogo). Insignia con el número de series empatadas en el icono de posicionar y en el botón "Separar notas iguales".
-- Código: la lógica pura (grupos, búsqueda, nota, reparto de décimas) está en `posicion-core.js`, sin DOM, y se puede probar con Node. Textos más grandes (9–11 px → 11–13 px), botones del diálogo más fáciles de pulsar, aviso por encima de las tarjetas, CSS sin usar eliminado. Caché del service worker v13.
-
 - Corrección separador de empates: la redistribución de décimas queda limitada a un rango cercano a la nota original; nunca puede saltar de 9.x a valores alejados como 2.x por buscar un bloque libre global. Si no hay suficiente espacio cercano, se cancela la redistribución en lugar de alterar la escala.
 
 - Posicionador: la "nota estimada" ahora se actualiza tras cada comparación (antes mostraba siempre la nota inicial). Si se saltan series y el tramo queda sin resolver, la estimación va al centro del tramo dudoso en lugar de pegarse a un extremo.

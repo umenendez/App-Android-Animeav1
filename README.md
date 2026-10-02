@@ -28,7 +28,6 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Google Sheets mediante OAuth.
 - Caché de portadas en el dispositivo.
 - Buscar portadas que faltan.
-- Posicionar series por comparación (botón ⚖ en cada tarjeta) y separar notas repetidas. La lógica está en `posicion-core.js`.
 - Migrar enlaces AnimeFLV → AnimeAV1.
 - Instalable como PWA desde Android.
 
