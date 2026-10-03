@@ -30,6 +30,8 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Buscar portadas que faltan.
 - Migrar enlaces AnimeFLV → AnimeAV1.
 - Instalable como PWA desde Android.
+- Se abre al instante con la última lista guardada y se actualiza en segundo plano.
+- Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 
 ## Qué no puede hacer una PWA
 

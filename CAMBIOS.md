@@ -1,3 +1,10 @@
+## Mejoras traídas de la extensión (v1.5.x)
+- **Portadas rápidas** en la lista principal y en el posicionador: se descargan una sola vez (con límite de descargas simultáneas), se guardan en la caché local y se predecodifican; mientras llegan se ve un esqueleto animado y después aparecen con fundido. Las portadas de las siguientes comparaciones se precargan mientras decides la actual. La cuadrícula del posicionador solo carga las que están a la vista.
+- **La app se abre al instante:** muestra la última lista guardada mientras se actualiza desde Google Sheets (aviso "Actualizando…"). Sin conexión o con la sesión de Google caducada sigue mostrando la lista guardada, con aviso y botón para reintentar o iniciar sesión. Mientras se actualiza, los cambios por fila esperan unos instantes para no escribir en una fila equivocada.
+- **Añadir por enlace – "¿Es la misma serie?":** si el anime que pegas parece otra temporada/parte de uno ya registrado (2nd/3rd Season, Season 2, Temporada 2, Segunda Temporada, Part/Cour/Parte 2, Final Season, numerales romanos, subtítulos…), pregunta una sola vez mostrando la portada registrada. "Sí" marca la serie existente como viendo (y guarda el último capítulo si el enlace era de un episodio) y recuerda la respuesta; "No" la registra como serie aparte.
+- **Posicionador más claro:** las portadas son clicables, los botones dicen "Prefiero «serie»", la nota estimada muestra el rango y una barra de progreso, atajos de teclado (← → elegir, = igual, Z deshacer, S saltar), pantalla final con el puesto resultante y botón "Guardar y posicionar otra". Misma mejora visual en "Separar notas iguales". La lógica de posicionamiento y de separación de empates no cambia.
+- El selector del posicionador: Enter en el buscador abre la primera serie, contador de series y un único scroll (el de la cuadrícula).
+
 
 - Corrección separador de empates: la redistribución de décimas queda limitada a un rango cercano a la nota original; nunca puede saltar de 9.x a valores alejados como 2.x por buscar un bloque libre global. Si no hay suficiente espacio cercano, se cancela la redistribución en lugar de alterar la escala.
 

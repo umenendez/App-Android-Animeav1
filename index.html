@@ -431,6 +431,47 @@
     .pos-cambio-nombre { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .pos-cambio-notas { font-weight:800; white-space:nowrap; }
     .pos-cambio-candidato { background:color-mix(in srgb,var(--accent) 8%,var(--field)); }
+
+    /* Posicionador: portadas con esqueleto, transiciones y comparación clicable */
+    #dlgPosicionar { overflow-x: hidden; }
+    #dlgPosicionar:has(> .pos-selector-grid) { overflow: hidden; }
+    #dlgPosicionar > .pos-selector-grid { max-height: max(180px, calc(100vh - 300px)); max-height: max(180px, calc(100dvh - 300px)); }
+    #dlgPosicionar > * { animation: pos-in .15s ease both; }
+    @keyframes pos-in { from { opacity:0; } to { opacity:1; } }
+    @keyframes pos-shimmer { to { background-position:-200% 0; } }
+    .pos-portada, .pos-selector-portada, .serie-portada { position:relative; overflow:hidden; }
+    .pos-portada { width:min(180px,34vw); aspect-ratio:2/3; border-radius:12px; background:var(--field); box-shadow:0 5px 18px rgba(0,0,0,.18); }
+    .pos-portada img, .pos-selector-portada img, .serie-portada img { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; display:block; opacity:0; transition:opacity .25s; }
+    .pos-portada img.cargada, .pos-selector-portada img.cargada, .serie-portada img.cargada { opacity:1; }
+    .pos-portada.cargando, .pos-selector-portada.cargando, .serie-portada.cargando { background:linear-gradient(100deg,var(--field) 30%,color-mix(in srgb,var(--text) 10%,var(--field)) 50%,var(--field) 70%) 0 0/200% 100%; animation:pos-shimmer 1.2s linear infinite; }
+    .pos-portada.sin::after, .pos-selector-portada.sin::after, .serie-portada.sin::after { content:"Sin portada"; position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); font-size:11px; }
+    button.pos-serie { background:none; border:0; color:inherit; font:inherit; cursor:pointer; padding:6px; border-radius:14px; transition:background .15s; }
+    button.pos-serie:hover, button.pos-serie:focus-visible { background:color-mix(in srgb,var(--accent) 12%,transparent); outline:none; }
+    .pos-barra { grid-column:1 / -1; height:4px; margin-top:8px; border-radius:99px; background:var(--border); overflow:hidden; }
+    .pos-barra > i { display:block; height:100%; background:var(--accent); transition:width .3s; }
+    .pos-voto { min-width:0; padding:0 8px; cursor:pointer; }
+    .pos-voto strong { max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .pos-foot-actions .btn-mini:disabled { opacity:.4; cursor:default; }
+    @media (max-width:560px) { .pos-portada { width:min(135px,31vw); } }
+
+    /* Aviso de actualización de la lista guardada */
+    .aviso-sync { display:flex; align-items:center; justify-content:center; gap:8px; padding:5px 10px; font-size:12px; color:var(--muted); }
+    .aviso-sync[hidden] { display:none; }
+    .aviso-sync .spinner.mini { width:12px; height:12px; border-width:2px; margin:0; }
+    .aviso-sync .btn-mini { margin:0; }
+
+    /* Diálogo "¿Es la misma serie?" al añadir por enlace */
+    #dlgSerie { width:min(420px, calc(100vw - 24px)); border:1px solid var(--border); border-radius:18px; padding:18px; background:var(--surface); color:var(--text); box-shadow:0 24px 70px rgba(0,0,0,.32); }
+    #dlgSerie::backdrop { background:rgba(0,0,0,.58); backdrop-filter:blur(2px); }
+    #dlgSerie h2 { margin:0 0 6px; font-size:17px; }
+    #dlgSerie p { margin:0 0 12px; color:var(--muted); font-size:13px; line-height:1.4; }
+    #dlgSerie p strong { color:var(--text); }
+    .serie-opciones { display:flex; flex-direction:column; gap:8px; max-height:min(52vh,420px); overflow-y:auto; margin-bottom:14px; }
+    .serie-opcion { display:flex; align-items:center; gap:12px; padding:8px; border:1px solid var(--border); border-radius:12px; background:var(--field); color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+    .serie-opcion:hover, .serie-opcion:focus-visible { border-color:var(--accent); outline:none; }
+    .serie-opcion span { flex:1; min-width:0; }
+    .serie-portada { width:96px; height:136px; flex:none; border-radius:8px; background:var(--field); }
+    .serie-acciones { display:flex; justify-content:flex-end; align-items:center; gap:8px; flex-wrap:wrap; }
 </style>
 </head>
 <body>
@@ -477,6 +518,7 @@
   <dialog id="dlgStats"></dialog>
   <dialog id="dlgGeneros"></dialog>
   <dialog id="dlgPosicionar" tabindex="-1"></dialog>
+  <dialog id="dlgSerie" tabindex="-1"></dialog>
 
   <section id="agregarPanel" class="config" hidden>
     <h2>Añadir anime por enlace</h2>
@@ -501,6 +543,7 @@
   <div id="error" class="aviso" hidden></div>
   <div id="vacio" class="aviso" hidden></div>
   <div id="bienvenida" class="aviso" hidden></div>
+  <div id="sync" class="aviso-sync" hidden></div>
   <div id="lista"></div>
 
   <section id="herramientas" hidden>

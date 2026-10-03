@@ -478,6 +478,104 @@
     return ultimaConTitulo + 1;
   }
 
+  // --- Series relacionadas (temporadas, partes, arcos…) ---------------------------
+  // Reduce un título (o un slug) a su "núcleo": quita marcadores de temporada/parte
+  // en inglés y castellano ("3rd Season", "Season 3", "Segunda Temporada", "Part 2",
+  // "Cour 2", "Final Season", "II", "2"…) y subtítulos tras ": " o " - ".
+  const ORDEN = "(?:\\d{1,2}(?:st|nd|rd|th|a|o|er|ra|da)?|first|second|third|fourth|fifth|sixth|primera|segunda|tercera|cuarta|quinta|sexta|final|last|ultima|ultimate)";
+  const PARTE = "(?:season|temporada|saison|cour|part|parte|pt)";
+  const RE_ORDEN_PARTE = new RegExp(`\\b(?:the )?${ORDEN} ${PARTE}\\b`, "g");
+  const RE_PARTE_ORDEN = new RegExp(`\\b${PARTE} ?${ORDEN}\\b`, "g");
+
+  function nucleoTitulo(texto) {
+    let t = String(texto || "").trim();
+    t = t.split(/:\s|\s[-–—]\s/)[0]; // "Re:Zero" no se parte: no lleva espacio tras ":"
+    t = normalizarTitulo(t);
+    t = t.replace(RE_ORDEN_PARTE, " ").replace(RE_PARTE_ORDEN, " ");
+    t = t.replace(/\b(tv|ova|oav|ona|movie|pelicula|special|especial|recap)\b/g, " ");
+    t = t.replace(/\s+(ii|iii|iv|vi|vii|viii|ix)\s*$/, "");
+    t = t.replace(/\s+\d{1,2}\s*$/, "");
+    return t.replace(/\s+/g, " ").trim();
+  }
+
+  function nucleosRelacionados(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    // Uno es el comienzo del otro ("Dr Stone" ↔ "Dr Stone New World"), si es lo bastante específico
+    const [corto, largo] = a.length <= b.length ? [a, b] : [b, a];
+    return corto.length >= 8 && corto.includes(" ") && largo.startsWith(corto + " ");
+  }
+
+  function slugDeUrl(u) {
+    const m = String(u || "").match(/\/media\/([^/?#]+)/i);
+    return m ? m[1].toLowerCase() : "";
+  }
+
+  function sonSeriesRelacionadas(nueva, existente) {
+    const nuevos = [nucleoTitulo(nueva.title), nucleoTitulo(String(nueva.slug || "").replace(/-/g, " "))];
+    const slugExistente = slugDeUrl(existente.url);
+    const existentes = [nucleoTitulo(existente.title), slugExistente ? nucleoTitulo(slugExistente.replace(/-/g, " ")) : ""];
+    return nuevos.some((n) => existentes.some((e) => nucleosRelacionados(n, e)));
+  }
+
+  // Series que el usuario ya confirmó como "la misma" (por hoja): slug -> serie existente
+  function claveVinculo(slug) { return `${spreadsheetId}#${gid}|${slug}`; }
+  function leerVinculos() {
+    try { return JSON.parse(localStorage.getItem("seriesVinculadas") || "{}") || {}; } catch (e) { return {}; }
+  }
+  function guardarVinculos(v) {
+    try { localStorage.setItem("seriesVinculadas", JSON.stringify(v)); } catch (e) {}
+  }
+
+  function filaExistente(lista, url, titulo) {
+    const slug = slugDeUrl(url);
+    const tit = String(titulo || "").trim().toLowerCase();
+    return (slug && lista.find((a) => slugDeUrl(a.url) === slug))
+      || (tit && lista.find((a) => (a.title || "").trim().toLowerCase() === tit))
+      || null;
+  }
+
+  // Pone la serie existente como "viendo" y, si el enlace pegado es de un episodio, lo guarda como último capítulo.
+  async function marcarViendo(anime, enlacePegado) {
+    if (anime.status !== ESTADO_VIENDO) await actualizarCampo(anime.row, "status", ESTADO_VIENDO);
+    if (/\/media\/[^/?#]+\/\d+/i.test(enlacePegado || "")) await actualizarCampo(anime.row, "lastEpisodeUrl", String(enlacePegado).trim());
+  }
+
+  async function escribirAnimeNuevo({ title, url, cover }) {
+    const sheetName = await getSheetName();
+    const fila = await siguienteFilaLibre(sheetName);
+
+    const valores = new Array(11).fill(null).map(() => ({}));
+    valores[3] = { userEnteredValue: { stringValue: title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: url } } }] };
+    valores[5] = { userEnteredValue: { stringValue: ESTADO_VIENDO } };
+    if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover}",1)` } };
+
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
+      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+      rows: [{ values: valores }],
+      fields: "userEnteredValue,textFormatRuns"
+    }}] }) });
+
+    if (cover) precachearImagen(cover);
+    return { row: fila, title, url, cover: cover || "", status: ESTADO_VIENDO };
+  }
+
+  // El usuario contestó a "¿Es la misma serie?"
+  async function resolverSecuela({ decision, slug, existingUrl, existingTitle, nuevaFila }) {
+    if (decision === "misma") {
+      const lista = await obtenerListaCompleta();
+      const anime = filaExistente(lista, existingUrl, existingTitle);
+      if (!anime) throw new Error("FILA_NO_ENCONTRADA");
+      await marcarViendo(anime, nuevaFila?.url);
+      await getSheetName(); // asegura spreadsheetId/gid para la clave
+      const vinculos = leerVinculos();
+      vinculos[claveVinculo(slug)] = { url: existingUrl, title: existingTitle };
+      guardarVinculos(vinculos);
+      return { title: anime.title, vinculada: true };
+    }
+    return await escribirAnimeNuevo(nuevaFila);
+  }
+
   // Añade un anime nuevo a partir de su enlace: descarga la página, saca el
   // título y la portada, y crea la fila. Sustituye a la detección automática
   // que hacía la extensión de Chrome al abrir un episodio (no disponible en
@@ -487,8 +585,24 @@
     if (!/^https?:\/\//i.test(url)) throw new Error("ENLACE_ANIME_INVALIDO");
 
     const existentes = await obtenerListaCompleta();
-    const yaExiste = existentes.some((a) => a.url && a.url.replace(/\/+$/, "") === url.replace(/\/+$/, ""));
+    const slug = slugDeUrl(url);
+    const mismaUrl = url.replace(/\/+$/, "");
+    const yaExiste = existentes.some((a) => (a.url && a.url.replace(/\/+$/, "") === mismaUrl) || (slug && slugDeUrl(a.url) === slug));
     if (yaExiste) throw new Error("YA_EXISTE");
+
+    // Si ya dijiste antes que esta temporada es una serie que tienes registrada, se actualiza sin preguntar.
+    await getSheetName();
+    const vinculo = leerVinculos()[claveVinculo(slug)];
+    if (vinculo) {
+      const anime = filaExistente(existentes, vinculo.url, vinculo.title);
+      if (anime) {
+        await marcarViendo(anime, url);
+        return { title: anime.title, vinculada: true };
+      }
+      const vinculos = leerVinculos();
+      delete vinculos[claveVinculo(slug)]; // la fila ya no existe
+      guardarVinculos(vinculos);
+    }
 
     let html;
     try {
@@ -505,23 +619,19 @@
     const titulo = m ? m[1].trim() : "";
     if (!titulo) throw new Error("SIN_TITULO");
     const cover = extraerPortadaDesdeHtml(html);
+    const nuevaFila = { title: titulo, url, cover: cover || "" };
 
-    const sheetName = await getSheetName();
-    const fila = await siguienteFilaLibre(sheetName);
+    // ¿Parece otra temporada/parte de una serie ya registrada? -> se pregunta (las más recientes primero)
+    const candidatos = [];
+    for (let k = existentes.length - 1; k >= 0; k--) {
+      const a = existentes[k];
+      if (sonSeriesRelacionadas({ title: titulo, slug }, { title: a.title, url: a.url })) {
+        candidatos.push({ row: a.row, title: a.title, url: a.url, cover: a.cover });
+      }
+    }
+    if (candidatos.length) return { pregunta: { nuevaFila, slug, candidatos: candidatos.slice(0, 4) } };
 
-    const valores = new Array(11).fill(null).map(() => ({}));
-    valores[3] = { userEnteredValue: { stringValue: titulo }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: url } } }] };
-    valores[5] = { userEnteredValue: { stringValue: ESTADO_VIENDO } };
-    if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover}",1)` } };
-
-    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
-      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
-      rows: [{ values: valores }],
-      fields: "userEnteredValue,textFormatRuns"
-    }}] }) });
-
-    if (cover) precachearImagen(cover);
-    return { row: fila, title: titulo, url, cover: cover || "", status: ESTADO_VIENDO };
+    return await escribirAnimeNuevo(nuevaFila);
   }
 
   function guardarPortadasActivado() {
@@ -595,6 +705,7 @@
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};
       case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
       case "REGISTER_ANIME": return {ok:true,...await registrarAnime(msg.url)};
+      case "RESOLVER_SECUELA": return {ok:true,...await resolverSecuela(msg)};
       default: throw new Error("MENSAJE_DESCONOCIDO");
     }
   }

@@ -73,8 +73,12 @@ let refrescandoLista = false;
 
 function enviarMensaje(msg) {
   if (refrescandoLista && /^UPDATE_/.test(msg?.type || "")) return Promise.resolve({ ok: false, error: "SINCRONIZANDO" });
-  if (typeof window.enviarMensajePWA === "function") return window.enviarMensajePWA(msg);
-  return Promise.resolve({ ok: false, error: "SIN_RESPUESTA" });
+  return new Promise((resolve) =>
+    chrome.runtime.sendMessage(msg, (res) => {
+      const fallo = chrome.runtime.lastError;
+      resolve(fallo || res === undefined ? { ok: false, error: "SIN_RESPUESTA" } : res);
+    })
+  );
 }
 
 function el(tag, props = {}, ...hijos) {
@@ -174,14 +178,12 @@ function aplicarPreferenciaPortadas() {
   actualizarContadorPortadas();
 }
 
-// --- Portadas rápidas (lista principal y posicionador) ---------------------------
-// En la PWA el Service Worker sirve de la caché local cualquier <img> cuya URL esté
-// guardada. Por eso aquí se descarga UNA sola vez (con límite de descargas
-// simultáneas), se guarda en caché y se predecodifica para que, al pintarla, aparezca
-// al instante. Mientras llega se muestra un esqueleto animado.
-const portadaMem = new Set();    // urls ya descargadas y listas para pintar
-const portadaPend = new Map();   // url -> Promise en curso (evita descargas duplicadas)
-const portadaImgs = new Map();   // referencias a imágenes predecodificadas (máx. 80)
+// --- Portadas rápidas (lista principal y posicionador) -------------------------------------------
+// Antes cada portada se pedía a la red dos veces (el <img> y la copia a caché) y
+// la caché solo servía de marcador. Ahora: caché → blob en memoria → <img>, con
+// esqueleto animado mientras llega, y se precargan las siguientes comparaciones.
+const portadaMem = new Map();   // url -> objectURL (ya lista para pintar)
+const portadaPend = new Map();  // url -> Promise en curso (evita descargas duplicadas)
 let portadaSlots = 6;
 const portadaCola = [];
 function portadaSlot() {
@@ -189,51 +191,38 @@ function portadaSlot() {
 }
 function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else portadaSlots++; }
 
-function predecodificar(url) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    const t = setTimeout(resolve, 8000);
-    const fin = () => { clearTimeout(t); resolve(); };
-    img.onload = fin; img.onerror = fin;
-    img.src = url;
-    portadaImgs.set(url, img);
-    if (portadaImgs.size > 80) portadaImgs.delete(portadaImgs.keys().next().value);
-    if (img.decode) img.decode().then(fin, fin);
-  });
-}
-
-// Guarda la portada en la caché local (respuesta opaca, que el Service Worker sabe servir).
-async function guardarEnCache(url) {
-  const cache = await caches.open(COVER_CACHE);
-  if (!(await cache.match(url))) {
-    await portadaSlot();
-    try {
-      const ctl = new AbortController();
-      const t = setTimeout(() => ctl.abort(), 12000);
-      let res;
-      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", signal: ctl.signal }); } finally { clearTimeout(t); }
-      if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
-      await cache.put(url, res.clone());
-    } finally { portadaLiberar(); }
-  }
-  portadasEnCache.add(url);
-  actualizarContadorPortadas();
-}
-
 function obtenerPortada(url) {
   if (!url) return Promise.resolve("");
-  if (portadaMem.has(url)) return Promise.resolve(url);
+  if (portadaMem.has(url)) return Promise.resolve(portadaMem.get(url));
   if (portadaPend.has(url)) return portadaPend.get(url);
   const p = (async () => {
     try {
-      if (guardarPortadasActivado()) await guardarEnCache(url);
+      let res = null, cache = null;
+      if (guardarPortadasActivado()) {
+        try { cache = await caches.open(COVER_CACHE); res = await cache.match(url); } catch (e) { cache = null; }
+        if (res && res.type === "opaque") res = null; // las opacas no se pueden leer: se vuelven a bajar
+      }
+      if (!res) {
+        await portadaSlot();
+        try {
+          const ctl = new AbortController();
+          const t = setTimeout(() => ctl.abort(), 12000);
+          try { res = await fetch(url, { credentials: "omit", signal: ctl.signal }); } finally { clearTimeout(t); }
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          if (cache) cache.put(url, res.clone()).then(() => { portadasEnCache.add(url); actualizarContadorPortadas(); }).catch(() => {});
+        } finally { portadaLiberar(); }
+      }
+      const blob = await res.blob();
+      if (!blob.size) throw new Error("portada vacía");
+      const obj = URL.createObjectURL(blob);
+      portadaMem.set(url, obj);
+      return obj;
     } catch (e) {
-      console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e);
+      return url; // sin permiso/CORS o sin red: que el <img> lo intente directamente
+    } finally {
+      portadaPend.delete(url);
     }
-    await predecodificar(url);
-    portadaMem.add(url);
-    return url;
-  })().finally(() => portadaPend.delete(url));
+  })();
   portadaPend.set(url, p);
   return p;
 }
@@ -260,18 +249,49 @@ function crearPortada(anime, clase, observador) {
     img.onerror = () => { caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true; };
     img.src = src || url;
   };
-  const cargar = () => { if (portadaMem.has(url)) asignar(url); else obtenerPortada(url).then(asignar); };
+  const cargar = () => {
+    const lista = portadaMem.get(url);
+    if (lista) asignar(lista); else obtenerPortada(url).then(asignar);
+  };
   if (observador) { caja._cargar = cargar; observador.observe(caja); } else cargar();
   return caja;
 }
+function posicionTitulo(a) { return a?.title || "(sin título)"; }
 
-// Con soloCache=true solo asegura que la portada esté guardada (precarga).
+// Solo asegura que la portada esté en la caché del disco (precarga), sin crear blob.
+async function asegurarEnCache(url) {
+  if (!url || portadasEnCache.has(url)) return;
+  try {
+    const cache = await caches.open(COVER_CACHE);
+    const previa = await cache.match(url);
+    if (previa && previa.type !== "opaque") { portadasEnCache.add(url); actualizarContadorPortadas(); return; }
+    await portadaSlot();
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 12000);
+      let res;
+      try {
+        res = await fetch(url, { credentials: "omit", signal: ctl.signal });
+      } catch (e) {
+        // Dominio sin permiso CORS: se guarda como respuesta opaca (solo sirve de marcador)
+        res = await fetch(url, { mode: "no-cors", credentials: "omit", signal: ctl.signal });
+      } finally { clearTimeout(t); }
+      if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
+      await cache.put(url, res.clone());
+    } finally { portadaLiberar(); }
+    portadasEnCache.add(url);
+    actualizarContadorPortadas();
+  } catch (e) {
+    console.error("[AnimeAV1 Tracker] No se pudo cachear la portada:", url, e);
+  }
+}
+
+// Devuelve una URL usable en <img> (normalmente un blob ya descargado).
+// Con soloCache=true solo asegura que esté guardada en disco (para la precarga).
 async function cargarPortada(url, soloCache = false) {
   if (!url) return url;
   if (soloCache) {
-    if (guardarPortadasActivado() && !portadasEnCache.has(url)) {
-      try { await guardarEnCache(url); } catch (e) { console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e); }
-    }
+    if (guardarPortadasActivado()) await asegurarEnCache(url);
     return url;
   }
   return obtenerPortada(url);
@@ -284,7 +304,8 @@ const observador = new IntersectionObserver(
       if (!e.isIntersecting) return;
       const img = e.target;
       observador.unobserve(img);
-      if (portadaMem.has(img.dataset.src)) img.src = img.dataset.src; else cargarPortada(img.dataset.src).then((src) => { img.src = src; });
+      const lista = portadaMem.get(img.dataset.src);
+      if (lista) img.src = lista; else cargarPortada(img.dataset.src).then((src) => { img.src = src; });
     });
   },
   { root: listaEl, rootMargin: "300px" }
@@ -570,12 +591,13 @@ function renderItem(anime) {
     img.dataset.src = anime.cover;
     img.addEventListener("load", () => img.classList.add("lista"));
     portada.append(img);
-    if (portadaMem.has(anime.cover)) img.src = anime.cover; else observador.observe(img);
+    const enMemoria = portadaMem.get(anime.cover);
+    if (enMemoria) img.src = enMemoria; else observador.observe(img);
   } else {
     portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
   }
 
-  const inputScore = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0", max: "10", value: anime.score ?? "", placeholder: "–", title: "Nota (0-10)", ariaLabel: "Nota (0-10)" });
+  const inputScore = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0", max: "10", value: anime.score || "", placeholder: "–", title: "Nota (0-10)", ariaLabel: "Nota (0-10)" });
   aplicarColorNota(inputScore);
   inputScore.addEventListener("input", () => aplicarColorNota(inputScore));
   inputScore.addEventListener("change", () => {
@@ -760,8 +782,6 @@ function mediana(nums) {
   const m = Math.floor(a.length / 2);
   return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
 }
-function posicionTitulo(a) { return a?.title || "(sin título)"; }
-
 let posObservadores = [];
 function limpiarObservadoresPos() { posObservadores.forEach((o) => o.disconnect()); posObservadores = []; }
 function nuevoObservadorPos(raiz) { const o = observadorPortadas(raiz); posObservadores.push(o); return o; }
@@ -869,22 +889,23 @@ function iniciarPosicionamiento(row) {
   const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
   const inicial = original ?? (rated.length ? mediana(rated.map(notaNumero)) : 5);
   working.set(candidate.row, inicial);
+  const grupos = crearGrupos(rated, working);
 
   posicionState = {
     ...posicionState,
     candidate,
     rated,
     working,
-    grupos: crearGrupos(rated, working),
+    grupos,
     lo: 0,
-    hi: Math.max(-1, crearGrupos(rated, working).length - 1),
+    hi: Math.max(-1, grupos.length - 1),
     igualGrupo: null,
-    comparadorGrupo: null,
+    rival: null,
+    rivalIdx: null,
     comparaciones: 0,
     saltados: [],
     historial: [],
     inicial,
-    cambiosReferencias: new Set(),
     finalizadoPorComparaciones: false
   };
 
@@ -909,13 +930,9 @@ function crearGrupos(items, working) {
   return Array.from(mapa.values()).sort((a,b) => b.score - a.score);
 }
 
-function grupoTieneDisponible(s, grupo) {
-  return grupo && grupo.items.some(a => !s.saltados.includes(a.row));
-}
-
 // Búsqueda binaria: se compara contra el grupo central del intervalo [lo, hi]
-// (si está agotado por "saltar", el más cercano). Es pura para poder adivinar
-// también las comparaciones siguientes y precargar sus portadas.
+// (si está agotado por "saltar", el más cercano). Es una función pura para poder
+// adivinar también las comparaciones siguientes y precargar sus portadas.
 function elegirRivalPara(s, lo, hi, saltados = s.saltados) {
   if (lo > hi || !s.grupos.length) return null;
   const centro = Math.floor((lo + hi) / 2);
@@ -931,18 +948,8 @@ function elegirRivalPara(s, lo, hi, saltados = s.saltados) {
   return null;
 }
 
-function elegirComparador() {
-  const s = posicionState;
-  if (!s || s.igualGrupo != null) return null;
-  const r = elegirRivalPara(s, s.lo, s.hi);
-  if (!r) return null;
-  s.comparadorGrupo = r.idx;
-  return r.item;
-}
-
 function precalentarSiguientes(s) {
-  const r = s.comparadorGrupo;
-  if (r == null || !s.rival) return;
+  const r = s.rivalIdx;
   const sig = [
     elegirRivalPara(s, s.lo, r - 1),                               // si el candidato gusta más
     elegirRivalPara(s, r + 1, s.hi),                               // si gusta menos
@@ -951,48 +958,56 @@ function precalentarSiguientes(s) {
   precalentarPortadas(sig.filter(Boolean).map(x => x.item));
 }
 
+// Nota estimada con lo que ya se sabe: el candidato está por debajo de grupos[lo-1]
+// y por encima de grupos[hi+1].
+function estimacionActual(s) {
+  if (s.igualGrupo != null) { const n = s.grupos[s.igualGrupo].score; return { sup: n, inf: n, nota: n }; }
+  const sup = s.lo > 0 ? s.grupos[s.lo - 1].score : 10;
+  const inf = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : 0;
+  return { sup, inf, nota: notaRedondeada((sup + inf) / 2) };
+}
+
 function calcularPosicionFinal(s) {
   if (s.igualGrupo != null) return { tipo: "igual", indice: s.igualGrupo };
   return { tipo: "insertar", indice: Math.max(0, Math.min(s.grupos.length, s.lo)) };
 }
 
 function calcularNotaPosicion(s) {
-  // La posición se decide exclusivamente por las comparaciones. Las notas de
-  // las referencias son anclas: nunca se mueven para "fabricar" huecos.
+  // La posición se decide exclusivamente por las comparaciones.
+  // Las notas de las referencias son anclas: no debemos moverlas para
+  // "fabricar" huecos en la escala, porque eso introduce cambios que el
+  // usuario nunca pidió.
   if (s.igualGrupo != null) {
     return notaRedondeada(s.grupos[s.igualGrupo].score);
   }
-  // Sin comparaciones no hay información: se mantiene la nota de partida.
-  if (s.comparaciones === 0) return notaRedondeada(s.inicial);
 
-  // La serie está por debajo de grupos[lo-1] y por encima de grupos[hi+1].
-  // Si el intervalo está resuelto (lo > hi) son vecinos directos; si quedó
-  // sin resolver (series saltadas) se estima en el centro del tramo dudoso.
-  const resuelto = s.lo > s.hi;
-  const superior = s.lo > 0 ? s.grupos[s.lo - 1].score : null;
-  const inferior = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : null;
+  const indice = Math.max(0, Math.min(s.grupos.length, s.lo));
+  const superior = indice > 0 ? s.grupos[indice - 1].score : null;
+  const inferior = indice < s.grupos.length ? s.grupos[indice].score : null;
 
-  // Extremos ya resueltos: no existe una décima estrictamente superior a 10
-  // ni inferior a 0, así que se satura.
-  if (resuelto) {
-    if (superior == null) return 10;
-    if (inferior == null) return 0;
-  }
+  // Extremos: si ya estamos en 10/0 no existe un valor decimal que pueda
+  // expresar una posición estrictamente superior/inferior. Se satura.
+  if (superior == null) return 10;
+  if (inferior == null) return 0;
 
-  const sup = superior ?? 10;
-  const inf = inferior ?? 0;
-  const redondeado = notaRedondeada((sup + inf) / 2);
-  if (redondeado < sup && redondeado > inf) return redondeado;
+  const centro = (superior + inferior) / 2;
+  const redondeado = notaRedondeada(centro);
 
-  // No cabe ninguna décima entre las dos notas vecinas. Se acepta que la nota
-  // se repita: se queda con la previa si encaja, o con la vecina más cercana.
+  // Si el intervalo tiene al menos una décima disponible, el punto medio
+  // redondeado es la mejor estimación. Si no la tiene, ninguna nota de una
+  // sola decimal puede representar una posición estricta; en ese caso
+  // elegimos el extremo más cercano a la nota previa (si existe) para evitar
+  // movimientos artificiales.
+  if (redondeado < superior && redondeado > inferior) return redondeado;
+
   const previa = notaNumero(s.candidate);
   if (previa != null) {
-    if (previa < sup && previa > inf) return notaRedondeada(previa);
-    return Math.abs(previa - sup) <= Math.abs(previa - inf)
-      ? notaRedondeada(sup)
-      : notaRedondeada(inf);
+    if (previa < superior && previa > inferior) return notaRedondeada(previa);
+    return Math.abs(previa - superior) <= Math.abs(previa - inferior)
+      ? notaRedondeada(superior)
+      : notaRedondeada(inferior);
   }
+
   return redondeado;
 }
 
@@ -1015,21 +1030,8 @@ function posicionTerminada(s) {
   return s.lo > s.hi;
 }
 
-// Foto del estado de la búsqueda antes de cada respuesta, para poder deshacer.
-function instantaneaPosicion(s) {
-  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, comparaciones: s.comparaciones, saltados: s.saltados.slice() };
-}
-
-function deshacerPosicionamiento() {
-  const s = posicionState;
-  const prev = s?.historial?.pop();
-  if (!prev) return;
-  s.lo = prev.lo; s.hi = prev.hi; s.igualGrupo = prev.igualGrupo;
-  s.comparaciones = prev.comparaciones; s.saltados = prev.saltados;
-  s.rival = null;
-  mostrarComparacion();
-}
-
+// Pantalla de comparación común al posicionador y al separador de empates.
+// Las portadas son clicables, hay atajos de teclado y se puede deshacer.
 function pantallaComparacion(o) {
   pantallaNueva();
   const tit = (d) => posicionTitulo(d.anime);
@@ -1082,39 +1084,31 @@ function pantallaComparacion(o) {
   dlgPosicionarEl.focus({ preventScroll: true });
 }
 
-function saltarRivalPosicion() {
-  const s = posicionState; if (!s?.rival) return;
-  s.historial.push(instantaneaPosicion(s));
-  if (!s.saltados.includes(s.rival.row)) s.saltados.push(s.rival.row);
-  s.rival = null;
-  mostrarComparacion();
-}
-
 function mostrarComparacion() {
   const s = posicionState;
-  const rival = elegirComparador();
-  if (!rival) return finalizarPosicionamiento();
-  s.rival = rival;
+  const r = s.igualGrupo != null ? null : elegirRivalPara(s, s.lo, s.hi);
+  if (!r) return finalizarPosicionamiento();
+  s.rival = r.item;
+  s.rivalIdx = r.idx;
   precalentarSiguientes(s);
 
-  const nota = calcularNotaPosicion(s);
-  const sup = s.lo > 0 ? s.grupos[s.lo - 1].score : 10;
-  const inf = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : 0;
+  const est = estimacionActual(s);
   const restantes = Math.max(1, Math.ceil(Math.log2(s.hi - s.lo + 2)));
   const total = s.comparaciones + restantes;
+  const progreso = `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}`;
   const cabecera = el("div", { className: "pos-estimacion" },
     el("span", { textContent: "NOTA ESTIMADA" }),
-    el("strong", { textContent: nota.toFixed(1) }),
-    el("small", { textContent: `Entre ${inf.toFixed(1)} y ${sup.toFixed(1)} · unas ${restantes} ${restantes === 1 ? "comparación" : "comparaciones"} más` }),
+    el("strong", { textContent: est.nota.toFixed(1) }),
+    el("small", { textContent: `Entre ${est.inf.toFixed(1)} y ${est.sup.toFixed(1)} · unas ${restantes} ${restantes === 1 ? "comparación" : "comparaciones"} más` }),
     el("div", { className: "pos-barra" }, el("i", { style: `width:${Math.round((s.comparaciones / total) * 100)}%` }))
   );
 
   pantallaComparacion({
     etiqueta: "POSICIONAR",
-    progreso: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}`,
+    progreso,
     cabecera,
-    izq: { anime: s.candidate, sub: `Estimación: ${nota.toFixed(1)}` },
-    der: { anime: rival, sub: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` },
+    izq: { anime: s.candidate, sub: `Estimación: ${est.nota.toFixed(1)}` },
+    der: { anime: s.rival, sub: `Nota: ${(s.working.get(s.rival.row) ?? 0).toFixed(1)}` },
     onIzq: () => responderPosicionamiento("más"),
     onIgual: () => responderPosicionamiento("igual"),
     onDer: () => responderPosicionamiento("menos"),
@@ -1123,10 +1117,14 @@ function mostrarComparacion() {
   });
 }
 
+function instantaneaPos(s) {
+  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, saltados: s.saltados.slice(), comparaciones: s.comparaciones };
+}
+
 async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
-  const grupoIdx = s.comparadorGrupo;
-  s.historial.push(instantaneaPosicion(s));
+  const grupoIdx = s.rivalIdx;
+  s.historial.push(instantaneaPos(s));
   s.comparaciones++;
 
   if (tipo === "igual") {
@@ -1144,10 +1142,24 @@ async function responderPosicionamiento(tipo) {
   else mostrarComparacion();
 }
 
+function saltarRivalPosicion() {
+  const s = posicionState; if (!s?.rival) return;
+  s.historial.push(instantaneaPos(s));
+  s.saltados.push(s.rival.row);
+  s.rival = null;
+  mostrarComparacion();
+}
+
+function deshacerPosicionamiento() {
+  const s = posicionState; if (!s?.historial?.length) return;
+  Object.assign(s, s.historial.pop(), { rival: null });
+  mostrarComparacion();
+}
+
 function sFinalizarPosicionamientoSinComparar() {
-  // Sin referencias no hay nada que comparar: se conserva la nota actual de
-  // la serie o, si no tenía, la neutra (5.0). Ambas ya están en s.inicial.
-  if (!posicionState?.candidate) return;
+  const s = posicionState;
+  if (!s?.candidate) return;
+  s.working.set(s.candidate.row, 5);
   finalizarPosicionamiento();
 }
 
@@ -1155,23 +1167,39 @@ async function finalizarPosicionamiento() {
   const s = posicionState;
   if (!s?.candidate) return;
 
-  const nueva = notaRedondeada(construirResultadoFinal(s));
-  const anime = s.candidate;
-  const antes = notaNumero(anime);
-  const textoAntes = antes == null ? "Sin nota" : antes.toFixed(1);
-  const otras = s.validas.filter(a => a !== anime && notaNumero(a) != null);
-  const comparten = otras.filter(a => notaRedondeada(notaNumero(a)) === nueva).length;
-  const puesto = otras.filter(a => notaRedondeada(notaNumero(a)) > nueva).length + 1;
-  const resumen = "Solo cambia la nota de esta serie; las demás no se modifican."
-    + (comparten ? ` Comparte nota con ${comparten} ${comparten === 1 ? "serie" : "series"}; puedes usar «Separar notas iguales» para ordenarlas.` : "");
+  construirResultadoFinal(s);
+
+  const cambios = [];
+  s.working.forEach((valor, row) => {
+    const anime = s.validas.find(a => Number(a.row) === Number(row));
+    if (!anime) return;
+    const original = notaNumero(anime);
+    const nueva = notaRedondeada(valor);
+    if (anime === s.candidate || (original != null && Math.abs(nueva - original) >= 0.05)) {
+      cambios.push({ anime, original, nueva });
+    }
+  });
+
+  const referencias = cambios.filter(c => c.anime !== s.candidate);
+  const resumen = referencias.length
+    ? `${referencias.length} ${referencias.length === 1 ? "nota existente ha cambiado" : "notas existentes han cambiado"}.`
+    : "Ninguna otra nota ha cambiado.";
+
+  const filas = referencias.map(c => el("div", { className: "pos-cambio" },
+    el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }),
+    el("span", { className: "pos-cambio-notas", textContent: `${c.original == null ? "Sin nota" : c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })
+  ));
 
   const aplicar = (volverAElegir) => {
-    anime.score = nueva.toFixed(1);
+    cambios.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
     if (volverAElegir) abrirPosicionador(); else dlgPosicionarEl.close();
     render();
     toast("Posicionamiento guardado localmente");
-    guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "score", valor: anime.score })
-      .then(ok => toast(ok ? "Posicionamiento sincronizado" : "No se pudo sincronizar con Google Sheets"))
+    Promise.all(cambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
+      .then(resultados => {
+        if (resultados.some(ok => !ok)) toast("Algunas notas no pudieron sincronizarse con Google Sheets");
+        else toast("Posicionamiento sincronizado");
+      })
       .catch(() => toast("No se pudo sincronizar el posicionamiento"));
   };
 
@@ -1179,30 +1207,40 @@ async function finalizarPosicionamiento() {
   guardarBtn.addEventListener("click", () => aplicar(false));
   const otraBtn = el("button", { className: "btn", type: "button", textContent: "Guardar y posicionar otra" });
   otraBtn.addEventListener("click", () => aplicar(true));
+  const corregirBtn = s.historial.length
+    ? el("button", { className: "btn-mini", type: "button", textContent: "↶ Corregir última respuesta", onclick: deshacerPosicionamiento })
+    : null;
 
-  const acciones = el("div", { className: "pos-actions" });
-  if (s.historial.length) {
-    acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "↶ Corregir última respuesta", onclick: deshacerPosicionamiento }));
-  }
-  acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }), otraBtn, guardarBtn);
+  const antesCandidato = notaNumero(s.candidate);
+  const textoAntes = antesCandidato == null ? "Sin nota" : antesCandidato.toFixed(1);
+  const nuevaCandidato = notaRedondeada(s.working.get(s.candidate.row));
+  const otras = s.validas.filter(a => a !== s.candidate && notaNumero(a) != null);
+  const puesto = otras.filter(a => notaNumero(a) > nuevaCandidato).length + 1;
 
   pantallaNueva();
   dlgPosicionarEl.append(
     el("div", { className: "pos-resultado" },
       el("div", { className: "pos-check", textContent: "✓" }),
       el("h2", { textContent: "¡Serie posicionada!" }),
-      el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(anime) }),
-      el("div", { className: "pos-nota-final", textContent: `${textoAntes} → ${nueva.toFixed(1)}` }),
+      el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(s.candidate) }),
+      el("div", { className: "pos-nota-final", textContent: `${textoAntes} → ${nuevaCandidato.toFixed(1)}` }),
       el("p", { textContent: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"} · puesto ${puesto} de ${otras.length + 1} series valoradas.` })
     ),
     el("div", { className: "pos-cambios-panel" },
       el("h3", { textContent: "Cambios de puntuación" }),
-      el("p", { className: "pos-cambios-resumen", textContent: resumen })
+      el("p", { className: "pos-cambios-resumen", textContent: resumen }),
+      el("div", { className: "pos-cambios-lista" }, ...filas)
     ),
-    acciones
+    el("div", { className: "pos-actions" },
+      corregirBtn,
+      el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }),
+      otraBtn,
+      guardarBtn
+    )
   );
   dlgPosicionarEl.focus({ preventScroll: true });
 }
+
 
 // --- Separador de empates ------------------------------------------------------
 // Ordena únicamente las series que comparten una misma décima. La nota sigue
@@ -1211,7 +1249,9 @@ async function finalizarPosicionamiento() {
 let empateState = null;
 
 function abrirSeparadorEmpates() {
-  const validas = posicionState?.validas || todosLosAnimes;
+  // "Separar notas iguales" no incluye las series marcadas como "Sin ver".
+  // El resto de estados (Visto, Viendo, Por ver, Dropeado, etc.) sí participa.
+  const validas = todosLosAnimes.filter(a => a && a.status !== "✖" && a.row != null && a.title);
   const mapa = new Map();
   validas.forEach(a => {
     const n = notaNumero(a);
@@ -1253,32 +1293,23 @@ function mostrarSelectorEmpate(grupos) {
 }
 
 function iniciarSeparacionEmpate(score) {
-  const validas = posicionState?.validas || todosLosAnimes;
-  const grupo = validas.filter(a => { const n = notaNumero(a); return n != null && notaRedondeada(n) === score; });
+  const validas = todosLosAnimes.filter(a => a && a.status !== "✖" && a.row != null && a.title);
+  const grupo = validas.filter(a => {
+    const n = notaNumero(a);
+    return n != null && notaRedondeada(n) === score;
+  });
   if (grupo.length < 2) return;
   empateState = {
     score,
     items: grupo,
     sorted: [],
+    pending: [],
     comparaciones: 0,
-    undo: [],
-    // Unión de series que el usuario ha marcado como "iguales" (union-find).
-    padre: new Map(grupo.map(a => [a.row, a.row]))
+    historial: [],
+    cambios: []
   };
   // Merge sort interactivo: óptimo en número de comparaciones en el peor caso.
   prepararMergeEmpate();
-}
-
-function empateRaiz(s, row) {
-  while (s.padre.get(row) !== row) {
-    s.padre.set(row, s.padre.get(s.padre.get(row)));
-    row = s.padre.get(row);
-  }
-  return row;
-}
-function empateUnir(s, rowA, rowB) {
-  const ra = empateRaiz(s, rowA), rb = empateRaiz(s, rowB);
-  if (ra !== rb) s.padre.set(rb, ra);
 }
 
 function prepararMergeEmpate() {
@@ -1329,25 +1360,19 @@ function siguienteMergeEmpate() {
   mostrarComparacionEmpate(a, b);
 }
 
-// Foto del estado del merge antes de cada respuesta, para poder deshacer.
 function instantaneaEmpate(s) {
-  const copia = r => r.slice();
+  const c = (x) => (x ? x.slice() : x);
   return {
-    runs: s.runs.map(copia), nextRuns: s.nextRuns.map(copia), runIndex: s.runIndex,
-    currentLeft: s.currentLeft ? copia(s.currentLeft) : null,
-    currentRight: s.currentRight ? copia(s.currentRight) : null,
-    merged: s.merged ? copia(s.merged) : null,
-    leftIndex: s.leftIndex, rightIndex: s.rightIndex,
-    comparaciones: s.comparaciones, padre: new Map(s.padre)
+    runs: s.runs.map(c), nextRuns: s.nextRuns.map(c), runIndex: s.runIndex,
+    currentLeft: c(s.currentLeft), currentRight: c(s.currentRight), merged: c(s.merged),
+    leftIndex: s.leftIndex, rightIndex: s.rightIndex, comparaciones: s.comparaciones
   };
 }
 
 function deshacerEmpate() {
-  const s = empateState;
-  const prev = s?.undo?.pop();
-  if (!prev) return;
-  Object.assign(s, prev);
-  mostrarComparacionEmpate(s.currentLeft[s.leftIndex], s.currentRight[s.rightIndex]);
+  const s = empateState; if (!s?.historial?.length) return;
+  Object.assign(s, s.historial.pop());
+  siguienteMergeEmpate();
 }
 
 function mostrarComparacionEmpate(a, b) {
@@ -1364,85 +1389,59 @@ function mostrarComparacionEmpate(a, b) {
     cabecera,
     izq: { anime: a, sub: "Empate actual" },
     der: { anime: b, sub: "Empate actual" },
-    textoIgual: "Me gustan igual",
+    textoIgual: "Igual (mantener empate)",
     onIzq: () => responderEmpate("a"),
     onIgual: () => responderEmpate("igual"),
     onDer: () => responderEmpate("b"),
-    onDeshacer: s.undo.length ? deshacerEmpate : null
+    onDeshacer: s.historial.length ? deshacerEmpate : null
   });
 }
 
 function responderEmpate(tipo) {
   const s = empateState;
-  if (!s) return;
+  if (!s || !s.currentLeft || !s.currentRight) return;
   const a = s.currentLeft[s.leftIndex];
   const b = s.currentRight[s.rightIndex];
-  s.undo.push(instantaneaEmpate(s));
+  if (!a || !b) return;
+  s.historial.push(instantaneaEmpate(s));
   s.comparaciones++;
   if (tipo === "a") {
     s.merged.push(a); s.leftIndex++;
   } else if (tipo === "b") {
     s.merged.push(b); s.rightIndex++;
   } else {
-    // Iguales: se recuerda el vínculo para que acaben con la misma nota.
-    empateUnir(s, a.row, b.row);
+    // Un empate subjetivo no necesita otra comparación; mantenemos el orden estable.
     s.merged.push(a); s.leftIndex++;
     s.merged.push(b); s.rightIndex++;
   }
   siguienteMergeEmpate();
 }
 
-// Agrupa la lista ya ordenada en "escalones": las series marcadas como iguales
-// y contiguas comparten escalón y, por tanto, nota final.
-function agruparEscalonesEmpate(s) {
-  const escalones = [];
-  s.sorted.forEach((a, i) => {
-    if (i > 0 && empateRaiz(s, a.row) === empateRaiz(s, s.sorted[i - 1].row)) escalones[escalones.length - 1].push(a);
-    else escalones.push([a]);
-  });
-  return escalones;
-}
+function obtenerNotasDisponiblesParaEmpate(s) {
+  const cantidad = s.items.length;
+  if (cantidad < 1) return [];
 
-// Reparte las décimas para N escalones SIN salir del hueco que dejan las
-// series vecinas: la nota inmediatamente inferior y la inmediatamente superior
-// al empate (de otras series) son un muro que no se cruza. Si caben, se elige
-// el bloque consecutivo más centrado en la nota original; si no caben, se
-// reparten por todo el hueco y algunos escalones seguirán empatados.
-// Devuelve las notas en décimas, del mejor escalón al peor.
-function calcularRepartoEmpate(s, nEscalones) {
-  const filasGrupo = new Set(s.items.map(a => a.row));
+  // Solo excluimos las notas de las demás series; "Sin ver" ya quedó fuera
+  // del grupo desde abrirSeparadorEmpates(). No exigimos que cada décima sea
+  // distinta: hay 101 valores posibles (0.0-10.0) y puede haber cientos de
+  // series con la misma nota.
+  //
+  // Elegimos una ventana de hasta 101 décimas centrada alrededor de la nota
+  // original. Si hay más series que décimas disponibles, reutilizamos valores
+  // mediante un reparto monótono. Así se conserva el orden obtenido por las
+  // comparaciones sin producir el error de "no hay suficientes décimas".
+  const cantidadValores = Math.min(101, Math.max(1, cantidad));
   const base = Math.round(s.score * 10);
-  let vecinaInf = 0, vecinaSup = 101;
-  todosLosAnimes.forEach(a => {
-    if (!a || filasGrupo.has(a.row)) return;
-    const n = notaNumero(a);
-    if (n == null) return;
-    const t = Math.round(n * 10);
-    if (t < base && t > vecinaInf) vecinaInf = t;
-    if (t > base && t < vecinaSup) vecinaSup = t;
+  const inicio = Math.max(0, Math.min(100 - cantidadValores, base - Math.floor(cantidadValores / 2)));
+  const valores = Array.from({ length: cantidadValores }, (_, i) => inicio + i);
+
+  return Array.from({ length: cantidad }, (_, i) => {
+    const indice = cantidad === 1
+      ? 0
+      : Math.floor(i * (cantidadValores - 1) / (cantidad - 1));
+    return valores[indice];
   });
-  const desde = Math.max(1, vecinaInf + 1);
-  const hasta = Math.min(100, vecinaSup - 1);
-  const ancho = hasta - desde + 1;
-  const asignacion = [];
-
-  if (ancho < 1) {
-    for (let i = 0; i < nEscalones; i++) asignacion.push(base);
-    return { asignacion, comprimido: nEscalones > 1, desde: base, hasta: base, ancho: 1 };
-  }
-  if (nEscalones <= ancho) {
-    let mejorInicio = desde, mejorCoste = Infinity;
-    for (let inicio = desde; inicio + nEscalones - 1 <= hasta; inicio++) {
-      const coste = Math.abs(inicio + (nEscalones - 1) / 2 - base);
-      if (coste < mejorCoste) { mejorCoste = coste; mejorInicio = inicio; }
-    }
-    for (let i = 0; i < nEscalones; i++) asignacion.push(mejorInicio + nEscalones - 1 - i);
-    return { asignacion, comprimido: false, desde, hasta, ancho };
-  }
-  for (let i = 0; i < nEscalones; i++) asignacion.push(hasta - Math.floor(i * ancho / nEscalones));
-  return { asignacion, comprimido: true, desde, hasta, ancho };
 }
-
 function finalizarSeparacionEmpate() {
   const s = empateState;
   if (!s) return;
@@ -1454,56 +1453,23 @@ function finalizarSeparacionEmpate() {
   }
   if (s.runs.length > 1) return siguienteMergeEmpate();
   s.sorted = s.runs[0] || [];
-
-  const escalones = agruparEscalonesEmpate(s);
-  const reparto = calcularRepartoEmpate(s, escalones.length);
-  const cambios = [];
-  escalones.forEach((grupo, i) => grupo.forEach(anime => cambios.push({ anime, nueva: reparto.asignacion[i] / 10, original: s.score })));
-  const aCambiar = cambios.filter(c => Math.abs(c.nueva - c.original) >= 0.05);
-
-  const acciones = el("div", { className: "pos-actions" });
-  const corregir = s.undo.length
-    ? el("button", { className: "btn-mini", type: "button", textContent: "← Corregir última respuesta", onclick: deshacerEmpate })
-    : null;
-  const cerrar = el("button", { className: "btn-mini", type: "button", textContent: aCambiar.length ? "Cancelar" : "Cerrar", onclick: () => dlgPosicionarEl.close() });
-
+  const disponibles = obtenerNotasDisponiblesParaEmpate(s);
   pantallaNueva();
 
-  if (!aCambiar.length) {
-    const motivo = escalones.length === 1
-      ? "Has indicado que todas te gustan lo mismo, así que conservan la misma nota."
-      : `Entre las notas vecinas no queda ninguna décima libre, así que no se puede separar sin tocar otras series.`;
-    acciones.append(...[corregir, cerrar].filter(Boolean));
-    dlgPosicionarEl.append(
-      el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "=" }), el("h2", { textContent: "Sin cambios de nota" }), el("p", { textContent: motivo })),
-      acciones
-    );
-    return;
-  }
-
+  const cambios = s.sorted.map((anime, i) => ({ anime, nueva: disponibles[disponibles.length - 1 - i] / 10, original: s.score }));
   const filas = cambios.map(c => el("div", { className: "pos-cambio" }, el("span", { className: "pos-cambio-nombre", textContent: posicionTitulo(c.anime) }), el("span", { className: "pos-cambio-notas", textContent: `${c.original.toFixed(1)} → ${c.nueva.toFixed(1)}` })));
   const guardarBtnEmpate = el("button", { className: "btn pos-primary", type: "button", textContent: "Guardar orden" });
   guardarBtnEmpate.addEventListener("click", () => {
-    aCambiar.forEach(c => { c.anime.score = c.nueva.toFixed(1); });
+    cambios.forEach(c => c.anime.score = c.nueva.toFixed(1));
     dlgPosicionarEl.close();
     render();
-    toast(`${aCambiar.length} series ordenadas por nota`);
-    Promise.all(aCambiar.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score })))
-      .then(resultados => { if (resultados.some(ok => !ok)) toast("Algunas notas no pudieron sincronizarse con Google Sheets"); })
-      .catch(() => toast("No se pudo sincronizar alguna nota"));
+    Promise.all(cambios.map(c => guardar({ type: "UPDATE_ANIME", row: c.anime.row, campo: "score", valor: c.anime.score }))).catch(() => toast("No se pudo sincronizar alguna nota"));
+    toast(`${cambios.length} series ordenadas por nota`);
   });
-  acciones.append(...[guardarBtnEmpate, corregir, cerrar].filter(Boolean));
-
-  const aviso = reparto.comprimido
-    ? el("p", { className: "pos-cambios-resumen", textContent: `Entre las notas vecinas solo caben ${reparto.ancho} décimas (${(reparto.desde / 10).toFixed(1)}–${(reparto.hasta / 10).toFixed(1)}) para ${escalones.length} posiciones, así que algunas series seguirán con la misma nota.` })
-    : (escalones.length < s.items.length
-      ? el("p", { className: "pos-cambios-resumen", textContent: "Las series que marcaste como iguales comparten nota." })
-      : null);
-
   dlgPosicionarEl.append(
-    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}. Las notas siguen usando una sola decimal y no cruzan a otras series.` })),
-    el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: `Nuevo orden de ${s.score.toFixed(1)}` }), aviso, el("div", { className: "pos-cambios-lista" }, ...filas)),
-    acciones
+    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}. Las notas siguen usando una sola decimal.` })),
+    el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: `Nuevo orden de ${s.score.toFixed(1)}` }), el("div", { className: "pos-cambios-lista" }, ...filas)),
+    el("div", { className: "pos-actions" }, s.historial.length ? el("button", { className: "btn-mini", type: "button", textContent: "↶ Corregir última respuesta", onclick: deshacerEmpate }) : null, el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }), guardarBtnEmpate)
   );
 }
 
@@ -1538,67 +1504,17 @@ function setAgregarPanel(abierto) {
 }
 $("btnAgregar").addEventListener("click", () => setAgregarPanel(agregarPanelEl.hidden));
 
-const dlgSerieEl = $("dlgSerie");
-
-// Pregunta si el anime que se va a añadir es otra temporada/parte de uno ya registrado.
-// Devuelve { decision: "misma", candidato } | { decision: "otra" } | null (cerrado sin responder).
-function preguntarMismaSerie({ nuevaFila, candidatos }) {
-  return new Promise((resolve) => {
-    let respondido = false;
-    const fin = (valor) => { respondido = true; dlgSerieEl.close(); resolve(valor); };
-    dlgSerieEl.innerHTML = "";
-    dlgSerieEl.onclose = () => { if (!respondido) resolve(null); };
-
-    const opciones = el("div", { className: "serie-opciones" });
-    candidatos.forEach((c) => {
-      const b = el("button", { className: "serie-opcion", type: "button" },
-        crearPortada({ cover: c.cover, title: c.title }, "serie-portada"),
-        el("span", { textContent: `Sí, es «${c.title}»` }));
-      b.addEventListener("click", () => fin({ decision: "misma", candidato: c }));
-      opciones.append(b);
-    });
-    const otra = el("button", { className: "btn pos-primary", type: "button", textContent: "No, es otra serie (registrar aparte)" });
-    otra.addEventListener("click", () => fin({ decision: "otra" }));
-    const cerrar = el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgSerieEl.close() });
-
-    const p = el("p", {});
-    p.append("Vas a añadir ", el("strong", { textContent: nuevaFila.title }),
-      candidatos.length > 1 ? ". ¿Es alguna de estas, que ya tienes en tu lista?" : ". ¿Es la misma que esta, que ya tienes en tu lista?");
-    dlgSerieEl.append(el("h2", { textContent: "¿Es la misma serie?" }), p, opciones, el("div", { className: "serie-acciones" }, cerrar, otra));
-    dlgSerieEl.showModal();
-  });
-}
-
 async function agregarAnime() {
   const url = agregarUrlEl.value.trim();
   if (!url) { agregarStatusEl.textContent = "Pega primero el enlace."; return; }
   agregarBtnEl.disabled = true;
   agregarStatusEl.textContent = "Buscando título y portada…";
-  let res = await enviarMensaje({ type: "REGISTER_ANIME", url });
-
-  if (res?.ok && res.pregunta) {
-    agregarStatusEl.textContent = "Esperando tu respuesta…";
-    const r = await preguntarMismaSerie(res.pregunta);
-    if (!r) {
-      agregarBtnEl.disabled = false;
-      agregarStatusEl.textContent = "No se ha añadido nada. Vuelve a pegar el enlace cuando quieras decidir.";
-      return;
-    }
-    res = await enviarMensaje({
-      type: "RESOLVER_SECUELA",
-      decision: r.decision,
-      slug: res.pregunta.slug,
-      existingUrl: r.candidato?.url || "",
-      existingTitle: r.candidato?.title || "",
-      nuevaFila: res.pregunta.nuevaFila
-    });
-  }
-
+  const res = await enviarMensaje({ type: "REGISTER_ANIME", url });
   agregarBtnEl.disabled = false;
   if (!res || !res.ok) { agregarStatusEl.textContent = mensajeError(res?.error || "error desconocido"); return; }
-  agregarStatusEl.textContent = res.vinculada ? `Marcada como viendo: ${res.title}` : `Añadido: ${res.title}`;
+  agregarStatusEl.textContent = `Añadido: ${res.title}`;
   agregarUrlEl.value = "";
-  toast(res.vinculada ? "Serie actualizada" : "Anime añadido");
+  toast("Anime añadido");
   cargar();
 }
 agregarBtnEl.addEventListener("click", agregarAnime);
@@ -1679,24 +1595,18 @@ listaGuardarBtnEl.addEventListener("click", guardarListaNueva);
 // --- Configuración: qué Google Sheet se usa -----------------------------------
 
 let configActual = null; // { url, titulo, hoja } o null si aún no se ha elegido hoja
-let clientIdActual = ""; // Client ID de OAuth ya guardado en este dispositivo (si lo hay)
 
 function mensajeError(error) {
   const c = String(error);
-  if (c.includes("SIN_RESPUESTA")) return "No se pudo comunicar con la aplicación.";
-  if (c.includes("CONFIGURA_CLIENT_ID_WEB")) return "Falta configurar el Client ID OAuth de tipo Aplicación web en config.js.";
-  if (c.includes("GOOGLE_GIS_NO_CARGA")) return "No se pudo cargar el inicio de sesión de Google. Comprueba tu conexión.";
-  if (c.includes("origin_mismatch") || c.includes("redirect_uri_mismatch")) return "Google ha rechazado este dominio. Añade la URL de esta PWA en los orígenes autorizados del cliente OAuth.";
+  if (c.includes("SIN_RESPUESTA")) return "No se pudo comunicar con la extensión.";
   if (c.includes("ENLACE_INVALIDO")) return "Ese enlace no parece de Google Sheets (debe contener «/spreadsheets/d/…»).";
   if (c.includes("HOJA_NO_ENCONTRADA")) return "No se encuentra esa hoja. Revisa el enlace.";
   if (c.includes("SIN_PERMISO")) return "Tu cuenta de Google no tiene acceso a esa hoja. Comprueba que está compartida contigo con permiso de edición.";
   if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
-  if (c.includes("NECESITA_INICIO_SESION")) return "Toca el botón para iniciar sesión con Google.";
-  if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
+  if (c.includes("No se obtuvo token") || c.includes("The user did not approve")) return "No se pudo iniciar sesión con Google.";
   if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace completo (con http:// o https://) a la ficha del anime.";
   if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
   if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
-  if (c.includes("FILA_NO_ENCONTRADA")) return "No se encontró la serie registrada. Puede que se haya movido o borrado en la hoja.";
   if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
   if (c.includes("FALTA_NOMBRE")) return "Ponle un nombre a la lista.";
   if (c.includes("LISTA_NO_ENCONTRADA")) return "Esa lista ya no existe.";
@@ -1705,37 +1615,33 @@ function mensajeError(error) {
 
 function crearFormConfig({ bienvenida }) {
   const input = el("input", { type: "url", placeholder: "https://docs.google.com/spreadsheets/d/…", value: configActual?.url || "", ariaLabel: "Enlace de tu Google Sheet" });
-  const clientIdInput = el("input", { type: "text", placeholder: "Client ID de OAuth (…apps.googleusercontent.com)", value: clientIdActual || "", ariaLabel: "Client ID de OAuth de Google" });
   const estado = el("div", { className: "estado-txt" });
   const btn = el("button", { className: "btn", type: "button", textContent: bienvenida ? "Conectar y empezar" : "Guardar hoja" });
   if (configActual?.titulo) estado.textContent = `Conectada: ${configActual.titulo} (pestaña «${configActual.hoja}»)`;
 
   async function guardarConfig() {
     const url = input.value.trim();
-    const clientId = clientIdInput.value.trim();
-    if (!clientId) { estado.textContent = "Pega el Client ID de OAuth (tipo Aplicación web)."; return; }
     if (!url) { estado.textContent = "Pega primero el enlace de tu Google Sheet."; return; }
     btn.disabled = true;
     estado.textContent = "Comprobando acceso…";
-    const res = await enviarMensaje({ type: "SAVE_CONFIG", url, clientId });
+    const res = await enviarMensaje({ type: "SAVE_CONFIG", url });
     btn.disabled = false;
     if (!res?.ok) { estado.textContent = mensajeError(res?.error || "Error desconocido"); return; }
     configActual = { url, titulo: res.titulo, hoja: res.hoja };
-    clientIdActual = clientId;
     estado.textContent = `Conectada: ${res.titulo} (pestaña «${res.hoja}»)` + (res.encabezadosCreados ? " · encabezados creados" : "");
     toast("Hoja conectada");
     if (!bienvenida) setHerramientas(false);
     cargar();
   }
   btn.addEventListener("click", guardarConfig);
-  [input, clientIdInput].forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarConfig(); }));
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarConfig(); });
 
   return el("div", { className: "config" },
     el("h2", { textContent: bienvenida ? "Conecta tu Google Sheet" : "Hoja de Google Sheets" }),
     el("p", { textContent: bienvenida
-      ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace, junto con el Client ID de OAuth (Aplicación web) de tu proyecto de Google Cloud."
-      : "Cambia aquí la hoja o el Client ID de OAuth. Se guardan solo en este dispositivo." }),
-    clientIdInput, input, btn, estado);
+      ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace."
+      : "Cambia aquí la hoja. Se guarda en la extensión." }),
+    input, btn, estado);
 }
 
 function crearBotonCuenta() {
@@ -1743,7 +1649,7 @@ function crearBotonCuenta() {
   const btn = el("button", { className: "btn", type: "button", textContent: "Cambiar de cuenta de Google" });
   btn.addEventListener("click", async () => {
     btn.disabled = true;
-    estado.textContent = "";
+    estado.textContent = "Cambiando cuenta…";
     const r = await enviarMensaje({ type: "CAMBIAR_CUENTA" });
     btn.disabled = false;
     if (!r?.ok) { estado.textContent = mensajeError(r?.error || "error desconocido"); return; }
@@ -1763,6 +1669,7 @@ if (guardarPortadasEl) {
   guardarPortadasEl.addEventListener("change", async () => {
     const activado = guardarPortadasEl.checked;
     try { localStorage.setItem("guardarPortadas", String(activado)); } catch (e) {}
+    enviarMensaje({ type: "SET_COVER_STORAGE", enabled: activado });
     aplicarPreferenciaPortadas();
     toast(activado ? "Guardado de portadas activado" : "Guardado de portadas desactivado");
   });
@@ -1776,7 +1683,6 @@ if (borrarPortadasBtn) {
       await cache.keys().then(keys => Promise.all(keys.map(k => cache.delete(k))));
       portadasEnCache.clear();
       portadaMem.clear();
-      portadaImgs.clear();
       actualizarContadorPortadas();
       precargarStatusEl.textContent = "Se han borrado las copias locales de las portadas.";
       toast("Portadas locales borradas");
@@ -1850,16 +1756,14 @@ migrateFlvBtn.addEventListener("click", async () => {
 
 // --- Carga inicial -----------------------------------------------------------
 
-// --- Caché de la lista: la app se abre al instante y se actualiza después ---------
+// --- Caché de la lista: el popup se abre al instante y se actualiza después ------
 const syncEl = $("sync");
-function claveListaActual() {
-  return configActual ? `${configActual.spreadsheetId || configActual.url}|${configActual.gid ?? ""}|${configActual.hoja || ""}` : "";
-}
+function claveListaActual() { return configActual ? `${configActual.url}|${configActual.hoja || ""}` : ""; }
 
-function leerListaCache() {
+async function leerListaCache() {
   try {
-    const c = JSON.parse(localStorage.getItem("listaCache") || "null");
-    if (c && c.clave === claveListaActual() && Array.isArray(c.lista) && c.lista.length) return c;
+    const { listaCache } = await chrome.storage.local.get("listaCache");
+    if (listaCache && listaCache.clave === claveListaActual() && Array.isArray(listaCache.lista) && listaCache.lista.length) return listaCache;
   } catch (e) {}
   return null;
 }
@@ -1869,17 +1773,17 @@ function guardarListaCache() {
   clearTimeout(guardarCacheTimer);
   guardarCacheTimer = setTimeout(() => {
     if (!configActual || !todosLosAnimes.length) return;
-    try { localStorage.setItem("listaCache", JSON.stringify({ clave: claveListaActual(), ts: Date.now(), lista: todosLosAnimes })); } catch (e) {}
+    chrome.storage.local.set({ listaCache: { clave: claveListaActual(), ts: Date.now(), lista: todosLosAnimes } }).catch(() => {});
   }, 400);
 }
 
-function mostrarSync(texto, boton) {
+function mostrarSync(texto, conReintento) {
   if (!syncEl) return;
   syncEl.innerHTML = "";
   if (!texto) { syncEl.hidden = true; return; }
-  if (!boton) syncEl.append(el("div", { className: "spinner mini" }));
+  if (!conReintento) syncEl.append(el("div", { className: "spinner mini" }));
   syncEl.append(el("span", { textContent: texto }));
-  if (boton) syncEl.append(el("button", { className: "btn-mini", type: "button", textContent: boton.texto, onclick: boton.accion }));
+  if (conReintento) syncEl.append(el("button", { className: "btn-mini", type: "button", textContent: "Reintentar", onclick: cargar }));
   syncEl.hidden = false;
 }
 
@@ -1891,7 +1795,7 @@ async function cargar() {
 
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
   filtrosEl.hidden = !configActual;
-  const cache = configActual ? leerListaCache() : null;
+  const cache = configActual ? await leerListaCache() : null;
   if (cache) {
     // Se pinta ya la última lista conocida; mientras tanto se pide la de la hoja.
     cargandoEl.hidden = true;
@@ -1923,17 +1827,7 @@ async function cargar() {
     // Sin conexión o sesión caducada: se sigue mostrando la lista guardada.
     const error = String(res?.error || "");
     const sesion = /NECESITA_INICIO_SESION|TOKEN_INVALIDO|NO_SE_OBTUVO_TOKEN|access_denied|interaction_required/.test(error);
-    if (sesion) {
-      mostrarSync("Sesión de Google caducada: mostrando la última lista guardada.", {
-        texto: "Iniciar sesión",
-        accion: async () => {
-          const r = await enviarMensaje({ type: "LOGIN" });
-          if (r?.ok) cargar(); else toast(mensajeError(r?.error || "error desconocido"));
-        }
-      });
-    } else {
-      mostrarSync("No se pudo actualizar: mostrando la última lista guardada.", { texto: "Reintentar", accion: cargar });
-    }
+    mostrarSync(sesion ? "Sesión de Google caducada: mostrando la última lista guardada." : "No se pudo actualizar: mostrando la última lista guardada.", true);
     return;
   }
 
@@ -1979,7 +1873,6 @@ inicializarToolbar();
 (async () => {
   // El formulario de "Herramientas" necesita conocer la hoja actual antes de crearse
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
-  clientIdActual = (await enviarMensaje({ type: "GET_CLIENT_ID" }))?.clientId || "";
   $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta());
   cargar();
 })();
