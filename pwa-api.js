@@ -478,6 +478,27 @@
     return ultimaConTitulo + 1;
   }
 
+  // Reconoce enlaces de AnimeAV1 a la ficha de una serie o a un episodio concreto:
+  //   https://animeav1.com/media/black-clover-2nd-season      -> serie
+  //   https://animeav1.com/media/black-clover-2nd-season/1    -> episodio 1 de esa serie
+  // Devuelve { slug, url (ficha de la serie), episodeUrl ("" si no es un episodio) }.
+  // Otros sitios se aceptan como antes (sin slug ni episodio). null si no es un enlace válido.
+  function parsearEnlaceAnime(texto) {
+    let t = String(texto || "").trim();
+    if (!t) return null;
+    if (!/^https?:\/\//i.test(t) && /^(www\.)?animeav1\.com\//i.test(t)) t = "https://" + t;
+    let u;
+    try { u = new URL(t); } catch (e) { return null; }
+    if (!/^https?:$/.test(u.protocol)) return null;
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (host !== "animeav1.com") return { slug: "", url: u.href, episodeUrl: "" };
+    const m = u.pathname.match(/^\/media\/([^/]+)(?:\/(\d+))?\/?$/);
+    if (!m) return null;
+    const slug = m[1].toLowerCase();
+    const url = `https://animeav1.com/media/${slug}`;
+    return { slug, url, episodeUrl: m[2] ? `${url}/${m[2]}` : "" };
+  }
+
   // --- Series relacionadas (temporadas, partes, arcos…) ---------------------------
   // Reduce un título (o un slug) a su "núcleo": quita marcadores de temporada/parte
   // en inglés y castellano ("3rd Season", "Season 3", "Segunda Temporada", "Part 2",
@@ -535,13 +556,13 @@
       || null;
   }
 
-  // Pone la serie existente como "viendo" y, si el enlace pegado es de un episodio, lo guarda como último capítulo.
-  async function marcarViendo(anime, enlacePegado) {
+  // Pone la serie existente como "viendo" y, si se pegó un episodio, lo guarda como último capítulo.
+  async function marcarViendo(anime, episodeUrl) {
     if (anime.status !== ESTADO_VIENDO) await actualizarCampo(anime.row, "status", ESTADO_VIENDO);
-    if (/\/media\/[^/?#]+\/\d+/i.test(enlacePegado || "")) await actualizarCampo(anime.row, "lastEpisodeUrl", String(enlacePegado).trim());
+    if (episodeUrl) await actualizarCampo(anime.row, "lastEpisodeUrl", String(episodeUrl).trim());
   }
 
-  async function escribirAnimeNuevo({ title, url, cover }) {
+  async function escribirAnimeNuevo({ title, url, cover, episodeUrl }) {
     const sheetName = await getSheetName();
     const fila = await siguienteFilaLibre(sheetName);
 
@@ -549,6 +570,7 @@
     valores[3] = { userEnteredValue: { stringValue: title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: url } } }] };
     valores[5] = { userEnteredValue: { stringValue: ESTADO_VIENDO } };
     if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover}",1)` } };
+    if (episodeUrl) valores[10] = { userEnteredValue: { stringValue: episodeUrl } };
 
     await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
       range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
@@ -566,11 +588,13 @@
       const lista = await obtenerListaCompleta();
       const anime = filaExistente(lista, existingUrl, existingTitle);
       if (!anime) throw new Error("FILA_NO_ENCONTRADA");
-      await marcarViendo(anime, nuevaFila?.url);
-      await getSheetName(); // asegura spreadsheetId/gid para la clave
-      const vinculos = leerVinculos();
-      vinculos[claveVinculo(slug)] = { url: existingUrl, title: existingTitle };
-      guardarVinculos(vinculos);
+      await marcarViendo(anime, nuevaFila?.episodeUrl);
+      if (slug) {
+        await getSheetName(); // asegura spreadsheetId/gid para la clave
+        const vinculos = leerVinculos();
+        vinculos[claveVinculo(slug)] = { url: existingUrl, title: existingTitle };
+        guardarVinculos(vinculos);
+      }
       return { title: anime.title, vinculada: true };
     }
     return await escribirAnimeNuevo(nuevaFila);
@@ -581,22 +605,28 @@
   // que hacía la extensión de Chrome al abrir un episodio (no disponible en
   // una PWA normal).
   async function registrarAnime(enlace) {
-    const url = String(enlace || "").trim();
-    if (!/^https?:\/\//i.test(url)) throw new Error("ENLACE_ANIME_INVALIDO");
+    const p = parsearEnlaceAnime(enlace);
+    if (!p) throw new Error("ENLACE_ANIME_INVALIDO");
+    const { slug, url, episodeUrl } = p;
 
+    // ¿Ya está registrada? Se compara por enlace (también si el guardado es de un episodio) y por slug.
     const existentes = await obtenerListaCompleta();
-    const slug = slugDeUrl(url);
-    const mismaUrl = url.replace(/\/+$/, "");
-    const yaExiste = existentes.some((a) => (a.url && a.url.replace(/\/+$/, "") === mismaUrl) || (slug && slugDeUrl(a.url) === slug));
-    if (yaExiste) throw new Error("YA_EXISTE");
+    const canon = (x) => String(x || "").replace(/\/+$/, "");
+    const existente = existentes.find((a) => a.url && (canon(a.url) === canon(url) || (slug && slugDeUrl(a.url) === slug)));
+    if (existente) {
+      // Con un enlace de episodio se aprovecha para dejarla "viendo" y guardar ese último capítulo.
+      if (!episodeUrl) throw new Error("YA_EXISTE");
+      await marcarViendo(existente, episodeUrl);
+      return { title: existente.title, url: existente.url, vinculada: true };
+    }
 
     // Si ya dijiste antes que esta temporada es una serie que tienes registrada, se actualiza sin preguntar.
     await getSheetName();
-    const vinculo = leerVinculos()[claveVinculo(slug)];
+    const vinculo = slug ? leerVinculos()[claveVinculo(slug)] : null;
     if (vinculo) {
       const anime = filaExistente(existentes, vinculo.url, vinculo.title);
       if (anime) {
-        await marcarViendo(anime, url);
+        await marcarViendo(anime, episodeUrl);
         return { title: anime.title, vinculada: true };
       }
       const vinculos = leerVinculos();
@@ -619,7 +649,7 @@
     const titulo = m ? m[1].trim() : "";
     if (!titulo) throw new Error("SIN_TITULO");
     const cover = extraerPortadaDesdeHtml(html);
-    const nuevaFila = { title: titulo, url, cover: cover || "" };
+    const nuevaFila = { title: titulo, url, cover: cover || "", episodeUrl };
 
     // ¿Parece otra temporada/parte de una serie ya registrada? -> se pregunta (las más recientes primero)
     const candidatos = [];

@@ -1693,7 +1693,7 @@ function mensajeError(error) {
   if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
   if (c.includes("NECESITA_INICIO_SESION")) return "Toca el botón para iniciar sesión con Google.";
   if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
-  if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace completo (con http:// o https://) a la ficha del anime.";
+  if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace de AnimeAV1 a la ficha de la serie o a uno de sus episodios (animeav1.com/media/…).";
   if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
   if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
   if (c.includes("FILA_NO_ENCONTRADA")) return "No se encontró la serie registrada. Puede que se haya movido o borrado en la hoja.";

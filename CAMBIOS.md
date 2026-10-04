@@ -1,3 +1,8 @@
+## Añadir por enlace
+- **Añadir por enlace reconoce serie y episodio:** vale tanto `https://animeav1.com/media/black-clover-2nd-season` como `https://animeav1.com/media/black-clover-2nd-season/1` (también con `www.`, sin `https://`, con `/` final, `?parámetros` o `#`). Siempre se guarda el enlace de la ficha de la serie y el título y la portada salen de ella. Si se pega un episodio, se guarda como último capítulo.
+  - Si la serie ya está registrada: con un enlace de episodio se deja como "viendo" y se actualiza el último capítulo; con el enlace de la ficha avisa de que ya existe.
+  - Si parece otra temporada de una registrada, pregunta "¿Es la misma serie?" (también en el popup de la extensión).
+
 ## Mejoras traídas de la extensión (v1.5.x)
 - **Portadas rápidas** en la lista principal y en el posicionador: se descargan una sola vez (con límite de descargas simultáneas), se guardan en la caché local y se predecodifican; mientras llegan se ve un esqueleto animado y después aparecen con fundido. Las portadas de las siguientes comparaciones se precargan mientras decides la actual. La cuadrícula del posicionador solo carga las que están a la vista.
 - **La app se abre al instante:** muestra la última lista guardada mientras se actualiza desde Google Sheets (aviso "Actualizando…"). Sin conexión o con la sesión de Google caducada sigue mostrando la lista guardada, con aviso y botón para reintentar o iniciar sesión. Mientras se actualiza, los cambios por fila esperan unos instantes para no escribir en una fila equivocada.
