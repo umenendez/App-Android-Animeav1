@@ -35,7 +35,6 @@ const vacioEl = $("vacio");
 const bienvenidaEl = $("bienvenida");
 const filtrosEl = document.querySelector(".filtros");
 const listaEl = $("lista");
-const contadorEl = $("contador");
 const contadorPortadasEl = $("contadorPortadas");
 const chipsEl = $("chips");
 const busquedaEl = $("busqueda");
@@ -295,9 +294,22 @@ const observador = new IntersectionObserver(
 const dlgStatsEl = document.getElementById("dlgStats");
 const btnStats = document.getElementById("btnStats");
 
+// Una nota de 0 NO es una nota: significa que la serie todavía no está valorada.
+// Por eso se trata igual que una celda vacía en todo el cálculo (nota media,
+// posicionador, separador de empates) y se muestra como "-" en la tarjeta.
+function esNotaCero(a) {
+  return parseFloat(String(a?.score ?? "").replace(",", ".")) === 0;
+}
+
 function numeroNota(a) {
   const n = parseFloat(String(a?.score ?? "").replace(",", "."));
-  return Number.isFinite(n) && n >= 0 ? Math.min(10, n) : null;
+  return Number.isFinite(n) && n > 0 ? Math.min(10, n) : null;
+}
+
+// Texto a mostrar en el campo de nota: un 0 se deja vacío para que se vea el
+// guion del placeholder en vez de un 0 que parece una valoración pésima.
+function textoNotaVisible(a) {
+  return esNotaCero(a) ? "" : String(a?.score ?? "");
 }
 
 function crearBarraEstadistica(nombre, cantidad, maximo, sufijo = "") {
@@ -349,11 +361,13 @@ function renderEstadisticas() {
   if (!generos.length) secGeneros.append(el("div", { className: "stats-vacio", textContent: "Todavía no hay géneros." }));
   else { const maxGenero = Math.max(1, ...generos.map(x => x[1])); generos.forEach(([n,c]) => secGeneros.append(crearBarraEstadistica(n,c,maxGenero))); }
 
+  // El 0 no aparece: no es una nota posible. La casilla "0" queda siempre a 0 y
+  // no se pinta, para no sugerir que existe una nota cero.
   const distrib = Array.from({ length: 11 }, () => 0);
   notas.forEach((n) => distrib[Math.round(n)]++);
   const secNotas = el("div", { className: "stats-seccion" }, el("h3", { textContent: "Distribución de notas" }));
   const notasGrid = el("div", { className: "stats-notas" });
-  distrib.forEach((c, i) => notasGrid.append(el("div", { className: "stats-nota" }, el("b", { textContent: String(i) }), el("span", { textContent: c }))));
+  distrib.forEach((c, i) => { if (i === 0) return; notasGrid.append(el("div", { className: "stats-nota" }, el("b", { textContent: String(i) }), el("span", { textContent: c }))); });
   secNotas.append(notasGrid);
 
   dlgStatsEl.append(cab, resumen, estados, secGeneros, secNotas);
@@ -544,11 +558,13 @@ async function guardar(msg, ...elementos) {
 }
 
 // Color de la nota: rojo (0) -> verde (10). Un 11 (fuera de escala) se marca en amarillo.
+// Sin nota (vacío) o nota 0 no se colorea: el 0 significa "sin valorar", así que
+// nunca debe verse el rojo de "nota pésima".
 function aplicarColorNota(input) {
   const n = parseFloat(String(input.value).replace(",", "."));
-  if (isNaN(n)) { input.style.backgroundColor = input.style.color = ""; return; }
+  if (!Number.isFinite(n) || n <= 0) { input.style.backgroundColor = input.style.color = ""; return; }
   if (n > 10) { input.style.backgroundColor = "#facc15"; input.style.color = "#78350f"; return; }
-  input.style.backgroundColor = `hsl(${(Math.max(0, n) / 10) * 120}, 72%, 38%)`;
+  input.style.backgroundColor = `hsl(${(n / 10) * 120}, 72%, 38%)`;
   input.style.color = "#fff";
 }
 
@@ -575,7 +591,8 @@ function renderItem(anime) {
     portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
   }
 
-  const inputScore = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0", max: "10", value: anime.score ?? "", placeholder: "–", title: "Nota (0-10)", ariaLabel: "Nota (0-10)" });
+  // El 0 significa "sin valorar": se muestra como "-" (placeholder), nunca como nota.
+  const inputScore = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0.1", max: "10", value: textoNotaVisible(anime), placeholder: "-", title: "Nota (0.1-10). Vacío o 0 = sin valorar", ariaLabel: "Nota (0.1-10), vacío o 0 significa sin valorar" });
   aplicarColorNota(inputScore);
   inputScore.addEventListener("input", () => aplicarColorNota(inputScore));
   inputScore.addEventListener("change", () => {
@@ -583,7 +600,8 @@ function renderItem(anime) {
     if (valor !== "") {
       const n = parseFloat(valor);
       if (!Number.isFinite(n)) return;
-      valor = String(Math.min(10, Math.max(0, n)));
+      // Un 0 escrito a mano se interpreta como "sin valorar" y se guarda vacío.
+      valor = n > 0 ? String(Math.min(10, n)) : "";
       inputScore.value = valor;
     }
     anime.score = valor;
@@ -866,26 +884,22 @@ function iniciarPosicionamiento(row) {
 
   const rated = posicionState.validas.filter(a => a !== candidate && notaNumero(a) != null);
   const original = notaNumero(candidate);
-  const working = new Map(posicionState.validas.map(a => [a.row, notaNumero(a)]));
   const inicial = original ?? (rated.length ? mediana(rated.map(notaNumero)) : 5);
-  working.set(candidate.row, inicial);
+  const grupos = crearGrupos(rated);
 
   posicionState = {
     ...posicionState,
     candidate,
-    rated,
-    working,
-    grupos: crearGrupos(rated, working),
+    grupos,
     lo: 0,
-    hi: Math.max(-1, crearGrupos(rated, working).length - 1),
+    hi: Math.max(-1, grupos.length - 1),
     igualGrupo: null,
-    comparadorGrupo: null,
+    rival: null,
+    rivalIdx: null,
     comparaciones: 0,
     saltados: [],
     historial: [],
-    inicial,
-    cambiosReferencias: new Set(),
-    finalizadoPorComparaciones: false
+    inicial
   };
 
   // Sin referencias no hay nada que comparar: la nota neutra es 5.0.
@@ -897,10 +911,13 @@ function iniciarPosicionamiento(row) {
   mostrarComparacion();
 }
 
-function crearGrupos(items, working) {
+// Un grupo por cada nota distincta, ordenados de mejor a peor. Solo entran las
+// series ya valoradas: las notas de los grupos son anclas y no se tocan nunca,
+// así que basta con la nota de cada serie tal como está en la hoja.
+function crearGrupos(items) {
   const mapa = new Map();
   items.forEach(a => {
-    const n = working.get(a.row);
+    const n = notaNumero(a);
     if (n == null) return;
     const key = notaRedondeada(n).toFixed(1);
     if (!mapa.has(key)) mapa.set(key, { key, score: notaRedondeada(n), items: [] });
@@ -909,13 +926,9 @@ function crearGrupos(items, working) {
   return Array.from(mapa.values()).sort((a,b) => b.score - a.score);
 }
 
-function grupoTieneDisponible(s, grupo) {
-  return grupo && grupo.items.some(a => !s.saltados.includes(a.row));
-}
-
 // Búsqueda binaria: se compara contra el grupo central del intervalo [lo, hi]
-// (si está agotado por "saltar", el más cercano). Es pura para poder adivinar
-// también las comparaciones siguientes y precargar sus portadas.
+// (si está agotado por "saltar", el más cercano). Es una función pura para poder
+// adivinar también las comparaciones siguientes y precargar sus portadas.
 function elegirRivalPara(s, lo, hi, saltados = s.saltados) {
   if (lo > hi || !s.grupos.length) return null;
   const centro = Math.floor((lo + hi) / 2);
@@ -923,25 +936,31 @@ function elegirRivalPara(s, lo, hi, saltados = s.saltados) {
     const idxs = d === 0 ? [centro] : [centro - d, centro + d];
     for (const idx of idxs) {
       if (idx < lo || idx > hi) continue;
-      const items = s.grupos[idx].items.filter(a => !saltados.includes(a.row));
+      const items = s.grupos[idx].items;
+      // Casi siempre no hay saltados: entonces no hace falta filtrar ni copiar el
+      // grupo entero, que en una lista grande son cientos de elementos por sondeo.
+      const libres = saltados.length ? items.filter(a => !saltados.includes(a.row)) : items;
       // Se prefiere una serie con portada: la comparación es mucho más fácil de juzgar.
-      if (items.length) return { idx, item: items.find(a => a.cover) || items[0] };
+      if (libres.length) return { idx, item: libres.find(a => a.cover) || libres[0] };
     }
   }
   return null;
 }
 
-function elegirComparador() {
-  const s = posicionState;
-  if (!s || s.igualGrupo != null) return null;
-  const r = elegirRivalPara(s, s.lo, s.hi);
-  if (!r) return null;
-  s.comparadorGrupo = r.idx;
-  return r.item;
+// Nota estimada con lo que ya se sabe: el candidato está por debajo de grupos[lo-1]
+// y por encima de grupos[hi+1]. El valor se calcula con la misma función que decide
+// la nota final, para que lo que se muestra en vivo y lo que se guarda coincidan
+// (también cuando no cabe ninguna décima entre las vecinas, caso en el que el
+// punto medio redondeado no sería la nota real).
+function estimacionActual(s) {
+  if (s.igualGrupo != null) { const n = s.grupos[s.igualGrupo].score; return { sup: n, inf: n, nota: n }; }
+  const sup = s.lo > 0 ? s.grupos[s.lo - 1].score : 10;
+  const inf = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : 0.1;
+  return { sup, inf, nota: calcularNotaPosicion(s) };
 }
 
 function precalentarSiguientes(s) {
-  const r = s.comparadorGrupo;
+  const r = s.rivalIdx;
   if (r == null || !s.rival) return;
   const sig = [
     elegirRivalPara(s, s.lo, r - 1),                               // si el candidato gusta más
@@ -949,11 +968,6 @@ function precalentarSiguientes(s) {
     elegirRivalPara(s, s.lo, s.hi, [...s.saltados, s.rival.row])   // si se salta este rival
   ];
   precalentarPortadas(sig.filter(Boolean).map(x => x.item));
-}
-
-function calcularPosicionFinal(s) {
-  if (s.igualGrupo != null) return { tipo: "igual", indice: s.igualGrupo };
-  return { tipo: "insertar", indice: Math.max(0, Math.min(s.grupos.length, s.lo)) };
 }
 
 function calcularNotaPosicion(s) {
@@ -965,49 +979,34 @@ function calcularNotaPosicion(s) {
   // Sin comparaciones no hay información: se mantiene la nota de partida.
   if (s.comparaciones === 0) return notaRedondeada(s.inicial);
 
-  // La serie está por debajo de grupos[lo-1] y por encima de grupos[hi+1].
-  // Si el intervalo está resuelto (lo > hi) son vecinos directos; si quedó
-  // sin resolver (series saltadas) se estima en el centro del tramo dudoso.
-  const resuelto = s.lo > s.hi;
+  // Hueco libre en el que cae la serie: por encima de `inferior` y por debajo de
+  // `superior`. Da igual que el intervalo esté resuelto (lo > hi) o que quedara
+  // sin resolver por series saltadas: en ambos casos dentro del hueco no queda
+  // ninguna referencia, y solo se sabe que la serie cae ahí.
   const superior = s.lo > 0 ? s.grupos[s.lo - 1].score : null;
   const inferior = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : null;
-
-  // Extremos ya resueltos: no existe una décima estrictamente superior a 10
-  // ni inferior a 0, así que se satura.
-  if (resuelto) {
-    if (superior == null) return 10;
-    if (inferior == null) return 0;
-  }
-
   const sup = superior ?? 10;
-  const inf = inferior ?? 0;
-  const redondeado = notaRedondeada((sup + inf) / 2);
-  if (redondeado < sup && redondeado > inf) return redondeado;
+  const inf = inferior ?? 0.1;   // el 0 está reservado para "sin valorar"
 
-  // No cabe ninguna décima entre las dos notas vecinas. Se acepta que la nota
-  // se repita: se queda con la previa si encaja, o con la vecina más cercana.
-  const previa = notaNumero(s.candidate);
-  if (previa != null) {
-    if (previa < sup && previa > inf) return notaRedondeada(previa);
-    return Math.abs(previa - sup) <= Math.abs(previa - inf)
-      ? notaRedondeada(sup)
-      : notaRedondeada(inf);
-  }
-  return redondeado;
-}
+  // Si cabe alguna décima se sitúa en el centro del hueco, que es la estimación
+  // de menor error máximo. Esto incluye los extremos de la lista: con la serie
+  // por encima o por debajo de todas las valoradas, el hueco va de la nota
+  // vecina al extremo de la escala, en lugar de saltar a 10 o 0.1 y afirmar "la
+  // mejor de todas" o "la peor de todas" a partir de una sola comparación.
+  const media = notaRedondeada((sup + inf) / 2);
+  if (media > inf && media < sup) return media;
 
-function construirResultadoFinal(s) {
-  const pos = calcularPosicionFinal(s);
-  const nueva = calcularNotaPosicion(s);
+  // No cabe ninguna décima entre las dos vecinas (son décimas contiguas), así
+  // que hay que repetir la nota de una de ellas. Si ese lado no tiene ninguna
+  // serie valorada con la que empatar, se repite el extremo de la escala, que no
+  // genera ningún empate real.
+  if (inferior == null) return notaRedondeada(inf);
+  if (superior == null) return notaRedondeada(sup);
 
-  s.working.set(s.candidate.row, nueva);
-  s.gruposFinales = s.grupos.map(g => ({
-    key: g.key,
-    score: g.score,
-    items: g.items.slice()
-  }));
-  s.posicionFinal = pos.indice;
-  return nueva;
+  // Con vecinas reales a ambos lados el empate es inevitable. Se repite la de
+  // abajo: atar con la serie que el usuario acaba de decir que es peor
+  // contradiría la respuesta que acaba de dar.
+  return notaRedondeada(inf);
 }
 
 function posicionTerminada(s) {
@@ -1016,17 +1015,14 @@ function posicionTerminada(s) {
 }
 
 // Foto del estado de la búsqueda antes de cada respuesta, para poder deshacer.
-function instantaneaPosicion(s) {
-  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, comparaciones: s.comparaciones, saltados: s.saltados.slice() };
+function instantaneaPos(s) {
+  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, saltados: s.saltados.slice(), comparaciones: s.comparaciones };
 }
 
 function deshacerPosicionamiento() {
   const s = posicionState;
-  const prev = s?.historial?.pop();
-  if (!prev) return;
-  s.lo = prev.lo; s.hi = prev.hi; s.igualGrupo = prev.igualGrupo;
-  s.comparaciones = prev.comparaciones; s.saltados = prev.saltados;
-  s.rival = null;
+  if (!s?.historial?.length) return;
+  Object.assign(s, s.historial.pop(), { rival: null });
   mostrarComparacion();
 }
 
@@ -1084,37 +1080,45 @@ function pantallaComparacion(o) {
 
 function saltarRivalPosicion() {
   const s = posicionState; if (!s?.rival) return;
-  s.historial.push(instantaneaPosicion(s));
-  if (!s.saltados.includes(s.rival.row)) s.saltados.push(s.rival.row);
+  s.historial.push(instantaneaPos(s));
+  if (!s.saltados.includes(s.rival.row)) s.saltados.push(s.rival.row);  // no repetir el mismo rival
   s.rival = null;
   mostrarComparacion();
 }
 
 function mostrarComparacion() {
   const s = posicionState;
-  const rival = elegirComparador();
-  if (!rival) return finalizarPosicionamiento();
-  s.rival = rival;
+  const r = s.igualGrupo != null ? null : elegirRivalPara(s, s.lo, s.hi);
+  if (!r) return finalizarPosicionamiento();
+  s.rival = r.item;
+  s.rivalIdx = r.idx;
   precalentarSiguientes(s);
 
-  const nota = calcularNotaPosicion(s);
-  const sup = s.lo > 0 ? s.grupos[s.lo - 1].score : 10;
-  const inf = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : 0;
+  const est = estimacionActual(s);
   const restantes = Math.max(1, Math.ceil(Math.log2(s.hi - s.lo + 2)));
   const total = s.comparaciones + restantes;
+  const progreso = `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}`;
   const cabecera = el("div", { className: "pos-estimacion" },
     el("span", { textContent: "NOTA ESTIMADA" }),
-    el("strong", { textContent: nota.toFixed(1) }),
-    el("small", { textContent: `Entre ${inf.toFixed(1)} y ${sup.toFixed(1)} · unas ${restantes} ${restantes === 1 ? "comparación" : "comparaciones"} más` }),
+    el("strong", { textContent: est.nota.toFixed(1) }),
+    el("small", { textContent: `Entre ${est.inf.toFixed(1)} y ${est.sup.toFixed(1)} · unas ${restantes} ${restantes === 1 ? "comparación" : "comparaciones"} más` }),
     el("div", { className: "pos-barra" }, el("i", { style: `width:${Math.round((s.comparaciones / total) * 100)}%` }))
   );
 
+  // Se recuerda la nota que tenía el candidato: sin ella no se puede responder
+  // "igual que antes", que es la comparación más rápida cuando la nota ya era
+  // correcta y solo se quiere confirmar.
+  const previa = notaNumero(s.candidate);
+  const notaRival = notaNumero(s.rival);
+  const subIzq = `Estimación: ${est.nota.toFixed(1)}`
+    + (previa != null && notaRedondeada(previa) !== est.nota ? ` · antes ${previa.toFixed(1)}` : "");
+
   pantallaComparacion({
     etiqueta: "POSICIONAR",
-    progreso: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}`,
+    progreso,
     cabecera,
-    izq: { anime: s.candidate, sub: `Estimación: ${nota.toFixed(1)}` },
-    der: { anime: rival, sub: `Nota: ${(s.working.get(rival.row) ?? 0).toFixed(1)}` },
+    izq: { anime: s.candidate, sub: subIzq },
+    der: { anime: s.rival, sub: `Nota: ${notaRival == null ? "-" : notaRival.toFixed(1)}` },
     onIzq: () => responderPosicionamiento("más"),
     onIgual: () => responderPosicionamiento("igual"),
     onDer: () => responderPosicionamiento("menos"),
@@ -1125,8 +1129,8 @@ function mostrarComparacion() {
 
 async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
-  const grupoIdx = s.comparadorGrupo;
-  s.historial.push(instantaneaPosicion(s));
+  const grupoIdx = s.rivalIdx;
+  s.historial.push(instantaneaPos(s));
   s.comparaciones++;
 
   if (tipo === "igual") {
@@ -1155,13 +1159,29 @@ async function finalizarPosicionamiento() {
   const s = posicionState;
   if (!s?.candidate) return;
 
-  const nueva = notaRedondeada(construirResultadoFinal(s));
+  // Solo se modifica la nota de la serie posicionada. Las referencias son
+  // anclas: no se reajustan para fabricar huecos en la escala.
   const anime = s.candidate;
   const antes = notaNumero(anime);
   const textoAntes = antes == null ? "Sin nota" : antes.toFixed(1);
+  const nueva = calcularNotaPosicion(s);
+
   const otras = s.validas.filter(a => a !== anime && notaNumero(a) != null);
-  const comparten = otras.filter(a => notaRedondeada(notaNumero(a)) === nueva).length;
-  const puesto = otras.filter(a => notaRedondeada(notaNumero(a)) > nueva).length + 1;
+  const nVecina = (a) => notaRedondeada(notaNumero(a));
+  const comparten = otras.filter(a => nVecina(a) === nueva).length;
+  const porEncima = otras.filter(a => nVecina(a) > nueva);
+  const porDebajo = otras.filter(a => nVecina(a) < nueva);
+  // El puesto se cuenta sobre las notas ya redondeadas a una décima, que es lo que
+  // se muestra y lo que usa crearGrupos(): comparar el valor sin redondear daría un
+  // puesto distinto del que ve el usuario (p. ej. 8.04 contaría sobre 8.0).
+  const puesto = porEncima.length + 1;
+  // Vecina más próxima a cada lado, para comprobar de un vistazo que la nota
+  // elegida encaja con las comparaciones hechas, sin tener que comparar otra vez.
+  const arriba = porEncima.sort((a, b) => nVecina(a) - nVecina(b))[0] || null;
+  const abajo = porDebajo.sort((a, b) => nVecina(b) - nVecina(a))[0] || null;
+  const citar = (a) => `«${posicionTitulo(a)}» (${nVecina(a).toFixed(1)})`;
+  const encaje = `Quedaría por encima de ${arriba ? citar(arriba) : "todas"}`
+    + ` y por debajo de ${abajo ? citar(abajo) : "todas"}.`;
   const resumen = "Solo cambia la nota de esta serie; las demás no se modifican."
     + (comparten ? ` Comparte nota con ${comparten} ${comparten === 1 ? "serie" : "series"}; puedes usar «Separar notas iguales» para ordenarlas.` : "");
 
@@ -1179,39 +1199,51 @@ async function finalizarPosicionamiento() {
   guardarBtn.addEventListener("click", () => aplicar(false));
   const otraBtn = el("button", { className: "btn", type: "button", textContent: "Guardar y posicionar otra" });
   otraBtn.addEventListener("click", () => aplicar(true));
-
-  const acciones = el("div", { className: "pos-actions" });
-  if (s.historial.length) {
-    acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "↶ Corregir última respuesta", onclick: deshacerPosicionamiento }));
-  }
-  acciones.append(el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }), otraBtn, guardarBtn);
+  const corregirBtn = s.historial.length
+    ? el("button", { className: "btn-mini", type: "button", textContent: "↶ Corregir última respuesta", onclick: deshacerPosicionamiento })
+    : null;
 
   pantallaNueva();
   dlgPosicionarEl.append(
     el("div", { className: "pos-resultado" },
       el("div", { className: "pos-check", textContent: "✓" }),
       el("h2", { textContent: "¡Serie posicionada!" }),
-      el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(anime) }),
+      el("div", { className: "pos-resultado-titulo", textContent: posicionTitulo(s.candidate) }),
       el("div", { className: "pos-nota-final", textContent: `${textoAntes} → ${nueva.toFixed(1)}` }),
-      el("p", { textContent: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"} · puesto ${puesto} de ${otras.length + 1} series valoradas.` })
+      el("p", { textContent: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"} · puesto ${puesto} de ${otras.length + 1} series valoradas.` }),
+      el("p", { textContent: encaje })
     ),
     el("div", { className: "pos-cambios-panel" },
-      el("h3", { textContent: "Cambios de puntuación" }),
+      el("h3", { textContent: "Nota de esta serie" }),
       el("p", { className: "pos-cambios-resumen", textContent: resumen })
     ),
-    acciones
+    el("div", { className: "pos-actions" },
+      corregirBtn,
+      el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => dlgPosicionarEl.close() }),
+      otraBtn,
+      guardarBtn
+    )
   );
   dlgPosicionarEl.focus({ preventScroll: true });
 }
 
 // --- Separador de empates ------------------------------------------------------
 // Ordena únicamente las series que comparten una misma décima. La nota sigue
-// siendo una nota decimal real: al terminar, las series se redistribuyen entre
-// las décimas disponibles más cercanas a su nota original.
+// siendo una nota decimal real: al terminar, las series se reparten entre las
+// décimas libres que hay entre las notas vecinas, sin cruzar a otras series.
 let empateState = null;
 
+// Series que participan en "Separar notas iguales": se excluyen las marcadas como
+// "Sin ver" y las que todavía no tienen fila ni título. El resto de estados (Visto,
+// Viendo, Por ver, Dropeado, etc.) sí participa.
+// Esta lista NO debe derivarse de posicionState.validas: esa se construye para el
+// posicionador y no filtra por estado, así que arrastraría series "Sin ver".
+function seriesParaSeparar() {
+  return todosLosAnimes.filter(a => a && a.status !== "✖" && a.row != null && a.title);
+}
+
 function abrirSeparadorEmpates() {
-  const validas = posicionState?.validas || todosLosAnimes;
+  const validas = seriesParaSeparar();
   const mapa = new Map();
   validas.forEach(a => {
     const n = notaNumero(a);
@@ -1245,7 +1277,7 @@ function mostrarSelectorEmpate(grupos) {
   const volver = el("button", { className: "btn-mini", type: "button", textContent: "← Posicionar serie", onclick: abrirPosicionador });
   dlgPosicionarEl.append(
     el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "↕" }), el("div", {}, el("h2", { textContent: "Separar notas iguales" }), el("p", { textContent: "Compara las series que tienen la misma décima y conviértelas en un orden real con notas decimales." }))),
-    el("p", { className: "pos-help", textContent: "La aplicación usa búsqueda binaria para ordenar el grupo con el menor número de comparaciones posible. Después utiliza las décimas disponibles más cercanas a la nota original." }),
+    el("p", { className: "pos-help", textContent: "Ordenas el grupo con el menor número de comparaciones posible. Después se reparten las décimas libres que hay entre las notas vecinas, sin cruzar otras series; si no caben todas, algunas seguirán empatadas." }),
     lista,
     el("div", { className: "pos-actions" }, volver, cerrar)
   );
@@ -1253,7 +1285,7 @@ function mostrarSelectorEmpate(grupos) {
 }
 
 function iniciarSeparacionEmpate(score) {
-  const validas = posicionState?.validas || todosLosAnimes;
+  const validas = seriesParaSeparar();
   const grupo = validas.filter(a => { const n = notaNumero(a); return n != null && notaRedondeada(n) === score; });
   if (grupo.length < 2) return;
   empateState = {
@@ -1261,7 +1293,7 @@ function iniciarSeparacionEmpate(score) {
     items: grupo,
     sorted: [],
     comparaciones: 0,
-    undo: [],
+    historial: [],
     // Unión de series que el usuario ha marcado como "iguales" (union-find).
     padre: new Map(grupo.map(a => [a.row, a.row]))
   };
@@ -1331,12 +1363,12 @@ function siguienteMergeEmpate() {
 
 // Foto del estado del merge antes de cada respuesta, para poder deshacer.
 function instantaneaEmpate(s) {
-  const copia = r => r.slice();
+  const c = (x) => (x ? x.slice() : x);
   return {
-    runs: s.runs.map(copia), nextRuns: s.nextRuns.map(copia), runIndex: s.runIndex,
-    currentLeft: s.currentLeft ? copia(s.currentLeft) : null,
-    currentRight: s.currentRight ? copia(s.currentRight) : null,
-    merged: s.merged ? copia(s.merged) : null,
+    runs: s.runs.map(c), nextRuns: s.nextRuns.map(c), runIndex: s.runIndex,
+    currentLeft: c(s.currentLeft),
+    currentRight: c(s.currentRight),
+    merged: c(s.merged),
     leftIndex: s.leftIndex, rightIndex: s.rightIndex,
     comparaciones: s.comparaciones, padre: new Map(s.padre)
   };
@@ -1344,10 +1376,12 @@ function instantaneaEmpate(s) {
 
 function deshacerEmpate() {
   const s = empateState;
-  const prev = s?.undo?.pop();
-  if (!prev) return;
-  Object.assign(s, prev);
-  mostrarComparacionEmpate(s.currentLeft[s.leftIndex], s.currentRight[s.rightIndex]);
+  if (!s?.historial?.length) return;
+  Object.assign(s, s.historial.pop());
+  // siguienteMergeEmpate() en vez de mostrarComparacionEmpate() directamente: la
+  // primera vuelve a interpretar el estado restaurado y cierra el reparto si ya no
+  // quedan comparaciones; la segunda da por hecho que currentLeft/Right existen.
+  siguienteMergeEmpate();
 }
 
 function mostrarComparacionEmpate(a, b) {
@@ -1368,16 +1402,17 @@ function mostrarComparacionEmpate(a, b) {
     onIzq: () => responderEmpate("a"),
     onIgual: () => responderEmpate("igual"),
     onDer: () => responderEmpate("b"),
-    onDeshacer: s.undo.length ? deshacerEmpate : null
+    onDeshacer: s.historial.length ? deshacerEmpate : null
   });
 }
 
 function responderEmpate(tipo) {
   const s = empateState;
-  if (!s) return;
+  if (!s || !s.currentLeft || !s.currentRight) return;
   const a = s.currentLeft[s.leftIndex];
   const b = s.currentRight[s.rightIndex];
-  s.undo.push(instantaneaEmpate(s));
+  if (!a || !b) return;
+  s.historial.push(instantaneaEmpate(s));
   s.comparaciones++;
   if (tipo === "a") {
     s.merged.push(a); s.leftIndex++;
@@ -1413,6 +1448,10 @@ function calcularRepartoEmpate(s, nEscalones) {
   const filasGrupo = new Set(s.items.map(a => a.row));
   const base = Math.round(s.score * 10);
   let vecinaInf = 0, vecinaSup = 101;
+  // Las vecinas se buscan en TODA la lista, no solo en seriesParaSeparar(): una
+  // serie "Sin ver" también ocupa su sitio en el orden y con su nota, así que su
+  // nota es un muro igual de real. Excluirla partiría el hueco en dos y dejaría
+  // menos décimas libres de las que hay.
   todosLosAnimes.forEach(a => {
     if (!a || filasGrupo.has(a.row)) return;
     const n = notaNumero(a);
@@ -1462,8 +1501,8 @@ function finalizarSeparacionEmpate() {
   const aCambiar = cambios.filter(c => Math.abs(c.nueva - c.original) >= 0.05);
 
   const acciones = el("div", { className: "pos-actions" });
-  const corregir = s.undo.length
-    ? el("button", { className: "btn-mini", type: "button", textContent: "← Corregir última respuesta", onclick: deshacerEmpate })
+  const corregir = s.historial.length
+    ? el("button", { className: "btn-mini", type: "button", textContent: "↶ Corregir última respuesta", onclick: deshacerEmpate })
     : null;
   const cerrar = el("button", { className: "btn-mini", type: "button", textContent: aCambiar.length ? "Cancelar" : "Cerrar", onclick: () => dlgPosicionarEl.close() });
 
@@ -1852,8 +1891,11 @@ migrateFlvBtn.addEventListener("click", async () => {
 
 // --- Caché de la lista: la app se abre al instante y se actualiza después ---------
 const syncEl = $("sync");
+// La clave identifica la hoja activa: si cambia (otra hoja u otra hoja de cálculo),
+// la lista cacheada deja de servir y se vuelve a pedir a Google Sheets.
+// Mismo criterio que en la extensión. Ojo: configActual solo tiene {url, titulo, hoja}.
 function claveListaActual() {
-  return configActual ? `${configActual.spreadsheetId || configActual.url}|${configActual.gid ?? ""}|${configActual.hoja || ""}` : "";
+  return configActual ? `${configActual.url}|${configActual.hoja || ""}` : "";
 }
 
 function leerListaCache() {
@@ -1908,7 +1950,6 @@ async function cargar() {
   if (!configActual) {
     // Primera vez: hay que elegir la hoja antes de nada
     cargandoEl.hidden = true;
-    contadorEl.textContent = "";
     bienvenidaEl.innerHTML = "";
     bienvenidaEl.append(crearFormConfig({ bienvenida: true }));
     bienvenidaEl.hidden = false;

@@ -1,6 +1,8 @@
-const CACHE = "animeav1-pwa-v13";
+// Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
+// las cachés antiguas. Último bump: v15 (algoritmo del posicionador en popup.js).
+const CACHE = "animeav1-pwa-v15";
 const COVER_CACHE = "anime-covers-v1";
-const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
+const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
   event.waitUntil(

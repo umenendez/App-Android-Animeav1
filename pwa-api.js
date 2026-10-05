@@ -436,8 +436,10 @@
     const celda = { userEnteredValue: null };
     const fields = ["userEnteredValue"];
     if (campo === "score") {
+      // El 0 significa "sin valorar", no una nota cero: se guarda como celda vacía.
+      // Así el 0 nunca aparece en la hoja y la columna C solo contiene notas reales.
       const num = parseFloat(String(valor).replace(",", "."));
-      celda.userEnteredValue = Number.isNaN(num) ? { stringValue:"" } : { numberValue:num };
+      celda.userEnteredValue = !Number.isFinite(num) || num <= 0 ? { stringValue:"" } : { numberValue:num };
       celda.userEnteredFormat = { numberFormat:{ type:"NUMBER", pattern:"0.0" } };
       fields.push("userEnteredFormat.numberFormat");
     } else if (campo === "cover") {
