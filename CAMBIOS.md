@@ -5,6 +5,126 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.6.2
+
+### El separador de empates ya no se bloquea: se permiten notas repetidas
+
+**El error.** Al separar las series que comparten nota, el reparto buscaba hueco
+libre entre las series vecinas, dejando **fuera** la décima pegada a cada una. Si
+el empate estaba encajonado entre dos vecinas contiguas, el hueco era de una sola
+décima y no cabía nada: el separador terminaba siempre en «Sin cambios de nota —
+Entre las notas vecinas no queda ninguna décima libre, así que no se puede
+separar sin tocar otras series».
+
+Con tus datos, por ejemplo, un grupo de 8.0 entre una serie de 7.9 y otra de 8.1:
+
+| escalones | antes | ahora |
+|---|---|---|
+| 3 | 8.0, 8.0, 8.0 (sin cambios) | 8.1, 8.0, 7.9 |
+| 5 | 8.0, 8.0, 8.0, 8.0, 8.0 (sin cambios) | 8.1, 8.1, 8.0, 8.0, 7.9 |
+| 9 | 9 veces 8.0 (sin cambios) | 8.1 ×3, 8.0 ×3, 7.9 ×3 |
+
+**La causa era una confusión entre repetir y cruzar.** El reparto trataba la nota
+de la vecina como un muro que no se podía tocar. Pero compartir nota con una
+serie vecina no contradice el orden que la hoja ya respeta: solo lo contradice
+**pasarse**. Repetir es justo lo que hace este separador por definición (para eso
+existe, para desempatar usando empates).
+
+**El arreglo.** El hueco libre va ahora de la nota de la vecina inferior a la de
+la superior, **ambas incluidas**. Cruzarlas sigue siendo imposible;encerlas no.
+Como la nota original siempre queda dentro del hueco, con dos o más escalones
+siempre hay algún cambio, así que la pantalla «Sin cambios de nota» ya no
+significa «no se puede separar», sino solo «has dicho que todas te gustan igual».
+
+**Lo que no cambia:** el orden interno de tus comparaciones se respeta siempre,
+las notas siguen con una sola decimal dentro de 0.1-10, y ninguna serie de fuera
+del grupo baja o sube de sitio.
+
+Comprobado simulando 36 711 listas reales y repartos de 1 a 12 escalones: **cero
+fallos** en los cuatro invariantes (orden interno, no cruzar a las vecinas,
+escala 0.1-10, y cambio siempre presente con 2+ escalones). El caso «Sin cambios»
+pasaba en 60 de 60 000 repartos sintéticos del código anterior y en **0** ahora.
+
+Los textos de las pantallas se ajustan: el aviso de hueco comprimido explica que
+compartir nota está permitido y cruzar no, y el resumen de éxito dice que las
+notas pueden coincidir con las de otras series sin cruzarlas.
+
+## 1.6.1
+
+Cinco correcciones: cuatro de la lista, el buscador y las notas, más una fuga de
+memoria que solo afectaba a la extensión. Ninguna cambia el funcionamiento del
+posicionador ni el formato de los datos.
+
+### Escribir en el buscador era lento (O(series × géneros))
+
+`renderPanelGeneros()` contaba los géneros con un `filter` por género, es decir
+O(series × géneros), y `render()` lo llama en cada tecla del buscador. Con 500
+series y 40 géneros eran ~20 000 `parseGeneros` por pulsación.
+
+Ahora hay `contarGeneros()`, que recorre la lista una sola vez y devuelve el
+recuento de todos los géneros a la vez:
+
+| series × géneros | antes | ahora | más rápido |
+|---|---|---|---|
+| 100 × 20 | 1,72 ms | 0,11 ms | 15,8× |
+| 500 × 40 | 16,38 ms | 0,53 ms | 31,1× |
+| 1000 × 60 | 52,79 ms | 1,07 ms | 49,5× |
+
+Se comprobó que el recuento nuevo da **exactamente** el mismo número que el
+antiguo, incluidos los géneros repetidos dentro de una misma serie y las series
+sin género (0 discrepancias en 24 000 comparaciones).
+
+Además `normalizar()` (el quitacentos y minúsculas de la búsqueda) ahora
+memoiza su resultado por texto, así que escribir en el buscador no vuelve a
+descomponer Unicode toda la lista en cada pulsación.
+
+### Las series sin nota cambiaban de sitio según cómo ordenaras
+
+Al ordenar por nota, una serie sin nota se leía como un **0**. Con «mayor a
+menor» eso la dejaba al final, pero con «menor a mayor» la ponía **la primera**,
+como si fuera la peor de todas, y además la mezclaba con una nota 0 real.
+
+Una serie sin nota no está en la escala, así que ahora va **siempre al final** en
+los dos sentidos, igual que ya hacía el selector del posicionador. De paso se
+elimina una copia innecesaria de la lista (`lista.slice()` sobre un array que
+acaba de crear `filter`).
+
+### Las notas entre 0.1 y 0.4 desaparecían de las estadísticas
+
+El gráfico de distribución de notas agrupaba por `Math.round(nota)`. Los valores
+de 0.1 a 0.4 redondean a 0, y el cubo 0 no se pinta (porque 0 no es una nota
+posible, desde 1.5.9), así que esas series desaparecían del gráfico. Con 10 series
+valoradas por debajo de 0.5 el gráfico salía **vacío**, y el total pintado no
+cuadraba nunca con «N valorados».
+
+Esas notas ahora cuentan en el cubo 1, el más bajo que existe. El total pintado
+vuelve a cuadrar siempre.
+
+### `notaRedondeada()` podía devolver un 0 imposible
+
+Su suelo era `Math.max(0, n)`, así que una nota de 0.04 (posible si la hoja trae
+un valor raro) se redondeaba a 0, una nota que desde 1.5.9 significa «sin
+valorar» y no debería escribirse nunca. El suelo ahora es 0.1.
+
+Comprobado sobre 50 000 notas válidas: **cero diferencias** para cualquier valor
+igual o mayor que 0.1. Solo cambian los valores por debajo de 0.05, que antes
+producían un 0.
+
+### Fuga de memoria en las portadas de la extensión **[ext]**
+
+Cada portada de la lista se guarda como un `objectURL` en `portadaMem`. Esos
+blobs nunca se revocaban, así que «Borrar portadas» liberaba la caché pero
+dejaba todos los blobs retenidos, y una sesión larga (el posicionador va
+precargando portadas) llegaba a acumular cientos.
+
+Ahora `liberarPortadasMem()` revoca cada `objectURL` antes de vaciar el mapa, y
+el mapa se acota a 200 entradas revocando las más antiguas. Las ya pintadas no se
+rompen: una imagen `<img>` ya decodificada sigue funcionando aunque se revoque
+su `objectURL`.
+
+La PWA no tenía este problema: guarda URLs, no blobs, y delega los bytes en la
+caché del navegador.
+
 ## 1.6.0
 
 ### El posicionador deja de saltarse al extremo de la escala
@@ -144,8 +264,9 @@ edita la celda y déjala vacía una vez.
 - Si no caben todas las posiciones en el hueco, algunas series siguen empatadas
   (con aviso de cuántas décimas hay disponibles) en lugar de cancelar la
   operación.
-- Cuando no queda ninguna décima libre, se indica que no se puede separar sin
-  tocar otras series, en vez de mostrar cambios que no ocurren.
+- ~~Cuando no queda ninguna décima libre, se indica que no se puede separar sin
+  tocar otras series.~~ **Corregido en 1.6.2**: ya no puede darse ese caso; el
+  reparto puede compartir la nota de las vecinas.
 - Los grupos se forman con la nota redondeada a una décima (antes una nota como
   8.04 se quedaba fuera del grupo).
 

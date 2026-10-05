@@ -83,7 +83,20 @@ function el(tag, props = {}, ...hijos) {
   return n;
 }
 
-const normalizar = (s) => String(s || "").normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+// normalizar() se llama una vez por serie en cada tecla del buscador, así que
+// sin memoizar se vuelve a descomponer Unicode de toda la lista mientras se
+// escribe. La caché va por texto de origen y se vacía si creciera sin control.
+const cacheNormalizar = new Map();
+function normalizar(s) {
+  const k = String(s || "");
+  let v = cacheNormalizar.get(k);
+  if (v === undefined) {
+    v = k.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+    if (cacheNormalizar.size > 4000) cacheNormalizar.clear();
+    cacheNormalizar.set(k, v);
+  }
+  return v;
+}
 
 // --- Aviso temporal ----------------------------------------------------------
 
@@ -362,9 +375,11 @@ function renderEstadisticas() {
   else { const maxGenero = Math.max(1, ...generos.map(x => x[1])); generos.forEach(([n,c]) => secGeneros.append(crearBarraEstadistica(n,c,maxGenero))); }
 
   // El 0 no aparece: no es una nota posible. La casilla "0" queda siempre a 0 y
-  // no se pinta, para no sugerir que existe una nota cero.
+  // no se pinta, para no sugerir que existe una nota cero. Sin el mínimo, las
+  // notas de 0.1 a 0.4 redondearían a 0 y desaparecerían del gráfico: el total
+  // pintado no cuadraría con "valorados".
   const distrib = Array.from({ length: 11 }, () => 0);
-  notas.forEach((n) => distrib[Math.round(n)]++);
+  notas.forEach((n) => distrib[Math.max(1, Math.round(n))]++);
   const secNotas = el("div", { className: "stats-seccion" }, el("h3", { textContent: "Distribución de notas" }));
   const notasGrid = el("div", { className: "stats-notas" });
   distrib.forEach((c, i) => { if (i === 0) return; notasGrid.append(el("div", { className: "stats-nota" }, el("b", { textContent: String(i) }), el("span", { textContent: c }))); });
@@ -418,6 +433,20 @@ function pasaGeneros(a, set) {
   return true;
 }
 
+// Recuento de cada género (y de "Sin género") en una sola pasada. Contarlo con
+// un filter por género cuesta O(series × géneros), y el panel se repinta en cada
+// tecla del buscador: con 500 series y 40 genres eran ~20 000 parseGeneros por
+// pulsación. Así es O(series + géneros).
+function contarGeneros(items) {
+  const cuenta = new Map([[SIN, 0]]);
+  items.forEach((a) => {
+    const gs = parseGeneros(a.genre);
+    if (!gs.length) cuenta.set(SIN, cuenta.get(SIN) + 1);
+    gs.forEach((g) => cuenta.set(g, (cuenta.get(g) || 0) + 1));
+  });
+  return cuenta;
+}
+
 function renderPanelGeneros() {
   filtroGeneroEl.textContent = filtroGeneros.size ? `Géneros (${filtroGeneros.size})` : "Géneros";
   filtroGeneroEl.setAttribute("aria-pressed", String(filtroGeneros.size > 0));
@@ -431,9 +460,9 @@ function renderPanelGeneros() {
     (!filtroEstado || a.status === filtroEstado) &&
     (!q || normalizar(a.title).includes(q))
   );
-  const cuenta = (g) => base.filter((a) =>
-    g === SIN ? parseGeneros(a.genre).length === 0 : parseGeneros(a.genre).includes(g)
-  ).length;
+  // Un solo recorrido para contar todos los géneros de la base.
+  const conteo = contarGeneros(base);
+  const cuenta = (g) => conteo.get(g) || 0;
 
   const cabecera = el("div", { className: "generos-cabecera" },
     el("span", { className: "generos-titulo", textContent: "Filtrar por género" }),
@@ -506,8 +535,17 @@ function render() {
   });
 
   if (orden) {
-    const nota = (a) => parseFloat(String(a.score).replace(",", ".")) || 0;
-    lista = lista.slice().sort((a, b) => (orden === "score-desc" ? nota(b) - nota(a) : nota(a) - nota(b)));
+    const desc = orden === "score-desc";
+    // Una serie sin nota no está en la escala, así que va siempre al final, en los
+    // dos sentidos. Antes se leía como un 0 y cambiaba de sitio según la dirección
+    // (primera al ordenar de menor a mayor, última al revés), lo que además la
+    // mezclaba con una nota 0 real.
+    lista.sort((a, b) => {
+      const na = numeroNota(a), nb = numeroNota(b);
+      if (na == null) return nb == null ? 0 : 1;
+      if (nb == null) return -1;
+      return desc ? nb - na : na - nb;
+    });
   }
 
   renderChips();
@@ -771,7 +809,7 @@ function notaNumero(a) {
   const n = parseFloat(String(a?.score ?? "").replace(",", "."));
   return Number.isFinite(n) ? (n <= 0 ? null : Math.min(10, Math.max(0, n))) : null;
 }
-function notaRedondeada(n) { return Math.round(Math.min(10, Math.max(0, n)) * 10) / 10; }
+function notaRedondeada(n) { return Math.round(Math.min(10, Math.max(0.1, n)) * 10) / 10; }
 function mediana(nums) {
   const a = nums.slice().sort((x,y) => x-y);
   if (!a.length) return 5;
@@ -1460,15 +1498,11 @@ function calcularRepartoEmpate(s, nEscalones) {
     if (t < base && t > vecinaInf) vecinaInf = t;
     if (t > base && t < vecinaSup) vecinaSup = t;
   });
-  const desde = Math.max(1, vecinaInf + 1);
-  const hasta = Math.min(100, vecinaSup - 1);
+  const desde = Math.max(1, vecinaInf);
+  const hasta = Math.min(100, vecinaSup);
   const ancho = hasta - desde + 1;
   const asignacion = [];
 
-  if (ancho < 1) {
-    for (let i = 0; i < nEscalones; i++) asignacion.push(base);
-    return { asignacion, comprimido: nEscalones > 1, desde: base, hasta: base, ancho: 1 };
-  }
   if (nEscalones <= ancho) {
     let mejorInicio = desde, mejorCoste = Infinity;
     for (let inicio = desde; inicio + nEscalones - 1 <= hasta; inicio++) {
@@ -1508,13 +1542,12 @@ function finalizarSeparacionEmpate() {
 
   pantallaNueva();
 
+  // Con 2+ escalones calcularRepartoEmpate() siempre mueve alguno, así que aquí
+  // solo se llega cuando el usuario marcó todas las series como iguales.
   if (!aCambiar.length) {
-    const motivo = escalones.length === 1
-      ? "Has indicado que todas te gustan lo mismo, así que conservan la misma nota."
-      : `Entre las notas vecinas no queda ninguna décima libre, así que no se puede separar sin tocar otras series.`;
     acciones.append(...[corregir, cerrar].filter(Boolean));
     dlgPosicionarEl.append(
-      el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "=" }), el("h2", { textContent: "Sin cambios de nota" }), el("p", { textContent: motivo })),
+      el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "=" }), el("h2", { textContent: "Sin cambios de nota" }), el("p", { textContent: "Has indicado que todas te gustan lo mismo, así que conservan la misma nota." })),
       acciones
     );
     return;
@@ -1534,13 +1567,13 @@ function finalizarSeparacionEmpate() {
   acciones.append(...[guardarBtnEmpate, corregir, cerrar].filter(Boolean));
 
   const aviso = reparto.comprimido
-    ? el("p", { className: "pos-cambios-resumen", textContent: `Entre las notas vecinas solo caben ${reparto.ancho} décimas (${(reparto.desde / 10).toFixed(1)}–${(reparto.hasta / 10).toFixed(1)}) para ${escalones.length} posiciones, así que algunas series seguirán con la misma nota.` })
+    ? el("p", { className: "pos-cambios-resumen", textContent: `Solo caben ${reparto.ancho} décimas entre ${(reparto.desde / 10).toFixed(1)} y ${(reparto.hasta / 10).toFixed(1)} para ${escalones.length} posiciones, así que algunas series seguirán con la misma nota. Compartir nota con una serie vecina está permitido; cruzarla no.` })
     : (escalones.length < s.items.length
       ? el("p", { className: "pos-cambios-resumen", textContent: "Las series que marcaste como iguales comparten nota." })
       : null);
 
   dlgPosicionarEl.append(
-    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}. Las notas siguen usando una sola decimal y no cruzan a otras series.` })),
+    el("div", { className: "pos-resultado" }, el("div", { className: "pos-check", textContent: "✓" }), el("h2", { textContent: "Empate ordenado" }), el("p", { textContent: `${s.comparaciones} ${s.comparaciones === 1 ? "comparación" : "comparaciones"}. Las notas siguen usando una sola decimal y no cruzan a otras series, aunque pueden compartir nota con ellas.` })),
     el("div", { className: "pos-cambios-panel" }, el("h3", { textContent: `Nuevo orden de ${s.score.toFixed(1)}` }), aviso, el("div", { className: "pos-cambios-lista" }, ...filas)),
     acciones
   );
