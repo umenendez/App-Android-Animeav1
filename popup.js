@@ -13,19 +13,48 @@ const GENEROS_BASE = [
 ];
 
 // --- Géneros: varios por anime, separados por coma en la columna A -------------
+// Ahora el catálogo es POR LISTA (clave: "generos:<listaId>"). Migra el catálogo
+// global antiguo a la lista activa en la primera carga.
 const unico = (a) => [...new Set(a)];
 const parseGeneros = (s) => unico(String(s || "").split(",").map((g) => g.trim()).filter(Boolean));
 const limpiarGenero = (s) => String(s || "").replace(/,/g, " ").replace(/\s+/g, " ").trim().toLocaleUpperCase("es");
+
 let catalogo = GENEROS_BASE.slice();
-try {
-  const c = JSON.parse(localStorage.getItem("generos") || "null");
-  if (Array.isArray(c) && c.length) catalogo = unico(c);
-} catch (e) {}
-function guardarCatalogo() { try { localStorage.setItem("generos", JSON.stringify(catalogo)); } catch (e) {} }
+let catalogoListaId = null;
+
+function claveCatalogo(listaId) { return `generos:${listaId}`; }
+
+async function cargarCatalogoParaLista(listaId) {
+  if (!listaId) { catalogo = GENEROS_BASE.slice(); catalogoListaId = null; return; }
+  try {
+    const c = JSON.parse(localStorage.getItem(claveCatalogo(listaId)) || "null");
+    if (Array.isArray(c) && c.length) {
+      catalogo = unico([...GENEROS_BASE, ...c]);
+    } else {
+      const global = JSON.parse(localStorage.getItem("generos") || "null");
+      if (Array.isArray(global) && global.length) {
+        catalogo = unico([...GENEROS_BASE, ...global]);
+        await guardarCatalogoParaLista(listaId);
+        try { localStorage.removeItem("generos"); } catch (e) {}
+      } else {
+        catalogo = GENEROS_BASE.slice();
+      }
+    }
+  } catch (e) {
+    catalogo = GENEROS_BASE.slice();
+  }
+  catalogoListaId = listaId;
+}
+
+function guardarCatalogoParaLista(listaId) {
+  if (!listaId) return;
+  try { localStorage.setItem(claveCatalogo(listaId), JSON.stringify(catalogo)); } catch (e) {}
+}
+
 // Los géneros que ya están en la hoja siempre aparecen en el catálogo
 function sincronizarCatalogo() {
   todosLosAnimes.forEach((a) => parseGeneros(a.genre).forEach((g) => { if (!catalogo.includes(g)) catalogo.push(g); }));
-  guardarCatalogo();
+  if (catalogoListaId) guardarCatalogoParaLista(catalogoListaId);
 }
 
 const $ = (id) => document.getElementById(id);
@@ -58,6 +87,14 @@ const listaNombreEl = $("listaNombre");
 const listaUrlEl = $("listaUrl");
 const listaGuardarBtnEl = $("listaGuardarBtn");
 const listaStatusEl = $("listaStatus");
+// Nuevos elementos para listas .json
+const listaTipoEl = $("listaTipo");
+const listaFormSheetEl = $("listaFormSheet");
+const listaFormJsonEl = $("listaFormJson");
+const listaNombreJsonEl = $("listaNombreJson");
+const jsonCrearBtnEl = $("jsonCrearBtn");
+const jsonImportarBtnEl = $("jsonImportarBtn");
+const jsonFileInputEl = $("jsonFileInput");
 
 let todosLosAnimes = [];
 let modoEdicion = false;
@@ -1599,16 +1636,134 @@ if (btnPosicionarEl) btnPosicionarEl.addEventListener("click", abrirPosicionador
 
 // --- Añadir anime por enlace ---------------------------------------------------
 
+let listaActivaKind = null; // "sheet" | "json" | null
+let listaActivaId = null;
+
+async function obtenerListaActiva() {
+  const res = await enviarMensaje({ type: "GET_LISTAS" });
+  const listas = res?.listas || [];
+  const activa = listas.find((l) => l.activa);
+  if (activa) {
+    listaActivaKind = activa.kind || "sheet";
+    listaActivaId = activa.id;
+  } else {
+    listaActivaKind = null;
+    listaActivaId = null;
+  }
+  return activa;
+}
+
 function setAgregarPanel(abierto) {
   agregarPanelEl.hidden = !abierto;
   $("btnAgregar").setAttribute("aria-expanded", String(abierto));
   if (abierto) {
     agregarStatusEl.textContent = "";
-    agregarUrlEl.value = "";
-    setTimeout(() => agregarUrlEl.focus(), 0);
+    const esJson = listaActivaKind === "json";
+    if (esJson) {
+      renderAgregarJsonForm();
+    } else {
+      agregarPanelEl.innerHTML = `
+        <h2>Añadir anime por enlace</h2>
+        <p>Pega el enlace de la ficha (por ejemplo de animeav1.com) y se rellenan solos el título y la portada.</p>
+        <input id="agregarUrl" type="url" placeholder="https://animeav1.com/media/… (serie o episodio)" aria-label="Enlace del anime a añadir" />
+        <button class="btn" id="agregarBtn" type="button">Añadir</button>
+        <div class="estado-txt" id="agregarStatus"></div>
+      `;
+      const agregarUrlEl = $("agregarUrl");
+      const agregarBtnEl = $("agregarBtn");
+      const agregarStatusEl = $("agregarStatus");
+      agregarUrlEl.value = "";
+      setTimeout(() => agregarUrlEl.focus(), 0);
+      agregarBtnEl.addEventListener("click", agregarAnime);
+      agregarUrlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") agregarAnime(); });
+    }
   }
 }
 $("btnAgregar").addEventListener("click", () => setAgregarPanel(agregarPanelEl.hidden));
+
+// Formulario completo para añadir/editar ítems en listas .json
+function renderAgregarJsonForm() {
+  agregarPanelEl.innerHTML = `
+    <h2>Añadir a la lista .json</h2>
+    <p>Rellena los campos. Puedes pegar un enlace de animeav1.com y pulsar "Cargar" para autocompletar.</p>
+    <div class="campo">
+      <label>Enlace (opcional)</label>
+      <div class="input-row">
+        <input id="jsonAddUrl" type="url" placeholder="https://animeav1.com/media/…" />
+        <button class="btn" type="button" id="jsonAddCargarBtn">Cargar</button>
+      </div>
+    </div>
+    <div class="campo"><label>Título *</label><input id="jsonAddTitulo" type="text" placeholder="Título de la serie/película/libro" required /></div>
+    <div class="campo"><label>Nota (0.1–10, vacío = sin valorar)</label><input id="jsonAddNota" type="number" step="0.1" min="0.1" max="10" placeholder="—" /></div>
+    <div class="campo"><label>Estado</label><select id="jsonAddEstado">${ESTADOS.map(e => `<option value="${e.value}">${e.label}</option>`).join("")}</select></div>
+    <div class="campo"><label>Géneros (separados por coma)</label><input id="jsonAddGeneros" type="text" placeholder="Terror, Superhéroes" /></div>
+    <div class="campo"><label>Portada (URL)</label><input id="jsonAddPortada" type="url" placeholder="https://…" /></div>
+    <div class="campo"><label>Descripción</label><textarea id="jsonAddDescripcion" rows="3" placeholder="Descripción opcional"></textarea></div>
+    <div class="campo"><label>Último capítulo (URL)</label><input id="jsonAddUltimoCap" type="url" placeholder="https://…" /></div>
+    <div class="acciones">
+      <button class="btn" type="button" id="jsonAddGuardarBtn">Guardar</button>
+      <button class="btn-mini" type="button" id="jsonAddCancelarBtn">Cancelar</button>
+    </div>
+    <div class="estado-txt" id="jsonAddStatus"></div>
+  `;
+
+  const urlInput = $("jsonAddUrl");
+  const cargarBtn = $("jsonAddCargarBtn");
+  const guardarBtn = $("jsonAddGuardarBtn");
+  const cancelarBtn = $("jsonAddCancelarBtn");
+  const statusEl = $("jsonAddStatus");
+
+  cargarBtn.addEventListener("click", async () => {
+    const url = urlInput.value.trim();
+    if (!url) { statusEl.textContent = "Pega un enlace primero."; return; }
+    cargarBtn.disabled = true;
+    statusEl.textContent = "Buscando info…";
+    try {
+      const res = await enviarMensaje({ type: "PARSE_ANIME_URL", url });
+      if (!res?.ok) throw new Error(res?.error || "error desconocido");
+      if (res.title) $("jsonAddTitulo").value = res.title;
+      if (res.cover) $("jsonAddPortada").value = res.cover;
+      if (res.description) $("jsonAddDescripcion").value = res.description;
+      if (res.score) $("jsonAddNota").value = res.score;
+      statusEl.textContent = "Datos cargados. Completa o corrige y pulsa Guardar.";
+    } catch (e) {
+      statusEl.textContent = mensajeError(e);
+    } finally {
+      cargarBtn.disabled = false;
+    }
+  });
+
+  guardarBtn.addEventListener("click", async () => {
+    const titulo = $("jsonAddTitulo").value.trim();
+    if (!titulo) { statusEl.textContent = "El título es obligatorio."; return; }
+    const item = {
+      title: titulo,
+      score: $("jsonAddNota").value || "",
+      status: $("jsonAddEstado").value,
+      genre: $("jsonAddGeneros").value.trim(),
+      cover: $("jsonAddPortada").value.trim(),
+      description: $("jsonAddDescripcion").value.trim(),
+      lastEpisodeUrl: $("jsonAddUltimoCap").value.trim(),
+      url: urlInput.value.trim() || ""
+    };
+    guardarBtn.disabled = true;
+    statusEl.textContent = "Guardando…";
+    try {
+      const res = await enviarMensaje({ type: "ADD_JSON_ITEM", id: listaActivaId, item });
+      if (!res?.ok) throw new Error(res?.error || "error desconocido");
+      statusEl.textContent = `Añadido: ${titulo}`;
+      toast("Ítem guardado");
+      setTimeout(() => setAgregarPanel(false), 800);
+      cargar();
+    } catch (e) {
+      statusEl.textContent = mensajeError(e);
+    } finally {
+      guardarBtn.disabled = false;
+    }
+  });
+
+  cancelarBtn.addEventListener("click", () => setAgregarPanel(false));
+}
 
 const dlgSerieEl = $("dlgSerie");
 
@@ -1719,34 +1874,70 @@ async function cargarListasPanel() {
     return;
   }
   listas.forEach((l) => {
+    const kindBadge = l.kind === "json" ? el("span", { className: "etiqueta-kind", textContent: ".json" }) : el("span", { className: "etiqueta-kind", textContent: "Sheets" });
     const usarBtn = el("button", { className: "btn-mini", type: "button", textContent: l.activa ? "En uso" : "Usar", disabled: l.activa });
     usarBtn.addEventListener("click", () => cambiarAListaGuardada(l, usarBtn));
     const borrarBtn = el("button", { className: "btn-mini peligro", type: "button", textContent: "Quitar" });
     borrarBtn.addEventListener("click", () => borrarListaGuardada(l));
+    const exportarBtn = l.kind === "json" ? el("button", { className: "btn-mini", type: "button", textContent: "Exportar", title: "Descargar .json" }) : null;
+    if (exportarBtn) exportarBtn.addEventListener("click", async () => {
+      const r = await enviarMensaje({ type: "EXPORT_LISTA_JSON", id: l.id });
+      if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); return; }
+      const blob = new Blob([JSON.stringify({ name: r.name, data: r.data }, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = `${r.name.replace(/[^a-z0-9]/gi, "_")}.json`;
+      document.body.append(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+      toast("Exportado");
+    });
     listasContenidoEl.append(el("div", { className: "lista-item" },
       el("span", { className: "nombre", textContent: l.name }),
+      kindBadge,
       l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
-      usarBtn, borrarBtn));
+      usarBtn, exportarBtn, borrarBtn));
   });
 }
 
 async function guardarListaNueva() {
-  const name = listaNombreEl.value.trim();
-  const url = listaUrlEl.value.trim();
+  const tipo = listaTipoEl.value; // "sheet" | "json"
+  const name = (tipo === "json" ? listaNombreJsonEl : listaNombreEl).value.trim();
+
   if (!name) { listaStatusEl.textContent = "Ponle un nombre a la lista."; return; }
-  if (!url) { listaStatusEl.textContent = "Pega el enlace de la hoja."; return; }
+
   listaGuardarBtnEl.disabled = true;
-  listaStatusEl.textContent = "Comprobando acceso…";
-  const res = await enviarMensaje({ type: "ADD_LISTA", name, url });
-  listaGuardarBtnEl.disabled = false;
-  if (!res?.ok) { listaStatusEl.textContent = mensajeError(res?.error || "error desconocido"); return; }
-  listaStatusEl.textContent = `Guardada: ${res.name}`;
-  listaNombreEl.value = ""; listaUrlEl.value = "";
-  toast("Lista guardada");
-  cargarListasPanel();
+  listaStatusEl.textContent = "Guardando…";
+
+  try {
+    if (tipo === "sheet") {
+      const url = listaUrlEl.value.trim();
+      if (!url) { listaStatusEl.textContent = "Pega el enlace de la hoja."; listaGuardarBtnEl.disabled = false; return; }
+      const res = await enviarMensaje({ type: "ADD_LISTA", name, url });
+      if (!res?.ok) throw new Error(res?.error || "error desconocido");
+      listaNombreEl.value = ""; listaUrlEl.value = "";
+    } else {
+      const res = await enviarMensaje({ type: "ADD_LISTA_JSON", name });
+      if (!res?.ok) throw new Error(res?.error || "error desconocido");
+      listaNombreJsonEl.value = "";
+    }
+    listaStatusEl.textContent = `Guardada: ${name}`;
+    toast("Lista guardada");
+    cargarListasPanel();
+  } catch (e) {
+    listaStatusEl.textContent = mensajeError(e);
+  } finally {
+    listaGuardarBtnEl.disabled = false;
+  }
 }
 listaGuardarBtnEl.addEventListener("click", guardarListaNueva);
-[listaNombreEl, listaUrlEl].forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarListaNueva(); }));
+[listaNombreEl, listaUrlEl, listaNombreJsonEl].forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarListaNueva(); }));
+
+// UI para cambiar entre formulario Sheets / .json
+listaTipoEl.addEventListener("change", () => {
+  const esJson = listaTipoEl.value === "json";
+  listaFormSheetEl.hidden = esJson;
+  listaFormJsonEl.hidden = !esJson;
+});
 
 // --- Configuración: qué Google Sheet se usa -----------------------------------
 
@@ -1920,16 +2111,56 @@ migrateFlvBtn.addEventListener("click", async () => {
   cargar();
 });
 
+// --- Listas .json: botones Crear / Importar / Exportar -----------------------
+jsonCrearBtnEl.addEventListener("click", async () => {
+  const name = listaNombreJsonEl.value.trim();
+  if (!name) { listaStatusEl.textContent = "Ponle un nombre a la lista."; return; }
+  jsonCrearBtnEl.disabled = true;
+  listaStatusEl.textContent = "Creando lista…";
+  try {
+    const res = await enviarMensaje({ type: "ADD_LISTA_JSON", name });
+    if (!res?.ok) throw new Error(res?.error || "error desconocido");
+    listaNombreJsonEl.value = "";
+    listaStatusEl.textContent = `Creada: ${name}`;
+    toast("Lista .json creada");
+    cargarListasPanel();
+  } catch (e) {
+    listaStatusEl.textContent = mensajeError(e);
+  } finally {
+    jsonCrearBtnEl.disabled = false;
+  }
+});
+
+jsonImportarBtnEl.addEventListener("click", () => {
+  jsonFileInputEl.click();
+});
+
+jsonFileInputEl.addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const name = listaNombreJsonEl.value.trim() || file.name.replace(/\.json$/i, "");
+  jsonImportarBtnEl.disabled = true;
+  listaStatusEl.textContent = "Importando…";
+  try {
+    const text = await file.text();
+    const res = await enviarMensaje({ type: "IMPORT_LISTA_JSON", name, jsonText: text });
+    if (!res?.ok) throw new Error(res?.error || "error desconocido");
+    listaNombreJsonEl.value = "";
+    listaStatusEl.textContent = `Importada: ${res.name} (${res.itemsCount} ítems)`;
+    toast("Lista importada");
+    cargarListasPanel();
+  } catch (err) {
+    listaStatusEl.textContent = mensajeError(err);
+  } finally {
+    jsonImportarBtnEl.disabled = false;
+    e.target.value = "";
+  }
+});
+
 // --- Carga inicial -----------------------------------------------------------
 
 // --- Caché de la lista: la app se abre al instante y se actualiza después ---------
 const syncEl = $("sync");
-// La clave identifica la hoja activa: si cambia (otra hoja u otra hoja de cálculo),
-// la lista cacheada deja de servir y se vuelve a pedir a Google Sheets.
-// Mismo criterio que en la extensión. Ojo: configActual solo tiene {url, titulo, hoja}.
-function claveListaActual() {
-  return configActual ? `${configActual.url}|${configActual.hoja || ""}` : "";
-}
 
 function leerListaCache() {
   try {
@@ -1943,7 +2174,7 @@ let guardarCacheTimer = null;
 function guardarListaCache() {
   clearTimeout(guardarCacheTimer);
   guardarCacheTimer = setTimeout(() => {
-    if (!configActual || !todosLosAnimes.length) return;
+    if (!todosLosAnimes.length) return;
     try { localStorage.setItem("listaCache", JSON.stringify({ clave: claveListaActual(), ts: Date.now(), lista: todosLosAnimes })); } catch (e) {}
   }, 400);
 }
@@ -1964,28 +2195,63 @@ async function cargar() {
   bienvenidaEl.hidden = true;
   mostrarSync("");
 
+  const activa = await obtenerListaActiva();
+  await cargarCatalogoParaLista(listaActivaId);
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
-  filtrosEl.hidden = !configActual;
-  const cache = configActual ? leerListaCache() : null;
+
+  const esJson = listaActivaKind === "json";
+  filtrosEl.hidden = !activa;
+
+  const cache = await leerListaCache();
   if (cache) {
-    // Se pinta ya la última lista conocida; mientras tanto se pide la de la hoja.
     cargandoEl.hidden = true;
     todosLosAnimes = cache.lista;
     sincronizarCatalogo();
     render();
     inicializarContadorPortadas();
     refrescandoLista = true;
-    mostrarSync("Actualizando…");
+    mostrarSync(esJson ? "Cargando lista .json…" : "Actualizando…");
   } else {
     cargandoEl.hidden = false;
     listaEl.innerHTML = "";
   }
-  if (!configActual) {
-    // Primera vez: hay que elegir la hoja antes de nada
+
+  if (!activa) {
     cargandoEl.hidden = true;
     bienvenidaEl.innerHTML = "";
     bienvenidaEl.append(crearFormConfig({ bienvenida: true }));
     bienvenidaEl.hidden = false;
+    return;
+  }
+
+  if (esJson) {
+    const res = await enviarMensaje({ type: "GET_JSON_LISTA_DATA", id: listaActivaId });
+    refrescandoLista = false;
+    cargandoEl.hidden = true;
+
+    if ((!res || !res.ok) && cache) {
+      mostrarSync("No se pudo cargar la lista .json: mostrando la última guardada.", { texto: "Reintentar", accion: cargar });
+      return;
+    }
+    if (!res || !res.ok) {
+      errorEl.innerHTML = "";
+      errorEl.append("No se pudo cargar la lista .json: " + mensajeError(res?.error || "error desconocido"),
+        el("br"), el("button", { className: "btn", textContent: "Reintentar", onclick: cargar }));
+      errorEl.hidden = false;
+      return;
+    }
+
+    mostrarSync("");
+    const igual = cache && JSON.stringify(cache.lista) === JSON.stringify(res.data.items);
+    todosLosAnimes = res.data.items || [];
+    sincronizarCatalogo();
+    await inicializarContadorPortadas();
+    if (!igual) {
+      const scroll = listaEl.scrollTop;
+      render();
+      listaEl.scrollTop = scroll;
+    }
+    guardarListaCache();
     return;
   }
 
@@ -1994,7 +2260,6 @@ async function cargar() {
   cargandoEl.hidden = true;
 
   if ((!res || !res.ok) && cache) {
-    // Sin conexión o sesión caducada: se sigue mostrando la lista guardada.
     const error = String(res?.error || "");
     const sesion = /NECESITA_INICIO_SESION|TOKEN_INVALIDO|NO_SE_OBTUVO_TOKEN|access_denied|interaction_required/.test(error);
     if (sesion) {

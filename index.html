@@ -529,12 +529,29 @@
   </section>
 
   <section id="listasPanel" class="config" hidden>
-    <h2>Tus listas de Google Sheets</h2>
-    <p>Guarda enlaces a otras hojas (por ejemplo la de un amigo) y cambia entre ellas cuando quieras.</p>
+    <h2>Tus listas</h2>
+    <p>Guarda enlaces a hojas de Google Sheets o crea listas locales en archivo .json.</p>
     <div id="listasContenido"></div>
     <div class="config-sep"></div>
-    <input id="listaNombre" type="text" placeholder="Nombre (p. ej. «Ana»)" aria-label="Nombre de la lista" />
-    <input id="listaUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="Enlace de la hoja" />
+    <div class="tipo-lista-selector">
+      <label>Tipo de lista:</label>
+      <select id="listaTipo">
+        <option value="sheet">Google Sheets</option>
+        <option value="json">Archivo .json (local)</option>
+      </select>
+    </div>
+    <div id="listaFormSheet">
+      <input id="listaNombre" type="text" placeholder="Nombre (p. ej. «Películas»)" aria-label="Nombre de la lista" />
+      <input id="listaUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="Enlace de la hoja" />
+    </div>
+    <div id="listaFormJson" hidden>
+      <input id="listaNombreJson" type="text" placeholder="Nombre (p. ej. «Películas»)" aria-label="Nombre de la lista .json" />
+      <div class="json-acciones">
+        <button class="btn" id="jsonCrearBtn" type="button">Crear .json</button>
+        <button class="btn" id="jsonImportarBtn" type="button">Importar .json</button>
+      </div>
+      <input type="file" id="jsonFileInput" accept=".json" hidden />
+    </div>
     <button class="btn" id="listaGuardarBtn" type="button">Guardar lista</button>
     <div class="estado-txt" id="listaStatus"></div>
   </section>
