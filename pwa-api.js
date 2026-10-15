@@ -45,6 +45,7 @@
   let gidConfig = null;
   let gid = 0;
   let cachedSheetName = null;
+  let listaLocalId = null; // id de la lista activa si es una lista local (sin Google Sheets)
   let tokenClient = null;
   let tokenClientId = null;
   let gisReady = null;
@@ -233,17 +234,24 @@
   async function cargarConfig() {
     if (spreadsheetId) return;
     const config = JSON.parse(localStorage.getItem("config") || "null");
+    if (config?.tipo === "local" && config.listaId) {
+      // Lista local: sin hoja. spreadsheetId/gid reciben valores propios para que las claves que
+      // dependen de ellos (vínculos de temporadas) sigan siendo únicas.
+      listaLocalId = config.listaId; spreadsheetId = `local:${config.listaId}`; gidConfig = 0; gid = 0;
+      return;
+    }
     if (!config?.spreadsheetId) throw new Error("SIN_CONFIG");
     spreadsheetId = config.spreadsheetId;
     gidConfig = config.gid ?? null;
   }
 
   function resetConfig() {
-    spreadsheetId = null; gidConfig = null; cachedSheetName = null;
+    spreadsheetId = null; gidConfig = null; cachedSheetName = null; listaLocalId = null;
   }
   function rango(nombre, celdas) { return `'${nombre.replace(/'/g, "''")}'!${celdas}`; }
 
   async function getSheetName() {
+    if (await esListaLocal()) return "";
     if (cachedSheetName) return cachedSheetName;
     const data = await sheetsFetch("?fields=sheets.properties");
     const hojas = (data.sheets || []).map(s => s.properties);
@@ -314,7 +322,7 @@
     const config = JSON.parse(localStorage.getItem("config") || "null");
     if (listas.length === 0 && config?.spreadsheetId) {
       const migrada = {
-        id: nuevoIdLista(), kind: "sheet", name: "Mi lista", url: config.url,
+        id: nuevoIdLista(), name: "Mi lista", url: config.url,
         spreadsheetId: config.spreadsheetId, gid: config.gid,
         titulo: config.titulo, hoja: config.hoja
       };
@@ -352,7 +360,7 @@
     obtenerListasParaUI(); // asegura la migración de "Mi lista" si hacía falta
     const listas = obtenerListasArr();
     const nueva = {
-      id: nuevoIdLista(), kind: "sheet", name: nombreLimpio, url: String(enlace).trim(),
+      id: nuevoIdLista(), name: nombreLimpio, url: String(enlace).trim(),
       spreadsheetId: p.spreadsheetId, gid: p.gid, titulo, hoja
     };
     listas.push(nueva);
@@ -360,167 +368,35 @@
     return { id: nueva.id, name: nueva.name, titulo, hoja };
   }
 
-  // --- Listas .json ------------------------------------------------------------
-  // En la PWA el archivo .json se gestiona vía File System Access API (escritorio)
-  // o se guarda en localStorage/IndexedDB (Android). El popup se encarga de la UI.
-
-  async function crearListaJson(nombre) {
-    const nombreLimpio = String(nombre || "").trim();
-    if (!nombreLimpio) throw new Error("FALTA_NOMBRE");
-    const listas = obtenerListasArr();
-    const nueva = {
-      id: nuevoIdLista(),
-      kind: "json",
-      name: nombreLimpio,
-      handle: null,
-      data: { version: 1, items: [], generos: [] }
-    };
-    listas.push(nueva);
-    guardarListasArr(listas);
-    return { id: nueva.id, name: nueva.name };
-  }
-
-  async function importarListaJson(nombre, jsonText) {
-    const nombreLimpio = String(nombre || "").trim();
-    if (!nombreLimpio) throw new Error("FALTA_NOMBRE");
-    let data;
-    try { data = JSON.parse(jsonText); } catch { throw new Error("JSON_INVALIDO"); }
-    if (!data || !Array.isArray(data.items)) throw new Error("JSON_INVALIDO");
-    data.version = data.version || 1;
-    data.generos = Array.isArray(data.generos) ? data.generos : [];
-    const listas = obtenerListasArr();
-    const nueva = {
-      id: nuevoIdLista(),
-      kind: "json",
-      name: nombreLimpio,
-      handle: null,
-      data
-    };
-    listas.push(nueva);
-    guardarListasArr(listas);
-    return { id: nueva.id, name: nueva.name, itemsCount: data.items.length };
-  }
-
-  async function exportarListaJson(id) {
-    const listas = obtenerListasArr();
-    const lista = listas.find((l) => l.id === id);
-    if (!lista || lista.kind !== "json") throw new Error("LISTA_NO_ENCONTRADA");
-    return { name: lista.name, data: lista.data };
-  }
-
-  async function obtenerDatosListaJson(id) {
-    const listas = obtenerListasArr();
-    const lista = listas.find((l) => l.id === id);
-    if (!lista || lista.kind !== "json") throw new Error("LISTA_NO_ENCONTRADA");
-    return lista.data || { version: 1, items: [], generos: [] };
-  }
-
-  async function guardarDatosListaJson(id, data) {
-    const listas = obtenerListasArr();
-    const idx = listas.findIndex((l) => l.id === id);
-    if (idx === -1 || listas[idx].kind !== "json") throw new Error("LISTA_NO_ENCONTRADA");
-    listas[idx].data = data;
-    guardarListasArr(listas);
-    return { ok: true };
-  }
-
-  async function actualizarItemJson(id, row, campo, valor) {
-    const listas = obtenerListasArr();
-    const idx = listas.findIndex((l) => l.id === id);
-    if (idx === -1 || listas[idx].kind !== "json") throw new Error("LISTA_NO_ENCONTRADA");
-    const data = listas[idx].data;
-    const itemIdx = data.items.findIndex((it) => String(it.row) === String(row));
-    if (itemIdx === -1) throw new Error("ITEM_NO_ENCONTRADO");
-
-    const prop = { score: "score", status: "status", genre: "genre", cover: "cover", lastEpisodeUrl: "lastEpisodeUrl" }[campo];
-    if (!prop) throw new Error("CAMPO_DESCONOCIDO");
-
-    if (campo === "score") {
-      const num = parseFloat(String(valor).replace(",", "."));
-      data.items[itemIdx][prop] = !Number.isFinite(num) || num <= 0 ? "" : String(Math.min(10, num));
-    } else if (campo === "cover") {
-      data.items[itemIdx][prop] = valor || "";
-    } else {
-      data.items[itemIdx][prop] = String(valor ?? "");
-    }
-
-    guardarListasArr(listas);
-    return { ok: true };
-  }
-
-  async function actualizarHandleListaJson(id, handle) {
-    const listas = obtenerListasArr();
-    const idx = listas.findIndex((l) => l.id === id);
-    if (idx === -1 || listas[idx].kind !== "json") throw new Error("LISTA_NO_ENCONTRADA");
-    listas[idx].handle = true;
-    guardarListasArr(listas);
-    return { ok: true };
-  }
-
-  // Extrae info de una URL de animeav1.com (para prefijar formulario en listas .json)
-  async function extraerInfoAnimeDesdeUrl(url) {
-    const mainUrl = url.includes("/media/") ? url.split("/media/")[0] + "/media/" + url.split("/media/")[1].split("/")[0] : url;
-    const res = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(mainUrl)}`);
-    if (!res.ok) throw new Error("NO_SE_PUDO_LEER_LA_PAGINA");
-    const html = await res.text();
-    const doc = new DOMParser().parseFromString(html, "text/html");
-
-    const title = (doc.querySelector("h1")?.textContent || "").trim();
-    const bodyText = doc.body.innerText || "";
-    const scoreMatch = bodyText.match(/(\d+(?:[.,]\d+)?)\s*\n*\s*MAL RATING/i);
-    const score = scoreMatch ? parseFloat(scoreMatch[1].replace(",", ".")).toFixed(1) : "";
-    const paragraphs = Array.from(doc.querySelectorAll("p"))
-      .map((p) => p.textContent.replace(/\s+/g, " ").trim())
-      .filter((t) => t.length > 60 && !/derechos|copyright|términos|política de privacidad/i.test(t));
-    const description = paragraphs.slice(0, 2).join(" ").replace(/\s+/g, " ").trim();
-    const coverMatch = html.match(/cdn\.animeav1\.com\/covers\/\d+\.jpg/i);
-    const cover = coverMatch ? `https://${coverMatch[0]}` : "";
-
-    return { title, cover, description, score, url: mainUrl };
-  }
-
-  // Añade un nuevo ítem a una lista .json
-  async function agregarItemJson(id, item) {
-    const listas = obtenerListasArr();
-    const idx = listas.findIndex((l) => l.id === id);
-    if (idx === -1 || listas[idx].kind !== "json") throw new Error("LISTA_NO_ENCONTRADA");
-    const data = listas[idx].data;
-    const maxRow = data.items.reduce((m, it) => Math.max(m, Number(it.row) || 0), 0);
-    const nuevoItem = { row: maxRow + 1, ...item };
-    data.items.push(nuevoItem);
-    if (item.genre) {
-      const gs = item.genre.split(",").map(g => g.trim()).filter(Boolean);
-      gs.forEach(g => { if (!data.generos.includes(g)) data.generos.push(g); });
-    }
-    guardarListasArr(listas);
-    return { ok: true, item: nuevoItem };
-  }
-
   async function eliminarListaGuardada(id) {
     const listas = obtenerListasArr();
     const restantes = listas.filter((l) => l.id !== id);
     if (restantes.length === listas.length) throw new Error("LISTA_NO_ENCONTRADA");
     guardarListasArr(restantes);
-    if (idListaActiva() === id) marcarListaActiva(restantes[0]?.id || null);
+    const quitada = listas.find((l) => l.id === id);
+    if (quitada?.tipo === "local") { try { localStorage.removeItem(claveDatosLocal(id)); } catch (e) {} }
+    if (idListaActiva() === id) {
+      const siguiente = restantes[0] || null;
+      marcarListaActiva(siguiente?.id || null);
+      // La configuración activa debe seguir a la lista activa (si no, seguiría apuntando a la borrada)
+      if (siguiente) localStorage.setItem("config", JSON.stringify(configDeLista(siguiente)));
+      else localStorage.removeItem("config");
+      resetConfig();
+    }
     return { removed: true };
+  }
+
+  // Configuración activa que corresponde a una lista guardada (hoja de Google o lista local)
+  function configDeLista(l) {
+    if (l.tipo === "local") return { tipo: "local", listaId: l.id, url: l.url, titulo: l.titulo, hoja: "" };
+    return { spreadsheetId: l.spreadsheetId, gid: l.gid, url: l.url, titulo: l.titulo, hoja: l.hoja };
   }
 
   async function cambiarListaActiva(id) {
     const listas = obtenerListasArr();
     const lista = listas.find((l) => l.id === id);
     if (!lista) throw new Error("LISTA_NO_ENCONTRADA");
-
-    if (lista.kind === "json") {
-      localStorage.removeItem("config");
-      marcarListaActiva(id);
-      resetConfig();
-      return { kind: "json", name: lista.name };
-    }
-
-    localStorage.setItem("config", JSON.stringify({
-      spreadsheetId: lista.spreadsheetId, gid: lista.gid, url: lista.url,
-      titulo: lista.titulo, hoja: lista.hoja
-    }));
+    localStorage.setItem("config", JSON.stringify(configDeLista(lista)));
     marcarListaActiva(id);
     resetConfig();
     return { titulo: lista.titulo, hoja: lista.hoja, name: lista.name };
@@ -556,6 +432,7 @@
   }
 
   async function obtenerListaCompleta() {
+    if (await esListaLocal()) return leerDatosLocal().items;
     const sheetName = await getSheetName();
     const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "A:K"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink,userEnteredValue)`);
     const rows = data.sheets?.[0]?.data?.[0]?.rowData || [];
@@ -574,6 +451,7 @@
 
   const COLUMNAS_EDITABLES = { score:2, status:5, genre:0, cover:9, lastEpisodeUrl:10 };
   async function actualizarCampo(row, campo, valor) {
+    if (await esListaLocal()) return actualizarCampoLocal(row, campo, valor);
     await getSheetName();
     const colIndex = COLUMNAS_EDITABLES[campo];
     if (colIndex === undefined) throw new Error("Campo desconocido: " + campo);
@@ -597,6 +475,7 @@
 
   // Cambia la columna A de varias filas en una sola petición (renombrar/quitar géneros)
   async function actualizarGenerosLote(cambios) {
+    if (await esListaLocal()) return actualizarGenerosLoteLocal(cambios);
     await getSheetName();
     if (!cambios?.length) return;
     await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:cambios.map(c => ({ updateCells:{
@@ -606,6 +485,7 @@
   }
 
   async function actualizarTituloUrl(row, title, url) {
+    if (await esListaLocal()) return actualizarTituloUrlLocal(row, title, url);
     await getSheetName();
     await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:[{ updateCells:{
       range:{sheetId:gid,startRowIndex:row-1,endRowIndex:row,startColumnIndex:3,endColumnIndex:4},
@@ -709,6 +589,7 @@
   }
 
   async function escribirAnimeNuevo({ title, url, cover, episodeUrl }) {
+    if (await esListaLocal()) return escribirAnimeNuevoLocal({ title, url, cover, episodeUrl });
     const sheetName = await getSheetName();
     const fila = await siguienteFilaLibre(sheetName);
 
@@ -729,6 +610,184 @@
   }
 
   // El usuario contestó a "¿Es la misma serie?"
+  // --- Listas locales (sin Google Sheets) --------------------------------------------
+  // Una lista local vive en localStorage ("datosLista:<id>") con las mismas filas que
+  // devolvería la hoja: { row, genre, score, title, url, status, cover, lastEpisodeUrl }.
+  // El popup se encarga de exportarla a / importarla desde un archivo .json.
+  // Todo es síncrono (localStorage), así que no hace falta ninguna cola de escrituras.
+  function claveDatosLocal(id) { return `datosLista:${id}`; }
+
+  async function esListaLocal() {
+    try { await cargarConfig(); } catch (e) { return false; }
+    return listaLocalId !== null;
+  }
+
+  function leerDatosLocal(id = listaLocalId) {
+    try {
+      const d = JSON.parse(localStorage.getItem(claveDatosLocal(id)) || "null");
+      if (d && Array.isArray(d.items)) return d;
+    } catch (e) {}
+    return { items: [], siguiente: 2 };
+  }
+  function guardarDatosLocal(d, id = listaLocalId) { localStorage.setItem(claveDatosLocal(id), JSON.stringify(d)); }
+
+  // Mismo criterio que la hoja: vacío o ≤ 0 = sin valorar; una décima; máximo 10.
+  function notaLocal(valor) {
+    const n = parseFloat(String(valor ?? "").replace(",", "."));
+    return Number.isFinite(n) && n > 0 ? (Math.min(10, Math.round(n * 10) / 10)).toFixed(1) : "";
+  }
+
+  function itemLocal(x, row) {
+    const title = String(x?.title ?? "").trim();
+    if (!title) return null;
+    return {
+      row, genre: String(x.genre ?? "").trim(), score: notaLocal(x.score), title,
+      url: String(x.url ?? "").trim(), status: String(x.status ?? "").trim(),
+      cover: String(x.cover ?? "").trim(), lastEpisodeUrl: String(x.lastEpisodeUrl ?? "").trim(),
+    };
+  }
+
+  function agregarListaLocal(nombre, series) {
+    const nombreLimpio = String(nombre || "").trim();
+    if (!nombreLimpio) throw new Error("FALTA_NOMBRE");
+    if (series !== undefined && !Array.isArray(series)) throw new Error("JSON_INVALIDO");
+    const items = [];
+    let fila = 2; // como en la hoja, la fila 1 serían los encabezados
+    for (const x of series || []) { const it = itemLocal(x, fila); if (it) { items.push(it); fila++; } }
+    obtenerListasParaUI(); // asegura la migración de "Mi lista" si hacía falta
+    const id = nuevoIdLista();
+    guardarDatosLocal({ items, siguiente: fila }, id);
+    const listas = obtenerListasArr();
+    listas.push({ id, name: nombreLimpio, tipo: "local", url: `local:${id}`, spreadsheetId: "", gid: null, titulo: nombreLimpio, hoja: "" });
+    guardarListasArr(listas);
+    return { id, name: nombreLimpio, total: items.length };
+  }
+
+  function exportarListaLocal(id) {
+    const lista = obtenerListasArr().find((l) => l.id === id && l.tipo === "local");
+    if (!lista) throw new Error("LISTA_NO_ENCONTRADA");
+    return { nombre: lista.name, series: leerDatosLocal(id).items.map(({ row, ...resto }) => resto) };
+  }
+
+  function buscarItemLocal(items, url, titulo) {
+    const slug = slugDeUrl(url);
+    const tit = String(titulo || "").trim().toLowerCase();
+    return (slug && items.find((i) => slugDeUrl(i.url) === slug))
+      || (tit && items.find((i) => i.title.trim().toLowerCase() === tit))
+      || null;
+  }
+
+  function anadirItemLocal(d, { title, url, score, cover, episodeUrl, status }) {
+    const it = { row: d.siguiente++, genre: "", score: notaLocal(score), title: String(title || "").trim(), url: url || "",
+      status: status ?? ESTADO_VIENDO, cover: cover || "", lastEpisodeUrl: episodeUrl || "" };
+    d.items.push(it);
+    return it;
+  }
+
+  function actualizarCampoLocal(row, campo, valor) {
+    if (COLUMNAS_EDITABLES[campo] === undefined) throw new Error("Campo desconocido: " + campo);
+    const d = leerDatosLocal();
+    const it = d.items.find((i) => i.row === Number(row));
+    if (!it) throw new Error("FILA_NO_ENCONTRADA");
+    if (campo === "score") it.score = notaLocal(valor);
+    else if (campo === "cover") { it.cover = String(valor || ""); if (it.cover) precachearImagen(it.cover); }
+    else it[campo] = String(valor ?? "");
+    guardarDatosLocal(d);
+  }
+
+  function actualizarGenerosLoteLocal(cambios) {
+    if (!Array.isArray(cambios) || !cambios.length) return;
+    const d = leerDatosLocal();
+    const porFila = new Map(d.items.map((i) => [i.row, i]));
+    for (const c of cambios) { const it = porFila.get(Number(c.row)); if (it) it.genre = String(c.valor ?? ""); }
+    guardarDatosLocal(d);
+  }
+
+  function actualizarTituloUrlLocal(row, title, url) {
+    const d = leerDatosLocal();
+    const it = d.items.find((i) => i.row === Number(row));
+    if (!it) throw new Error("FILA_NO_ENCONTRADA");
+    it.title = String(title || "").trim() || it.title;
+    it.url = String(url || "").trim();
+    guardarDatosLocal(d);
+  }
+
+  // Añadir una serie escribiendo los datos a mano (solo listas locales)
+  async function agregarSerieLocal(datos) {
+    if (!(await esListaLocal())) throw new Error("NO_ES_LISTA_LOCAL");
+    const title = String(datos?.title ?? "").trim();
+    if (!title) throw new Error("FALTA_TITULO");
+    const d = leerDatosLocal();
+    if (buscarItemLocal(d.items, datos.url, title)) throw new Error("YA_EXISTE");
+    const it = itemLocal({ ...datos, title }, d.siguiente);
+    d.siguiente++;
+    d.items.push(it);
+    guardarDatosLocal(d);
+    if (it.cover) precachearImagen(it.cover);
+    return it.row;
+  }
+
+  // Las listas locales no tienen hoja de la que borrar filas: se borra desde aquí
+  async function eliminarSerieLocal(row) {
+    if (!(await esListaLocal())) throw new Error("NO_ES_LISTA_LOCAL");
+    const d = leerDatosLocal();
+    const antes = d.items.length;
+    d.items = d.items.filter((i) => i.row !== Number(row));
+    if (d.items.length === antes) throw new Error("FILA_NO_ENCONTRADA");
+    guardarDatosLocal(d);
+  }
+
+  // Serie nueva desde un enlace de AnimeAV1 (equivale a escribirAnimeNuevo, contra la lista local)
+  function escribirAnimeNuevoLocal({ title, url, cover, episodeUrl }) {
+    const d = leerDatosLocal();
+    const it = anadirItemLocal(d, { title, url, cover, episodeUrl });
+    guardarDatosLocal(d);
+    if (cover) precachearImagen(cover);
+    return { row: it.row, title, url, cover: cover || "", status: ESTADO_VIENDO };
+  }
+
+  async function rellenarPortadasLocal() {
+    const hallazgos = []; let sinImagen = 0;
+    for (const it of leerDatosLocal().items) {
+      if (it.cover || !it.url) continue;
+      try {
+        const img = extraerPortadaDesdeHtml(await (await fetch(it.url)).text());
+        if (!img) { sinImagen++; continue; }
+        hallazgos.push([it.row, img]); precachearImagen(img);
+      } catch (e) { sinImagen++; }
+    }
+    if (hallazgos.length) { // se vuelve a leer: durante las descargas la lista pudo cambiar
+      const d = leerDatosLocal();
+      for (const [row, img] of hallazgos) { const it = d.items.find((i) => i.row === row); if (it && !it.cover) it.cover = img; }
+      guardarDatosLocal(d);
+    }
+    return { encontradas: hallazgos.length, sinImagen };
+  }
+
+  async function migrarAnimeFlvLocal() {
+    const cambios = []; let migradas = 0, portadasFlv = 0, sinCambios = 0;
+    for (const it of leerDatosLocal().items) {
+      if (!it.url.includes("animeflv")) continue;
+      const encontrado = await buscarEnAnimeAV1(it.title);
+      if (encontrado) {
+        const c = { row: it.row, url: encontrado.url };
+        if (!it.cover) { const img = extraerPortadaDesdeHtml(encontrado.html); if (img) { c.cover = img; precachearImagen(img); } }
+        cambios.push(c); migradas++;
+      } else if (!it.cover) {
+        try {
+          const img = extraerPortadaAnimeFlv(await (await fetch(it.url)).text());
+          if (img) { cambios.push({ row: it.row, cover: img }); precachearImagen(img); portadasFlv++; } else sinCambios++;
+        } catch (e) { sinCambios++; }
+      } else sinCambios++;
+    }
+    if (cambios.length) {
+      const d = leerDatosLocal();
+      for (const c of cambios) { const it = d.items.find((i) => i.row === c.row); if (!it) continue; if (c.url) it.url = c.url; if (c.cover) it.cover = c.cover; }
+      guardarDatosLocal(d);
+    }
+    return { migradas, portadasFlv, sinCambios };
+  }
+
   async function resolverSecuela({ decision, slug, existingUrl, existingTitle, nuevaFila }) {
     if (decision === "misma") {
       const lista = await obtenerListaCompleta();
@@ -830,6 +889,7 @@
   }
 
   async function rellenarPortadas() {
+    if (await esListaLocal()) return rellenarPortadasLocal();
     const sheetName = await getSheetName();
     const filas = await getFilasDaK(sheetName);
     const requests=[]; let encontradas=0, sinImagen=0;
@@ -849,6 +909,7 @@
   async function buscarEnAnimeAV1(titulo){const slug=slugify(titulo);if(!slug)return null;const url=`https://animeav1.com/media/${slug}`;try{const r=await fetch(url);if(!r.ok)return null;const html=await r.text();const m=html.match(/<h1[^>]*>([^<]+)<\/h1>/i);const h=m?m[1].trim():"";return h&&normalizarTitulo(h)===normalizarTitulo(titulo)?{url,html}:null;}catch(e){return null;}}
   function extraerPortadaAnimeFlv(html){const a=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);if(a)return a[1];const b=html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);return b?b[1]:null;}
   async function migrarAnimeFlv(){
+    if (await esListaLocal()) return migrarAnimeFlvLocal();
     const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0;
     for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!enlace.includes("animeflv"))continue;const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo);
       if(encontrado){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:3,endColumnIndex:4},rows:[{values:[{userEnteredValue:{stringValue:titulo},textFormatRuns:[{startIndex:0,format:{link:{uri:encontrado.url}}}]}]}],fields:"userEnteredValue,textFormatRuns"}});migradas++;if(!ya){const img=extraerPortadaDesdeHtml(encontrado.html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);}}}
@@ -860,8 +921,13 @@
 
   async function handle(msg){
     switch(msg.type){
-      case "GET_CONFIG": return {ok:true,config:JSON.parse(localStorage.getItem("config")||"null")};
+      case "GET_CONFIG": { // se añade el id de la lista activa: el catálogo de géneros es propio de cada lista
+        obtenerListasParaUI(); // garantiza que una instalación antigua ya tiene su lista (y su id)
+        const config = JSON.parse(localStorage.getItem("config")||"null");
+        return {ok:true,config:config?{...config,listaId:idListaActiva()}:null};
+      }
       case "LOGIN": {
+        // Si ya hay un intento en marcha (renovación con el primer toque), se espera a él.
         if (tokenEnCurso) { try { await tokenEnCurso; return {ok:true}; } catch (e) {} }
         await ensureToken(true);
         return {ok:true};
@@ -871,28 +937,14 @@
       case "SAVE_CONFIG": return {ok:true,...await guardarConfig(msg.url,msg.clientId)};
       case "GET_LISTAS": return {ok:true,listas:obtenerListasParaUI()};
       case "ADD_LISTA": return {ok:true,...await agregarListaGuardada(msg.name,msg.url)};
-      case "ADD_LISTA_JSON": return {ok:true,...await crearListaJson(msg.name)};
-      case "IMPORT_LISTA_JSON": return {ok:true,...await importarListaJson(msg.name,msg.jsonText)};
-      case "EXPORT_LISTA_JSON": return {ok:true,...await exportarListaJson(msg.id)};
-      case "GET_JSON_LISTA_DATA": return {ok:true,data:await obtenerDatosListaJson(msg.id)};
-      case "SAVE_JSON_LISTA_DATA": return {ok:true,...await guardarDatosListaJson(msg.id,msg.data)};
-      case "SET_JSON_LISTA_HANDLE": return {ok:true,...await actualizarHandleListaJson(msg.id,msg.handle)};
-      case "PARSE_ANIME_URL": return {ok:true,...await extraerInfoAnimeDesdeUrl(msg.url)};
-      case "ADD_JSON_ITEM": return {ok:true,...await agregarItemJson(msg.id,msg.item)};
+      case "ADD_LISTA_LOCAL": return {ok:true,...agregarListaLocal(msg.name,msg.series)};
+      case "ADD_SERIE_LOCAL": return {ok:true,row:await agregarSerieLocal(msg.serie)};
+      case "DELETE_SERIE_LOCAL": await eliminarSerieLocal(msg.row); return {ok:true};
+      case "EXPORT_LISTA_LOCAL": return {ok:true,datos:exportarListaLocal(msg.id)};
       case "DELETE_LISTA": return {ok:true,...await eliminarListaGuardada(msg.id)};
-      case "SWITCH_LISTA": return {ok,true,...await cambiarListaActiva(msg.id)};
+      case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
       case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};
-      case "UPDATE_ANIME": {
-        const listas = obtenerListasArr();
-        const activaId = idListaActiva();
-        const listaActiva = listas.find(l => l.id === activaId);
-        if (listaActiva?.kind === "json") {
-          await actualizarItemJson(activaId, msg.row, msg.campo, msg.valor);
-        } else {
-          await actualizarCampo(msg.row, msg.campo, msg.valor);
-        }
-        return {ok:true};
-      }
+      case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
       case "UPDATE_GENRES_BULK": await actualizarGenerosLote(msg.cambios); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};

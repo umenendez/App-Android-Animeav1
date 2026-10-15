@@ -282,7 +282,7 @@
     .config { display: flex; flex-direction: column; gap: 6px; text-align: left; }
     .config h2 { font-size: 13px; margin: 0; }
     .config p { margin: 0; font-size: 11.5px; color: var(--muted); }
-    .config input {
+    .config input, .config select {
       height: 32px; padding: 0 10px;
       border: 1px solid var(--border); border-radius: 8px; background: var(--bg);
     }
@@ -297,6 +297,7 @@
     .lista-item { display: flex; align-items: center; gap: 6px; padding: 7px 0; border-bottom: 1px solid var(--border); }
     .lista-item:last-child { border-bottom: none; }
     .lista-item .nombre { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .lista-item .etiqueta-local { flex-shrink: 0; font-size: 10px; font-weight: 600; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; }
     .lista-item .etiqueta-activa { flex-shrink: 0; font-size: 10px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 2px 8px; }
     .vacio-listas { margin: 0; font-size: 12px; color: var(--muted); }
     .btn-mini {
@@ -526,34 +527,36 @@
     <input id="agregarUrl" type="url" placeholder="https://animeav1.com/media/… (serie o episodio)" aria-label="Enlace del anime a añadir" />
     <button class="btn" id="agregarBtn" type="button">Añadir</button>
     <div class="estado-txt" id="agregarStatus"></div>
+    <div id="agregarManual" class="config" hidden>
+      <div class="config-sep"></div>
+      <h2>O escríbelo a mano (lista local)</h2>
+      <input id="manualTitulo" type="text" placeholder="Título *" aria-label="Título" />
+      <input id="manualUrl" type="url" placeholder="Enlace (opcional)" aria-label="Enlace" />
+      <select id="manualEstado" aria-label="Estado"></select>
+      <input id="manualGenero" type="text" placeholder="Géneros (separados por comas, opcional)" aria-label="Géneros" />
+      <input id="manualNota" type="number" min="0" max="10" step="0.1" placeholder="Nota 0-10 (opcional)" aria-label="Nota" />
+      <input id="manualPortada" type="url" placeholder="Portada (URL, opcional)" aria-label="Portada" />
+      <button class="btn" id="manualBtn" type="button">Añadir a mi lista</button>
+    </div>
   </section>
 
   <section id="listasPanel" class="config" hidden>
     <h2>Tus listas</h2>
-    <p>Guarda enlaces a hojas de Google Sheets o crea listas locales en archivo .json.</p>
+    <p>Guarda enlaces a otras hojas de Google (por ejemplo la de un amigo) o crea listas locales, y cambia entre ellas cuando quieras. Cada lista tiene sus propios géneros.</p>
     <div id="listasContenido"></div>
     <div class="config-sep"></div>
-    <div class="tipo-lista-selector">
-      <label>Tipo de lista:</label>
-      <select id="listaTipo">
-        <option value="sheet">Google Sheets</option>
-        <option value="json">Archivo .json (local)</option>
-      </select>
-    </div>
-    <div id="listaFormSheet">
-      <input id="listaNombre" type="text" placeholder="Nombre (p. ej. «Películas»)" aria-label="Nombre de la lista" />
-      <input id="listaUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="Enlace de la hoja" />
-    </div>
-    <div id="listaFormJson" hidden>
-      <input id="listaNombreJson" type="text" placeholder="Nombre (p. ej. «Películas»)" aria-label="Nombre de la lista .json" />
-      <div class="json-acciones">
-        <button class="btn" id="jsonCrearBtn" type="button">Crear .json</button>
-        <button class="btn" id="jsonImportarBtn" type="button">Importar .json</button>
-      </div>
-      <input type="file" id="jsonFileInput" accept=".json" hidden />
-    </div>
+    <input id="listaNombre" type="text" placeholder="Nombre (p. ej. «Ana»)" aria-label="Nombre de la lista" />
+    <input id="listaUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/…" aria-label="Enlace de la hoja" />
     <button class="btn" id="listaGuardarBtn" type="button">Guardar lista</button>
     <div class="estado-txt" id="listaStatus"></div>
+    <div class="config-sep"></div>
+    <h2>Lista local (sin Google Sheets)</h2>
+    <p>Se guarda dentro de la extensión. Puedes exportarla a un archivo .json y volver a importarla (copia de seguridad o para llevarla a otro dispositivo).</p>
+    <input id="listaLocalNombre" type="text" placeholder="Nombre de la lista local" aria-label="Nombre de la lista local" />
+    <button class="btn" id="listaLocalCrearBtn" type="button">Crear lista vacía</button>
+    <button class="btn" id="listaLocalImportarBtn" type="button">Importar desde un archivo .json…</button>
+    <input id="listaLocalArchivo" type="file" accept=".json,application/json" hidden />
+    <div class="estado-txt" id="listaLocalStatus"></div>
   </section>
 
   <div id="cargando" class="aviso"><div class="spinner"></div>Cargando tu lista…</div>

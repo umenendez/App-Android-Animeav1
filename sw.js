@@ -1,5 +1,5 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v18 (listas .json, géneros por lista, formulario añadir).
+// las cachés antiguas. Último bump: v18 (listas locales, entrada manual y géneros por lista).
 const CACHE = "animeav1-pwa-v18";
 const COVER_CACHE = "anime-covers-v1";
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];

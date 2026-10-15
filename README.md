@@ -31,6 +31,8 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Migrar enlaces AnimeFLV → AnimeAV1.
 - Instalable como PWA desde Android.
 - Se abre al instante con la última lista guardada y se actualiza en segundo plano.
+- Listas locales sin Google Sheets: se guardan en el dispositivo, se pueden crear vacías o importar desde un `.json`, exportar a `.json` (mismo formato que la extensión), añadir series a mano y eliminarlas. No necesitan Client ID ni sesión de Google.
+- Cada lista tiene su propio catálogo de géneros.
 - Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 
 ## Qué no puede hacer una PWA
