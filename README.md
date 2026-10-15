@@ -33,6 +33,8 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Se abre al instante con la última lista guardada y se actualiza en segundo plano.
 - Listas locales sin Google Sheets: se guardan en el dispositivo, se pueden crear vacías o importar desde un `.json`, exportar a `.json` (mismo formato que la extensión), añadir series a mano y eliminarlas. No necesitan Client ID ni sesión de Google.
 - Cada lista tiene su propio catálogo de géneros.
+- Panel de Opciones personalizable: tema, número de columnas, tamaño y separación de las cards, y qué se muestra en ellas (nota, estado, género y el botón ⏭ «Siguiente capítulo»). Se guarda en el dispositivo.
+- Botón ⏭ «Siguiente capítulo» en las series en «Viendo»: abre el capítulo siguiente y lo guarda como último visto.
 - Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 
 ## Qué no puede hacer una PWA

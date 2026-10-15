@@ -76,8 +76,20 @@
     return obtenerClientIdGuardado() || CFG.googleClientId || "";
   }
 
+  // Con listas locales no se usa nada de Google: el script de inicio de sesión solo se
+  // descarga la primera vez que hace falta (al usar una hoja de Google Sheets).
+  function cargarScriptGIS() {
+    if (window.google?.accounts?.oauth2 || document.querySelector("script[data-gis]")) return;
+    const sc = document.createElement("script");
+    sc.src = "https://accounts.google.com/gsi/client";
+    sc.async = true;
+    sc.dataset.gis = "1";
+    document.head.append(sc);
+  }
+
   function esperarGIS() {
     if (gisReady) return gisReady;
+    cargarScriptGIS();
     gisReady = new Promise((resolve, reject) => {
       const start = Date.now();
       const tick = () => {
@@ -191,6 +203,7 @@
   let ultimoRefrescoAuto = 0;
   document.addEventListener("pointerdown", () => {
     if (!emailGuardado() || !window.google?.accounts?.oauth2) return;
+    try { if (JSON.parse(localStorage.getItem("config") || "null")?.tipo === "local") return; } catch (e) {} // lista local: sin Google
     if (accessToken && Date.now() < tokenExpiresAt - 10 * 60 * 1000) return;
     if (tokenEnCurso || Date.now() - ultimoRefrescoAuto < 60000) return;
     ultimoRefrescoAuto = Date.now();

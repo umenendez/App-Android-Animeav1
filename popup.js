@@ -138,23 +138,82 @@ function toast(texto) {
 
 // --- Tema claro / oscuro / automático ----------------------------------------
 
-const MODOS_TEMA = ["auto", "light", "dark"];
-const NOMBRE_TEMA = { auto: "automático", light: "claro", dark: "oscuro" };
-const btnTema = $("btnTema");
-
+// El tema se elige en Opciones (selector «Tema»); aquí solo se aplica y se mantiene sincronizado.
 function aplicarTema(modo) {
   document.documentElement.dataset.tema = modo;
-  btnTema.dataset.modo = modo;
-  btnTema.title = `Tema: ${NOMBRE_TEMA[modo]}`;
+  const ajT = $("ajTema");
+  if (ajT) ajT.value = modo;
 }
 aplicarTema(document.documentElement.dataset.tema || "auto");
-btnTema.addEventListener("click", () => {
-  const actual = document.documentElement.dataset.tema;
-  const siguiente = MODOS_TEMA[(MODOS_TEMA.indexOf(actual) + 1) % MODOS_TEMA.length];
-  try { localStorage.setItem("tema", siguiente); } catch (e) {}
-  aplicarTema(siguiente);
-  toast(`Tema: ${NOMBRE_TEMA[siguiente]}`);
+
+// --- Ajustes de apariencia y comportamiento (se guardan en este dispositivo) -------
+const AJUSTES_BASE = { columnas: "auto", tamano: 155, espacio: 8, nota: true, estado: true, genero: true, siguienteCap: true };
+let ajustes = { ...AJUSTES_BASE };
+try {
+  const g = JSON.parse(localStorage.getItem("ajustes") || "null");
+  if (g && typeof g === "object") ajustes = { ...AJUSTES_BASE, ...g };
+} catch (e) {}
+
+function aplicarAjustes() {
+  const l = $("lista");
+  const cols = parseInt(ajustes.columnas, 10);
+  const tamano = Math.min(220, Math.max(100, Number(ajustes.tamano) || AJUSTES_BASE.tamano));
+  const espacio = Number.isFinite(Number(ajustes.espacio)) ? Math.min(24, Math.max(0, Number(ajustes.espacio))) : AJUSTES_BASE.espacio;
+  // Con los valores por defecto no se toca el CSS original (cada versión tiene su diseño base)
+  if (cols >= 1 && cols <= 6) {
+    // Columnas fijas: cada card ocupa su columna entera
+    l.style.setProperty("--cols", `repeat(${cols}, minmax(0, 1fr))`);
+    l.style.setProperty("--card-w", "100%");
+  } else if (tamano !== AJUSTES_BASE.tamano) {
+    l.style.setProperty("--cols", `repeat(auto-fit, minmax(${Math.round(tamano * 0.78)}px, 1fr))`);
+    l.style.setProperty("--card-w", `${tamano}px`);
+  } else {
+    l.style.removeProperty("--cols");
+    l.style.removeProperty("--card-w");
+  }
+  if (espacio !== AJUSTES_BASE.espacio) l.style.setProperty("--gap", `${espacio}px`);
+  else l.style.removeProperty("--gap");
+  l.classList.toggle("sin-nota", !ajustes.nota);
+  l.classList.toggle("sin-estado", !ajustes.estado);
+  l.classList.toggle("sin-genero", !ajustes.genero);
+  l.classList.toggle("sin-siguiente", !ajustes.siguienteCap);
+}
+
+function sincronizarControlesAjustes() {
+  const fijas = parseInt(ajustes.columnas, 10) >= 1;
+  $("ajTema").value = document.documentElement.dataset.tema || "auto";
+  $("ajColumnas").value = fijas ? String(parseInt(ajustes.columnas, 10)) : "auto";
+  $("ajTamano").value = ajustes.tamano;
+  $("ajTamano").disabled = fijas;
+  $("ajTamanoAyuda").textContent = fijas ? "Con columnas fijas, la card se adapta al ancho de la columna." : "Ancho máximo de cada card.";
+  $("ajTamanoVal").textContent = `${ajustes.tamano}px`;
+  $("ajEspacio").value = ajustes.espacio;
+  $("ajEspacioVal").textContent = `${ajustes.espacio}px`;
+  $("ajNota").checked = !!ajustes.nota;
+  $("ajEstado").checked = !!ajustes.estado;
+  $("ajGenero").checked = !!ajustes.genero;
+  $("ajSiguienteCap").checked = !!ajustes.siguienteCap;
+}
+
+function guardarAjustes() {
+  try { localStorage.setItem("ajustes", JSON.stringify(ajustes)); } catch (e) {}
+  aplicarAjustes();
+  sincronizarControlesAjustes();
+}
+
+$("ajTema").addEventListener("change", (e) => {
+  try { localStorage.setItem("tema", e.target.value); } catch (err) {}
+  aplicarTema(e.target.value);
 });
+$("ajColumnas").addEventListener("change", (e) => { ajustes.columnas = e.target.value; guardarAjustes(); });
+$("ajTamano").addEventListener("input", (e) => { ajustes.tamano = Number(e.target.value); guardarAjustes(); });
+$("ajEspacio").addEventListener("input", (e) => { ajustes.espacio = Number(e.target.value); guardarAjustes(); });
+[["ajNota", "nota"], ["ajEstado", "estado"], ["ajGenero", "genero"], ["ajSiguienteCap", "siguienteCap"]].forEach(([id, clave]) => {
+  $(id).addEventListener("change", (e) => { ajustes[clave] = e.target.checked; guardarAjustes(); });
+});
+$("ajReset").addEventListener("click", () => { ajustes = { ...AJUSTES_BASE }; guardarAjustes(); toast("Apariencia restablecida"); });
+aplicarAjustes();
+sincronizarControlesAjustes();
 
 // --- Preferencias de filtros (se recuerdan entre aperturas) -------------------
 
@@ -550,6 +609,12 @@ function renderPanelGeneros() {
   panelGenerosEl.append(cabecera, busqueda, lista, pie);
 }
 
+// Enlace al capítulo siguiente del último guardado (".../media/<serie>/<n>" -> n + 1), o "" si no se puede
+function urlSiguienteCap(u) {
+  const m = String(u || "").match(/^(https?:\/\/[^?#\s]*\/media\/[^/?#]+\/)(\d+)\/?(?:[?#].*)?$/i);
+  return m ? m[1] + (parseInt(m[2], 10) + 1) : "";
+}
+
 function render() {
   const orden = ordenEl.value;
   const q = normalizar(busquedaEl.value.trim());
@@ -675,13 +740,28 @@ function renderItem(anime) {
   });
 
   const btnUltimoCap = el("a", { className: "btn-ultimo-cap", target: "_blank", title: "Ir al último capítulo visto", ariaLabel: "Último capítulo visto", textContent: "▶" });
+  // «Viendo»: abre el capítulo siguiente al último registrado y lo marca como el último visto
+  const btnSiguienteCap = el("a", { className: "btn-ultimo-cap btn-siguiente", target: "_blank", rel: "noopener", title: "Abrir el siguiente capítulo", ariaLabel: "Siguiente capítulo", textContent: "⏭\uFE0E" });
+  btnSiguienteCap.addEventListener("click", (e) => {
+    const sig = urlSiguienteCap(anime.lastEpisodeUrl);
+    e.preventDefault(); // se abre a mano: así el enlace no cambia mientras se procesa el clic
+    if (!sig) return;
+    window.open(sig, "_blank", "noopener");
+    anime.lastEpisodeUrl = sig;
+    enviarMensaje({ type: "UPDATE_ANIME", row: anime.row, campo: "lastEpisodeUrl", valor: sig })
+      .then((r) => { if (!r?.ok) toast(mensajeError(r?.error || "error desconocido")); });
+    actualizarBotonUltimoCap();
+  });
   function actualizarBotonUltimoCap() {
     const visible = anime.status === "📉" && anime.lastEpisodeUrl;
     if (visible) btnUltimoCap.href = anime.lastEpisodeUrl; else btnUltimoCap.removeAttribute("href");
     btnUltimoCap.style.display = visible ? "flex" : "none";
+    const sig = anime.status === "-" ? urlSiguienteCap(anime.lastEpisodeUrl) : "";
+    if (sig) btnSiguienteCap.href = sig; else btnSiguienteCap.removeAttribute("href");
+    btnSiguienteCap.style.display = sig ? "flex" : "none";
   }
   actualizarBotonUltimoCap();
-  portada.append(inputScore, btnUltimoCap);
+  portada.append(inputScore, btnUltimoCap, btnSiguienteCap);
 
   // Info
   const info = el("div", { className: "info" });
@@ -1986,6 +2066,7 @@ function crearFormConfig(opts) {
 }
 
 function crearBotonCuenta() {
+  if (configActual?.tipo === "local") return el("div"); // lista local: no se usa la cuenta de Google
   const estado = el("div", { className: "estado-txt" });
   const btn = el("button", { className: "btn", type: "button", textContent: "Cambiar de cuenta de Google" });
   btn.addEventListener("click", async () => {
