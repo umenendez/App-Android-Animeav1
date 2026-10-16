@@ -89,6 +89,7 @@ const listaStatusEl = $("listaStatus");
 let todosLosAnimes = [];
 let modoEdicion = false;
 let filtroEstado = "-"; // por defecto: viendo
+let filtroPendientes = false; // solo series en «Viendo» con capítulos publicados que no has visto
 let filtroGeneros = new Set(); // filtro múltiple: el anime debe tener TODOS los seleccionados (y puede tener más)
 const panelGenerosEl = $("panelGeneros");
 const dlgGenerosEl = $("dlgGeneros");
@@ -147,7 +148,7 @@ function aplicarTema(modo) {
 aplicarTema(document.documentElement.dataset.tema || "auto");
 
 // --- Ajustes de apariencia y comportamiento (se guardan en este dispositivo) -------
-const AJUSTES_BASE = { columnas: "auto", tamano: 155, espacio: 8, nota: true, estado: true, genero: true, siguienteCap: true };
+const AJUSTES_BASE = { vista: "cuadricula", columnas: "auto", tamano: 155, espacio: 8, nota: true, estado: true, genero: true, siguienteCap: true };
 let ajustes = { ...AJUSTES_BASE };
 try {
   const g = JSON.parse(localStorage.getItem("ajustes") || "null");
@@ -177,6 +178,7 @@ function aplicarAjustes() {
   l.classList.toggle("sin-estado", !ajustes.estado);
   l.classList.toggle("sin-genero", !ajustes.genero);
   l.classList.toggle("sin-siguiente", !ajustes.siguienteCap);
+  l.classList.toggle("vista-lista", ajustes.vista === "lista");
 }
 
 function sincronizarControlesAjustes() {
@@ -184,7 +186,10 @@ function sincronizarControlesAjustes() {
   $("ajTema").value = document.documentElement.dataset.tema || "auto";
   $("ajColumnas").value = fijas ? String(parseInt(ajustes.columnas, 10)) : "auto";
   $("ajTamano").value = ajustes.tamano;
-  $("ajTamano").disabled = fijas;
+  const enLista = ajustes.vista === "lista"; // en vista de lista no hay columnas ni tamaño de card
+  $("ajVista").value = enLista ? "lista" : "cuadricula";
+  $("ajColumnas").disabled = enLista;
+  $("ajTamano").disabled = fijas || enLista;
   $("ajTamanoAyuda").textContent = fijas ? "Con columnas fijas, la card se adapta al ancho de la columna." : "Ancho máximo de cada card.";
   $("ajTamanoVal").textContent = `${ajustes.tamano}px`;
   $("ajEspacio").value = ajustes.espacio;
@@ -205,6 +210,7 @@ $("ajTema").addEventListener("change", (e) => {
   try { localStorage.setItem("tema", e.target.value); } catch (err) {}
   aplicarTema(e.target.value);
 });
+$("ajVista").addEventListener("change", (e) => { ajustes.vista = e.target.value; guardarAjustes(); });
 $("ajColumnas").addEventListener("change", (e) => { ajustes.columnas = e.target.value; guardarAjustes(); });
 $("ajTamano").addEventListener("input", (e) => { ajustes.tamano = Number(e.target.value); guardarAjustes(); });
 $("ajEspacio").addEventListener("input", (e) => { ajustes.espacio = Number(e.target.value); guardarAjustes(); });
@@ -219,7 +225,7 @@ sincronizarControlesAjustes();
 
 function guardarFiltros() {
   try {
-    localStorage.setItem("filtros", JSON.stringify({ estado: filtroEstado, generos: [...filtroGeneros], orden: ordenEl.value }));
+    localStorage.setItem("filtros", JSON.stringify({ estado: filtroEstado, generos: [...filtroGeneros], orden: ordenEl.value, pendientes: filtroPendientes }));
   } catch (e) {}
 }
 function cargarFiltros() {
@@ -229,6 +235,7 @@ function cargarFiltros() {
       filtroEstado = f.estado ?? "-";
       filtroGeneros = new Set(Array.isArray(f.generos) ? f.generos : (f.genero ? [f.genero] : []));
       ordenEl.value = f.orden || "";
+      filtroPendientes = !!f.pendientes;
     }
   } catch (e) {}
 }
@@ -609,18 +616,103 @@ function renderPanelGeneros() {
   panelGenerosEl.append(cabecera, busqueda, lista, pie);
 }
 
-// Enlace al capítulo siguiente del último guardado (".../media/<serie>/<n>" -> n + 1), o "" si no se puede
+// --- ¿Existe el capítulo siguiente? ------------------------------------------------
+// El botón ⏭ solo se muestra si la ficha de la serie lista ese capítulo. Si no se puede
+// comprobar (sin conexión, la ficha no lista capítulos), se muestra como antes.
+let epsCache = {}; // slug -> { max: número | null, ts }
+try { epsCache = JSON.parse(localStorage.getItem("epsDisponibles") || "{}") || {}; } catch (e) {}
+const botonesSiguiente = new Map(); // slug -> Set(funciones que redibujan el botón de esa serie)
+const colaCaps = [];
+const enCaps = new Set();
+let consultandoCaps = 0;
+
+function slugYNumero(u) {
+  const m = String(u || "").match(/\/media\/([^/?#]+)\/(\d+)/);
+  return m ? { slug: m[1].toLowerCase(), n: parseInt(m[2], 10) } : null;
+}
+// max puede estar caducado: se sigue usando para dibujar mientras se vuelve a consultar
+function capsInfo(slug, n) {
+  const c = epsCache[slug];
+  if (!c) return { max: undefined, fresco: false };
+  const ttl = (c.max === null || (n && n > c.max)) ? 30 * 60 * 1000 : 6 * 60 * 60 * 1000; // sin más capítulos: se revisa antes
+  return { max: c.max, fresco: Date.now() - c.ts < ttl };
+}
+function solicitarCapitulos(slug) {
+  if (enCaps.has(slug)) return;
+  enCaps.add(slug);
+  colaCaps.push(slug);
+  siguienteConsultaCaps();
+}
+function siguienteConsultaCaps() {
+  while (consultandoCaps < 3 && colaCaps.length) {
+    const slug = colaCaps.shift();
+    consultandoCaps++;
+    enviarMensaje({ type: "GET_CAPITULOS", slug })
+      .then((r) => {
+        epsCache[slug] = { max: r?.ok && Number.isFinite(r.max) ? r.max : null, ts: Date.now() };
+        try { localStorage.setItem("epsDisponibles", JSON.stringify(epsCache)); } catch (e) {}
+        (botonesSiguiente.get(slug) || []).forEach((redibujar) => redibujar());
+        volverAFiltrarPendientes();
+      })
+      .catch(() => {})
+      .finally(() => { consultandoCaps--; enCaps.delete(slug); siguienteConsultaCaps(); });
+  }
+}
+
+// ¿Tiene capítulos publicados que aún no has visto? (usa los datos de epsCache, que se piden a GET_CAPITULOS)
+function infoUltimo(u) { // { slug, n }: n = último capítulo visto (0 si solo está la ficha de la serie)
+  const m = String(u || "").match(/\/media\/([^/?#]+)(?:\/(\d+))?/i);
+  return m ? { slug: m[1].toLowerCase(), n: m[2] ? parseInt(m[2], 10) : 0 } : null;
+}
+// «Pendientes» solo existe dentro de «Viendo»: con otro estado (o «Todos») el botón se oculta y el filtro no se aplica
+function pendientesActivo() { return filtroPendientes && filtroEstado === "-"; }
+function tieneCapituloPendiente(a) {
+  if (a.status !== "-") return false;
+  const inf = infoUltimo(a.lastEpisodeUrl);
+  const max = inf ? epsCache[inf.slug]?.max : undefined;
+  return Number.isFinite(max) && max > inf.n;
+}
+// Con el filtro «Pendientes» hay que conocer los capítulos de todas las series en «Viendo», no solo de las que se dibujan
+function prepararPendientes() {
+  for (const a of todosLosAnimes) {
+    if (a.status !== "-") continue;
+    const inf = infoUltimo(a.lastEpisodeUrl);
+    if (inf && !capsInfo(inf.slug, inf.n + 1).fresco) solicitarCapitulos(inf.slug);
+  }
+}
+let tmrPendientes = null;
+function volverAFiltrarPendientes() { // llega una respuesta: se repinta (agrupando las que llegan juntas)
+  if (!pendientesActivo()) return;
+  clearTimeout(tmrPendientes);
+  tmrPendientes = setTimeout(render, 200);
+}
+const filtroPendientesEl = $("filtroPendientes");
+function actualizarBotonPendientes() {
+  filtroPendientesEl.hidden = filtroEstado !== "-";
+  filtroPendientesEl.setAttribute("aria-pressed", String(filtroPendientes));
+}
+filtroPendientesEl.addEventListener("click", () => {
+  filtroPendientes = !filtroPendientes;
+  guardarFiltros();
+  render();
+});
+
+// Enlace al capítulo siguiente del último guardado (".../media/<serie>/<n>" -> n + 1; la ficha sin número -> 1), o "" si no se puede
 function urlSiguienteCap(u) {
-  const m = String(u || "").match(/^(https?:\/\/[^?#\s]*\/media\/[^/?#]+\/)(\d+)\/?(?:[?#].*)?$/i);
-  return m ? m[1] + (parseInt(m[2], 10) + 1) : "";
+  const m = String(u || "").match(/^(https?:\/\/[^?#\s]*\/media\/[^/?#]+)(?:\/(\d+))?\/?(?:[?#].*)?$/i);
+  return m ? `${m[1]}/${m[2] ? parseInt(m[2], 10) + 1 : 1}` : ""; // sin número (ficha de la serie): el siguiente es el 1
 }
 
 function render() {
+  botonesSiguiente.clear(); // las cards se recrean: se vuelven a registrar al dibujarlas
+  actualizarBotonPendientes();
+  if (pendientesActivo()) prepararPendientes();
   const orden = ordenEl.value;
   const q = normalizar(busquedaEl.value.trim());
 
   let lista = todosLosAnimes.filter((a) => {
     if (filtroEstado && a.status !== filtroEstado) return false;
+    if (pendientesActivo() && !tieneCapituloPendiente(a)) return false;
     if (!pasaGeneros(a, filtroGeneros)) return false;
     if (q && !normalizar(a.title).includes(q)) return false;
     return true;
@@ -650,10 +742,12 @@ function render() {
     vacioEl.innerHTML = "";
     if (todosLosAnimes.length === 0) {
       vacioEl.textContent = "Todavía no hay animes. Abre un episodio en animeav1.com y aparecerá aquí.";
+    } else if (pendientesActivo() && (consultandoCaps > 0 || colaCaps.length > 0)) {
+      vacioEl.textContent = "Comprobando los capítulos publicados…";
     } else {
       vacioEl.append("Ningún anime coincide con estos filtros.", el("br"), el("button", {
         className: "btn", textContent: "Quitar filtros",
-        onclick: () => { filtroEstado = ""; filtroGeneros.clear(); ordenEl.value = ""; busquedaEl.value = ""; guardarFiltros(); render(); },
+        onclick: () => { filtroEstado = ""; filtroPendientes = false; filtroGeneros.clear(); ordenEl.value = ""; busquedaEl.value = ""; guardarFiltros(); render(); },
       }));
     }
     return;
@@ -756,7 +850,15 @@ function renderItem(anime) {
     const visible = anime.status === "📉" && anime.lastEpisodeUrl;
     if (visible) btnUltimoCap.href = anime.lastEpisodeUrl; else btnUltimoCap.removeAttribute("href");
     btnUltimoCap.style.display = visible ? "flex" : "none";
-    const sig = anime.status === "-" ? urlSiguienteCap(anime.lastEpisodeUrl) : "";
+    let sig = anime.status === "-" ? urlSiguienteCap(anime.lastEpisodeUrl) : "";
+    const inf = sig ? slugYNumero(sig) : null;
+    if (inf) {
+      const { max, fresco } = capsInfo(inf.slug, inf.n);
+      if (Number.isFinite(max) && inf.n > max) sig = ""; // la ficha no lista ese capítulo: no hay siguiente
+      if (!botonesSiguiente.has(inf.slug)) botonesSiguiente.set(inf.slug, new Set());
+      botonesSiguiente.get(inf.slug).add(actualizarBotonUltimoCap);
+      if (!fresco) solicitarCapitulos(inf.slug);
+    }
     if (sig) btnSiguienteCap.href = sig; else btnSiguienteCap.removeAttribute("href");
     btnSiguienteCap.style.display = sig ? "flex" : "none";
   }
@@ -1819,6 +1921,25 @@ async function agregarAnime() {
   toast(res.vinculada ? "Serie actualizada" : "Anime añadido");
   cargar();
 }
+// --- Compartir desde Android: «Compartir → AnimeAV1 Tracker» en un capítulo de animeav1.com ---------
+// El manifest registra la app como destino de «Compartir» (share_target) y Android la abre con
+// ?title=...&text=...&url=...; el enlace puede venir en cualquiera de los tres. Se registra igual que
+// al pegarlo en «Añadir»: serie nueva, o «viendo» + último capítulo si ya estaba (con la pregunta
+// «¿Es la misma serie?» si parece otra temporada).
+async function procesarCompartido() {
+  let p;
+  try { p = new URL(location.href).searchParams; } catch (e) { return; }
+  const textos = ["url", "text", "title"].map((k) => p.get(k) || "");
+  if (!textos.some(Boolean)) return;
+  try { history.replaceState(null, "", location.pathname); } catch (e) {} // recargar no debe volver a registrarlo
+  const enlace = textos.join(" ").match(/https?:\/\/(?:www\.)?animeav1\.com\/media\/[^\s"'<>]+/i)?.[0];
+  if (!enlace) { toast("Lo compartido no es un enlace de animeav1.com"); return; }
+  if (!configActual) { toast("Primero conecta una hoja o crea una lista local"); return; }
+  setAgregarPanel(true);
+  agregarUrlEl.value = enlace;
+  await agregarAnime();
+}
+
 agregarBtnEl.addEventListener("click", agregarAnime);
 agregarUrlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") agregarAnime(); });
 
@@ -2312,7 +2433,7 @@ inicializarToolbar();
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
   clientIdActual = (await enviarMensaje({ type: "GET_CLIENT_ID" }))?.clientId || "";
   $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta());
-  cargar();
+  cargar().then(procesarCompartido);
 })();
 
 // Salvaguarda: en algunas ventanas recién creadas Chrome no recalcula bien

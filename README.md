@@ -34,6 +34,8 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Listas locales sin Google Sheets: se guardan en el dispositivo, se pueden crear vacías o importar desde un `.json`, exportar a `.json` (mismo formato que la extensión), añadir series a mano y eliminarlas. No necesitan Client ID ni sesión de Google.
 - Cada lista tiene su propio catálogo de géneros.
 - Panel de Opciones personalizable: tema, número de columnas, tamaño y separación de las cards, y qué se muestra en ellas (nota, estado, género y el botón ⏭ «Siguiente capítulo»). Se guarda en el dispositivo.
+- Vista en lista (Opciones > Vista) y filtro «Pendientes» (series en «Viendo» con capítulos publicados que aún no has visto).
+- Compartir desde Android: en un capítulo de animeav1.com, Compartir → AnimeAV1 Tracker lo registra (serie nueva o «Viendo» + último capítulo). Requiere la PWA instalada; si no aparece en la lista de Compartir, desinstálala y vuelve a instalarla.
 - Botón ⏭ «Siguiente capítulo» en las series en «Viendo»: abre el capítulo siguiente y lo guarda como último visto.
 - Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 

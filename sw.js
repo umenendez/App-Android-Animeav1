@@ -1,6 +1,6 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v22 (sin botón de tema en la barra; arreglo del interruptor de género).
-const CACHE = "animeav1-pwa-v22";
+// las cachés antiguas. Último bump: v26 («Pendientes» solo dentro de «Viendo»).
+const CACHE = "animeav1-pwa-v26";
 const COVER_CACHE = "anime-covers-v1";
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
 
@@ -48,7 +48,7 @@ self.addEventListener("fetch", event => {
           caches.open(CACHE).then(c => c.put(request, copy));
         }
         return response;
-      }).catch(() => caches.match(request))
+      }).catch(() => caches.match(request, { ignoreSearch: true }))
     );
   }
 });

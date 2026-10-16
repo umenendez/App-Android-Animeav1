@@ -5,6 +5,7 @@
   "lang": "es",
   "start_url": "./",
   "display": "standalone",
+  "share_target": { "action": "./", "method": "GET", "params": { "title": "title", "text": "text", "url": "url" } },
   "background_color": "#0e131b",
   "theme_color": "#dc2626",
   "icons": [

@@ -596,6 +596,14 @@
   }
 
   // Pone la serie existente como "viendo" y, si se pegó un episodio, lo guarda como último capítulo.
+  // Último capítulo que se guarda al marcar una serie como «viendo». Sin enlace de episodio (se añadió la
+  // ficha de una temporada nueva y se dijo «es la misma serie») se guarda la ficha de esa temporada, que
+  // equivale a «aún no has visto ninguno» (el siguiente es el 1). Si ya vas por esa temporada, no se toca.
+  function ultimoParaSerie(anime, episodeUrl, url) {
+    if (episodeUrl) return episodeUrl;
+    return url && slugDeUrl(anime.lastEpisodeUrl) !== slugDeUrl(url) ? url : "";
+  }
+
   async function marcarViendo(anime, episodeUrl) {
     if (anime.status !== ESTADO_VIENDO) await actualizarCampo(anime.row, "status", ESTADO_VIENDO);
     if (episodeUrl) await actualizarCampo(anime.row, "lastEpisodeUrl", String(episodeUrl).trim());
@@ -801,12 +809,27 @@
     return { migradas, portadasFlv, sinCambios };
   }
 
+  // Mayor número de capítulo que aparece en la ficha de la serie (enlaces .../media/<slug>/<n>).
+  // null = no se pudo saber (sin conexión, o la ficha no lista capítulos): el popup actúa como si existiera.
+  async function capituloMaximo(slug) {
+    if (!/^[a-z0-9-]+$/i.test(slug || "")) return null;
+    try {
+      const r = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent("https://animeav1.com/media/" + slug)}`);
+      const upstream = Number(r.headers.get("X-Proxy-Upstream-Status") || 0);
+      if (!r.ok || (upstream && upstream >= 400)) return null;
+      const html = await r.text();
+      let max = 0;
+      for (const m of html.matchAll(new RegExp(`/media/${slug}/(\\d+)(?!\\d)`, "gi"))) max = Math.max(max, parseInt(m[1], 10));
+      return max > 0 ? max : null;
+    } catch (e) { return null; }
+  }
+
   async function resolverSecuela({ decision, slug, existingUrl, existingTitle, nuevaFila }) {
     if (decision === "misma") {
       const lista = await obtenerListaCompleta();
       const anime = filaExistente(lista, existingUrl, existingTitle);
       if (!anime) throw new Error("FILA_NO_ENCONTRADA");
-      await marcarViendo(anime, nuevaFila?.episodeUrl);
+      await marcarViendo(anime, ultimoParaSerie(anime, nuevaFila?.episodeUrl, nuevaFila?.url));
       if (slug) {
         await getSheetName(); // asegura spreadsheetId/gid para la clave
         const vinculos = leerVinculos();
@@ -844,7 +867,7 @@
     if (vinculo) {
       const anime = filaExistente(existentes, vinculo.url, vinculo.title);
       if (anime) {
-        await marcarViendo(anime, episodeUrl);
+        await marcarViendo(anime, ultimoParaSerie(anime, episodeUrl, url));
         return { title: anime.title, vinculada: true };
       }
       const vinculos = leerVinculos();
@@ -962,6 +985,7 @@
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};
       case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
+      case "GET_CAPITULOS": return {ok:true,max:await capituloMaximo(msg.slug)};
       case "REGISTER_ANIME": return {ok:true,...await registrarAnime(msg.url)};
       case "RESOLVER_SECUELA": return {ok:true,...await resolverSecuela(msg)};
       default: throw new Error("MENSAJE_DESCONOCIDO");

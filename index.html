@@ -367,6 +367,13 @@
     #lista.sin-estado .info select.estado { display:none; }
     #lista.sin-genero .info .genero { display:none; }
     #lista.sin-siguiente .btn-siguiente { display:none !important; }
+    /* Vista en lista (Opciones > Vista): filas compactas en vez de cards */
+    #lista.vista-lista { grid-template-columns: 1fr; }
+    #lista.vista-lista .card { width: 100%; max-width: none; justify-self: stretch; flex-direction: row; align-items: stretch; }
+    #lista.vista-lista .portada { width: 56px; flex: none; aspect-ratio: auto; min-height: 80px; border-radius: 11px 0 0 11px; }
+    #lista.vista-lista .info { flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; }
+    #lista.vista-lista a.titulo { flex: 1 1 100%; min-height: 0; font-size: 12.5px; }
+    #lista.vista-lista .info select.estado, #lista.vista-lista .info .genero { flex: 1 1 110px; min-width: 0; }
     .seccion-opciones { margin-top:14px; }
     .seccion-opciones-titulo {
       display:flex; align-items:center; gap:7px; margin:0 0 8px;
@@ -517,6 +524,7 @@
     <div class="fila">
       <input id="busqueda" type="search" placeholder="Buscar por título" aria-label="Buscar por título" />
       <button id="filtroGenero" class="btn-filtro" type="button" aria-expanded="false" aria-label="Filtrar por géneros">Géneros</button>
+      <button id="filtroPendientes" class="btn-filtro" type="button" aria-pressed="false" title="Series en «Viendo» con algún capítulo publicado que aún no has visto">Pendientes</button>
       <select id="orden" aria-label="Ordenar"></select>
     </div>
     <div id="panelGeneros" hidden></div>
@@ -583,6 +591,7 @@
     <div class="seccion-opciones">
       <div class="seccion-opciones-titulo">Apariencia</div>
       <div class="ajuste"><label class="ajuste-nombre" for="ajTema">Tema</label><select id="ajTema"><option value="auto">Automático</option><option value="light">Claro</option><option value="dark">Oscuro</option></select></div>
+      <div class="ajuste"><label class="ajuste-nombre" for="ajVista">Vista<small>Cuadrícula o filas compactas.</small></label><select id="ajVista"><option value="cuadricula">Cuadrícula</option><option value="lista">Lista</option></select></div>
       <div class="ajuste"><label class="ajuste-nombre" for="ajColumnas">Columnas<small>«Automático» las ajusta al ancho disponible.</small></label><select id="ajColumnas"><option value="auto">Automático</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select></div>
       <div class="ajuste"><label class="ajuste-nombre" for="ajTamano">Tamaño de las cards<small id="ajTamanoAyuda">Ancho máximo de cada card.</small></label><input id="ajTamano" type="range" min="100" max="220" step="5"><output id="ajTamanoVal"></output></div>
       <div class="ajuste"><label class="ajuste-nombre" for="ajEspacio">Separación entre cards</label><input id="ajEspacio" type="range" min="0" max="24" step="2"><output id="ajEspacioVal"></output></div>
