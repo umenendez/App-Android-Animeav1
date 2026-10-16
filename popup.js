@@ -221,6 +221,79 @@ $("ajReset").addEventListener("click", () => { ajustes = { ...AJUSTES_BASE }; gu
 aplicarAjustes();
 sincronizarControlesAjustes();
 
+// --- Logo e icono personalizados (se importan desde una imagen) -----------------------
+// El logo de la cabecera se guarda en este dispositivo. En la extensión, además, se cambia el icono de la
+// barra de herramientas de Chrome (background.js). En la PWA el icono de la pantalla de inicio lo fija
+// Android al instalar la app (viene del manifest) y no se puede cambiar desde dentro.
+const ES_EXTENSION = !!(window.chrome && chrome.runtime && chrome.runtime.id);
+$("ajLogoAyuda").textContent = ES_EXTENSION
+  ? "Cambia el logo de la cabecera y el icono de la extensión en la barra de Chrome."
+  : "Cambia el logo de la cabecera. El icono de la pantalla de inicio lo fija Android al instalar la app.";
+
+function aplicarLogo() {
+  let url = "";
+  try { url = localStorage.getItem("logoPersonal") || ""; } catch (e) {}
+  document.querySelectorAll("img.logo").forEach((img) => { img.src = url || "icon48.png"; });
+  let link = document.querySelector('link[rel~="icon"]');
+  if (!link) { link = document.createElement("link"); link.rel = "icon"; document.head.append(link); }
+  link.href = url || "icon48.png";
+}
+
+async function cargarImagenArchivo(archivo) {
+  const url = URL.createObjectURL(archivo);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    return img;
+  } finally { setTimeout(() => URL.revokeObjectURL(url), 2000); }
+}
+
+// Recorte cuadrado centrado, a `lado` px, como PNG (data URL)
+function imagenCuadrada(img, lado) {
+  const c = document.createElement("canvas");
+  c.width = c.height = lado;
+  const ctx = c.getContext("2d");
+  const s = Math.min(img.naturalWidth, img.naturalHeight);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, lado, lado);
+  return c.toDataURL("image/png");
+}
+
+async function elegirLogo(archivo) {
+  if (!archivo.type.startsWith("image/")) { toast("Elige un archivo de imagen"); return; }
+  let img;
+  try { img = await cargarImagenArchivo(archivo); } catch (e) { img = null; }
+  if (!img || !img.naturalWidth || !img.naturalHeight) { toast("No se pudo leer esa imagen"); return; }
+  try { localStorage.setItem("logoPersonal", imagenCuadrada(img, 96)); } catch (e) { toast("No se pudo guardar la imagen"); return; }
+  if (ES_EXTENSION) {
+    const iconos = {};
+    [16, 32, 48, 128].forEach((n) => { iconos[n] = imagenCuadrada(img, n); });
+    const r = await enviarMensaje({ type: "SET_ICONO", iconos });
+    if (!r?.ok) toast("Logo cambiado, pero no se pudo cambiar el icono de la barra");
+    else toast("Logo e icono cambiados");
+  } else {
+    toast("Logo cambiado");
+  }
+  aplicarLogo();
+}
+
+async function quitarLogo() {
+  try { localStorage.removeItem("logoPersonal"); } catch (e) {}
+  if (ES_EXTENSION) await enviarMensaje({ type: "RESET_ICONO" });
+  aplicarLogo();
+  toast("Logo e icono restablecidos");
+}
+
+$("ajLogoElegir").addEventListener("click", () => $("ajLogoArchivo").click());
+$("ajLogoArchivo").addEventListener("change", (e) => {
+  const archivo = e.target.files[0];
+  e.target.value = ""; // permite volver a elegir el mismo archivo
+  if (archivo) elegirLogo(archivo);
+});
+$("ajLogoQuitar").addEventListener("click", quitarLogo);
+aplicarLogo();
+
 // --- Preferencias de filtros (se recuerdan entre aperturas) -------------------
 
 function guardarFiltros() {

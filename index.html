@@ -76,8 +76,9 @@
     /* Filtros */
     .filtros { display: flex; flex-direction: column; gap: 5px; flex-shrink: 0; }
     .fila { display: flex; flex-wrap: wrap; gap: 5px; }
-    .fila > * { flex: 1 1 100px; min-width: 0; }
-    .fila > #busqueda { flex: 1.6 1 120px; }
+    .fila > * { flex: 1 1 80px; min-width: 0; }
+    .fila > #busqueda { flex: 1.6 1 90px; }
+    .fila > #filtroPendientes { flex: 0 0 32px; width: 32px; padding: 0; text-align: center; } /* botón compacto: cabe en la misma fila */
     #busqueda, .filtros select, .btn-filtro {
       height: 28px; padding: 0 8px;
       border: 1px solid var(--border); border-radius: 8px;
@@ -524,7 +525,7 @@
     <div class="fila">
       <input id="busqueda" type="search" placeholder="Buscar por título" aria-label="Buscar por título" />
       <button id="filtroGenero" class="btn-filtro" type="button" aria-expanded="false" aria-label="Filtrar por géneros">Géneros</button>
-      <button id="filtroPendientes" class="btn-filtro" type="button" aria-pressed="false" title="Series en «Viendo» con algún capítulo publicado que aún no has visto">Pendientes</button>
+      <button id="filtroPendientes" class="btn-filtro" type="button" aria-pressed="false" aria-label="Pendientes" title="Pendientes: series en «Viendo» con algún capítulo publicado que aún no has visto">⏭︎</button>
       <select id="orden" aria-label="Ordenar"></select>
     </div>
     <div id="panelGeneros" hidden></div>
@@ -603,6 +604,17 @@
       <div class="ajuste"><label class="ajuste-nombre" for="ajEstado">Selector de estado</label><label class="switch"><input id="ajEstado" type="checkbox"><span class="switch-track"></span></label></div>
       <div class="ajuste"><label class="ajuste-nombre" for="ajGenero">Selector de género</label><label class="switch"><input id="ajGenero" type="checkbox"><span class="switch-track"></span></label></div>
       <div class="ajuste"><label class="ajuste-nombre" for="ajSiguienteCap">Botón «Siguiente capítulo»<small>Abre el capítulo siguiente en las series en «Viendo».</small></label><label class="switch"><input id="ajSiguienteCap" type="checkbox"><span class="switch-track"></span></label></div>
+    </div>
+
+    <div class="seccion-opciones">
+      <div class="seccion-opciones-titulo">Logo e icono</div>
+      <div class="ajuste">
+        <label class="ajuste-nombre">Imagen<small id="ajLogoAyuda"></small></label>
+        <img id="ajLogoPrev" class="logo" src="icon48.png" alt="" style="width:34px;height:34px;flex:none;">
+        <button class="btn-mini" id="ajLogoElegir" type="button">Elegir…</button>
+        <button class="btn-mini" id="ajLogoQuitar" type="button">Quitar</button>
+      </div>
+      <input id="ajLogoArchivo" type="file" accept="image/*" hidden />
     </div>
 
     <div class="seccion-opciones">
