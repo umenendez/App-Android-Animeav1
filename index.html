@@ -58,8 +58,18 @@
     .cabecera { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
     .logo { width: 24px; height: 24px; border-radius: 50%; }
     h1 { font-size: 15px; font-weight: 700; margin: 0; }
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .atajos-listas { display: flex; gap: 6px; flex: 1 1 0; min-width: 0; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+    .atajos-listas::-webkit-scrollbar { display: none; }
+    .atajos-listas[hidden] { display: none; }
+    .atajo-lista { flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border, rgba(128,128,128,.35)); background: transparent; font-size: 12px; }
+    .atajo-lista.activo { background: var(--accent, #6c8cff); color: #fff; border-color: transparent; font-weight: 600; cursor: default; }
+    .mover-lista { margin-top: 6px; max-width: 100%; font-size: 12px; padding: 4px 22px 4px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(128,128,128,.35)); background-color: transparent; }
+    .btn-fijar[aria-pressed="true"] { background: var(--accent, #6c8cff); color: #fff; }
+    .aviso-img { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 10px; border-radius: 10px; background: rgba(255,170,0,.14); flex-shrink: 0; }
+    .aviso-img[hidden] { display: none; }
     #contador { font-size: 12px; color: var(--muted); }
-    .acciones { margin-left: auto; display: flex; gap: 2px; }
+    .acciones { margin-left: auto; display: flex; gap: 2px; flex-shrink: 0; }
     .icon-btn {
       width: 30px; height: 30px; padding: 0;
       display: grid; place-items: center;
@@ -497,7 +507,8 @@
 <body>
   <header class="cabecera">
     <img class="logo" src="icon48.png" alt="" />
-    <h1>Mis animes</h1>
+    <h1 id="tituloLista" class="sr-only">Mis animes</h1>
+    <nav class="atajos-listas" id="atajosListas" aria-label="Listas" hidden></nav>
     <div class="acciones">
       <button id="btnAgregar" class="icon-btn" aria-expanded="false" title="Añadir anime por enlace" aria-label="Añadir anime por enlace">
         <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>

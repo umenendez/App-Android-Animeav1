@@ -690,6 +690,58 @@
     return { nombre: lista.name, series: leerDatosLocal(id).items.map(({ row, ...resto }) => resto) };
   }
 
+  // Mover series entre listas: se ejecuta contra la lista indicada cambiando la configuración un momento
+  async function conLista(listaId, fn) {
+    if (!listaId || listaId === idListaActiva()) return fn();
+    const lista = obtenerListasArr().find((l) => l.id === listaId);
+    if (!lista) throw new Error("LISTA_NO_ENCONTRADA");
+    const previa = localStorage.getItem("config");
+    localStorage.setItem("config", JSON.stringify(configDeLista(lista)));
+    resetConfig();
+    try { return await fn(); }
+    finally {
+      if (previa === null) localStorage.removeItem("config"); else localStorage.setItem("config", previa);
+      resetConfig();
+    }
+  }
+
+  async function agregarSerieCompleta(s) {
+    const title = String(s?.title ?? "").trim();
+    if (!title) throw new Error("FALTA_TITULO");
+    if (await esListaLocal()) return agregarSerieLocal({ ...s, title });
+    const sheetName = await getSheetName();
+    const filas = await getFilasDaK(sheetName);
+    const slug = slugDeUrl(s.url), tit = title.toLowerCase();
+    const existe = filas.some((f, i) => i >= 1 && ((slug && slugDeUrl(f.values?.[0]?.hyperlink) === slug) || (f.values?.[0]?.formattedValue || "").trim().toLowerCase() === tit));
+    if (existe) throw new Error("YA_EXISTE");
+    const fila = await siguienteFilaLibre(sheetName);
+    const num = parseFloat(String(s.score ?? "").replace(",", "."));
+    const valores = new Array(11).fill(null).map(() => ({}));
+    valores[0] = { userEnteredValue: { stringValue: String(s.genre ?? "") } };
+    valores[2] = Number.isFinite(num) && num > 0 ? { userEnteredValue: { numberValue: num }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } } : {};
+    valores[3] = s.url ? { userEnteredValue: { stringValue: title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: String(s.url) } } }] } : { userEnteredValue: { stringValue: title } };
+    valores[5] = { userEnteredValue: { stringValue: String(s.status ?? "") } };
+    if (s.cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${String(s.cover).replace(/"/g, '""')}",1)` } };
+    if (s.lastEpisodeUrl) valores[10] = { userEnteredValue: { stringValue: String(s.lastEpisodeUrl) } };
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
+      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+      rows: [{ values: valores }], fields: "userEnteredValue,textFormatRuns,userEnteredFormat.numberFormat"
+    }}] }) });
+    if (s.cover) precachearImagen(s.cover);
+    return fila;
+  }
+
+  async function eliminarSerie(row, title) {
+    if (await esListaLocal()) return eliminarSerieLocal(row);
+    const n = Number(row);
+    if (!Number.isInteger(n) || n < 2) throw new Error("FILA_NO_ENCONTRADA");
+    const sheetName = await getSheetName();
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, `D${n}`))}&fields=sheets.data.rowData.values(formattedValue)`);
+    const actual = (data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values?.[0]?.formattedValue || "").trim().toLowerCase();
+    if (!actual || actual !== String(title || "").trim().toLowerCase()) throw new Error("FILA_CAMBIADA");
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ deleteDimension: { range: { sheetId: gid, dimension: "ROWS", startIndex: n - 1, endIndex: n } } }] }) });
+  }
+
   function buscarItemLocal(items, url, titulo) {
     const slug = slugDeUrl(url);
     const tit = String(titulo || "").trim().toLowerCase();
@@ -976,6 +1028,8 @@
       case "ADD_LISTA_LOCAL": return {ok:true,...agregarListaLocal(msg.name,msg.series)};
       case "ADD_SERIE_LOCAL": return {ok:true,row:await agregarSerieLocal(msg.serie)};
       case "DELETE_SERIE_LOCAL": await eliminarSerieLocal(msg.row); return {ok:true};
+      case "ADD_SERIE_COMPLETA": return {ok:true,row:await conLista(msg.listaId,()=>agregarSerieCompleta(msg.serie))};
+      case "DELETE_SERIE": await eliminarSerie(msg.row,msg.title); return {ok:true};
       case "EXPORT_LISTA_LOCAL": return {ok:true,datos:exportarListaLocal(msg.id)};
       case "DELETE_LISTA": return {ok:true,...await eliminarListaGuardada(msg.id)};
       case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};

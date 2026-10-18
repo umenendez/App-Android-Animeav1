@@ -64,6 +64,10 @@ const filtrosEl = document.querySelector(".filtros");
 const listaEl = $("lista");
 const contadorPortadasEl = $("contadorPortadas");
 const chipsEl = $("chips");
+// La rueda del ratón desliza los filtros (Viendo, Por ver…) hacia los lados
+chipsEl.addEventListener("wheel", (e) => {
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && chipsEl.scrollWidth > chipsEl.clientWidth) { chipsEl.scrollLeft += e.deltaY; e.preventDefault(); }
+}, { passive: false });
 const busquedaEl = $("busqueda");
 const filtroGeneroEl = $("filtroGenero");
 const ordenEl = $("orden");
@@ -389,7 +393,7 @@ async function guardarEnCache(url) {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 12000);
       let res;
-      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", signal: ctl.signal }); } finally { clearTimeout(t); }
+      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: "no-referrer", signal: ctl.signal }); } finally { clearTimeout(t); }
       if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
       await cache.put(url, res.clone());
     } finally { portadaLiberar(); }
@@ -403,13 +407,9 @@ function obtenerPortada(url) {
   if (portadaMem.has(url)) return Promise.resolve(url);
   if (portadaPend.has(url)) return portadaPend.get(url);
   const p = (async () => {
-    try {
-      if (guardarPortadasActivado()) await guardarEnCache(url);
-    } catch (e) {
-      console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e);
-    }
-    await predecodificar(url);
-    portadaMem.add(url);
+    // Se muestra ya (el navegador la descarga); la caché local y el predecodificado se hacen en segundo plano
+    if (guardarPortadasActivado()) guardarEnCache(url).catch((e) => console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e));
+    predecodificar(url).then(() => portadaMem.add(url));
     return url;
   })().finally(() => portadaPend.delete(url));
   portadaPend.set(url, p);
@@ -428,7 +428,7 @@ function observadorPortadas(raiz) {
 
 // Caja con esqueleto → portada con fundido; "Sin portada" si no hay o falla.
 function crearPortada(anime, clase, observador) {
-  const img = el("img", { alt: anime?.title || "", draggable: false });
+  const img = el("img", { alt: anime?.title || "", draggable: false, referrerPolicy: "no-referrer" });
   const caja = el("div", { className: clase }, img);
   const url = anime?.cover;
   if (!url) { caja.classList.add("sin"); img.hidden = true; return caja; }
@@ -879,7 +879,7 @@ function renderItem(anime) {
   const portada = el("div", { className: "portada" });
   let img = null;
   if (anime.cover) {
-    img = el("img", { className: "cover", alt: "", draggable: false });
+    img = el("img", { className: "cover", alt: "", draggable: false, referrerPolicy: "no-referrer" });
     img.dataset.src = anime.cover;
     img.addEventListener("load", () => img.classList.add("lista"));
     portada.append(img);
@@ -985,6 +985,19 @@ function renderItem(anime) {
       if (await guardar({ type: "UPDATE_ANIME", row: anime.row, campo: "lastEpisodeUrl", valor: anime.lastEpisodeUrl }, input)) actualizarBotonUltimoCap();
     });
     info.append(el("div", { className: "edicion" }, cover.campo, titulo.campo, enlace.campo, ultimo.campo));
+    // Mover a otra lista (copia con todos sus datos al destino y la quita de esta)
+    const destinos = listasCache.filter((l) => !l.activa);
+    if (destinos.length) {
+      const mover = el("select", { className: "mover-lista", ariaLabel: "Mover a otra lista", title: "Mover esta serie a otra lista" });
+      mover.append(el("option", { value: "", textContent: "Mover a…" }));
+      destinos.forEach((l) => mover.append(el("option", { value: l.id, textContent: l.name })));
+      mover.addEventListener("change", async () => {
+        const dest = destinos.find((l) => l.id === mover.value);
+        mover.value = "";
+        if (dest) moverSerie(anime, dest, mover);
+      });
+      info.append(mover);
+    }
     if (configActual?.tipo === "local") {
       // Una lista local no tiene hoja donde borrar la fila: se elimina desde aquí
       const borrar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Eliminar de la lista" });
@@ -2032,14 +2045,94 @@ function setListasPanel(abierto) {
 }
 $("btnListas").addEventListener("click", () => setListasPanel(listasPanelEl.hidden));
 
+// --- Nombre de la lista en la cabecera y accesos directos (fijados) ------------------------
+const tituloListaEl = $("tituloLista");
+const atajosListasEl = $("atajosListas");
+function listasFijadas() {
+  try { const a = JSON.parse(localStorage.getItem("listasFijadas") || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function guardarListasFijadas(a) { try { localStorage.setItem("listasFijadas", JSON.stringify(a)); } catch (e) {} }
+function alternarListaFijada(id) {
+  const a = listasFijadas(), i = a.indexOf(id);
+  if (i >= 0) a.splice(i, 1); else a.push(id);
+  guardarListasFijadas(a);
+}
+let listasCache = []; // listas guardadas (para «Mover a…» en el modo edición)
+async function refrescarCabeceraListas() {
+  const res = await enviarMensaje({ type: "GET_LISTAS" });
+  const listas = res?.ok ? (res.listas || []) : [];
+  listasCache = listas;
+  const activa = listas.find((l) => l.activa);
+  tituloListaEl.textContent = activa?.name || "Mis animes";
+  tituloListaEl.title = tituloListaEl.textContent;
+  const previas = listasFijadas();
+  const fijadas = previas.filter((id) => listas.some((l) => l.id === id));
+  if (fijadas.length !== previas.length) guardarListasFijadas(fijadas); // se olvidan las listas borradas
+  // Selector de la cabecera: las listas fijadas; si no hay ninguna fijada, todas
+  const mostrar = fijadas.length ? fijadas : listas.map((l) => l.id);
+  atajosListasEl.textContent = "";
+  for (const id of mostrar) {
+    const l = listas.find((x) => x.id === id);
+    const b = el("button", { className: "atajo-lista" + (l.activa ? " activo" : ""), type: "button", textContent: l.name, title: l.activa ? "Lista en uso" : `Cambiar a «${l.name}»` });
+    b.setAttribute("aria-pressed", String(!!l.activa));
+    b.addEventListener("click", () => { if (!l.activa) cambiarAListaGuardada(l, b); });
+    atajosListasEl.append(b);
+  }
+  atajosListasEl.hidden = listas.length < 2;
+  const act = atajosListasEl.querySelector(".activo");
+  if (act && act.scrollIntoView) act.scrollIntoView({ inline: "center", block: "nearest" });
+}
+// La rueda del ratón desliza el selector hacia los lados
+atajosListasEl.addEventListener("wheel", (e) => {
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX) && atajosListasEl.scrollWidth > atajosListasEl.clientWidth) { atajosListasEl.scrollLeft += e.deltaY; e.preventDefault(); }
+}, { passive: false });
+
+let cambiandoLista = false;
+// Mueve una serie a otra lista: primero se añade al destino (con nota, estado, género, portada y último
+// capítulo) y solo si sale bien se quita de la lista actual. Si ya está en el destino, no se mueve.
+let moviendoSerie = false;
+async function moverSerie(anime, dest, selectEl) {
+  if (moviendoSerie) return;
+  if (!confirm(`¿Mover «${anime.title}» a «${dest.name}»? Se quitará de esta lista.`)) return;
+  moviendoSerie = true;
+  if (selectEl) selectEl.disabled = true;
+  try {
+    const serie = { title: anime.title, url: anime.url, score: anime.score, status: anime.status, genre: anime.genre, cover: anime.cover, lastEpisodeUrl: anime.lastEpisodeUrl };
+    const a = await enviarMensaje({ type: "ADD_SERIE_COMPLETA", serie, listaId: dest.id });
+    if (!a?.ok) { toast(String(a?.error || "").includes("YA_EXISTE") ? `Ya está en «${dest.name}»: no se mueve` : mensajeError(a?.error || "error desconocido")); return; }
+    // El género pasa al catálogo de la lista destino si aún no lo tiene
+    try {
+      const cat = leerCatalogoGuardado(dest.id) || GENEROS_BASE.slice();
+      const nuevos = parseGeneros(anime.genre).filter((g) => !cat.includes(g));
+      if (nuevos.length) guardarCatalogoDe(dest.id, cat.concat(nuevos));
+    } catch (e) {}
+    const d = await enviarMensaje({ type: "DELETE_SERIE", row: anime.row, title: anime.title });
+    if (!d?.ok) { toast("Se copió a «" + dest.name + "», pero no se pudo quitar de esta lista: " + mensajeError(d?.error || "error desconocido")); return; }
+    toast(`Movida a «${dest.name}»`);
+    if (configActual?.tipo === "local") {
+      todosLosAnimes = todosLosAnimes.filter((x) => x.row !== anime.row);
+      render();
+      guardarListaCache();
+    } else {
+      await cargar(); // al borrar una fila de la hoja, las de debajo cambian de número
+    }
+  } finally {
+    moviendoSerie = false;
+    if (selectEl) selectEl.disabled = false;
+  }
+}
+
 async function cambiarAListaGuardada(l, usarBtn) {
+  if (cambiandoLista) return;
+  cambiandoLista = true;
   usarBtn.disabled = true;
   const r = await enviarMensaje({ type: "SWITCH_LISTA", id: l.id });
-  if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); usarBtn.disabled = false; return; }
+  if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); usarBtn.disabled = false; cambiandoLista = false; return; }
   toast(`Viendo: ${r.name}`);
   setListasPanel(false);
   todosLosAnimes = [];
   await cargar();
+  cambiandoLista = false;
   // Refresca también el formulario de "Herramientas" para que muestre la hoja activa
   $("configTools").innerHTML = "";
   $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta());
@@ -2134,6 +2227,7 @@ listaLocalArchivoEl.addEventListener("change", () => {
 
 async function cargarListasPanel() {
   listasContenidoEl.innerHTML = "";
+  refrescarCabeceraListas();
   const res = await enviarMensaje({ type: "GET_LISTAS" });
   const listas = res?.listas || [];
   if (listas.length === 0) {
@@ -2147,11 +2241,15 @@ async function cargarListasPanel() {
     exportarBtn.addEventListener("click", () => exportarLista(l, exportarBtn));
     const borrarBtn = el("button", { className: "btn-mini peligro", type: "button", textContent: l.tipo === "local" ? "Borrar" : "Quitar" });
     borrarBtn.addEventListener("click", () => borrarListaGuardada(l));
+    const fijada = listasFijadas().includes(l.id);
+    const fijarBtn = el("button", { className: "btn-mini btn-fijar", type: "button", textContent: "📌", title: fijada ? "Quitar de la barra de listas" : "Fijar en la barra de listas (si fijas alguna, solo se muestran las fijadas)", ariaLabel: fijada ? "Quitar acceso directo" : "Fijar acceso directo" });
+    fijarBtn.setAttribute("aria-pressed", String(fijada));
+    fijarBtn.addEventListener("click", () => { alternarListaFijada(l.id); cargarListasPanel(); });
     listasContenidoEl.append(el("div", { className: "lista-item" },
       el("span", { className: "nombre", textContent: l.name }),
       l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
       l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
-      usarBtn, (l.tipo === "local" || l.activa) ? exportarBtn : null, borrarBtn));
+      fijarBtn, usarBtn, (l.tipo === "local" || l.activa) ? exportarBtn : null, borrarBtn));
   });
 }
 
@@ -2195,6 +2293,7 @@ function mensajeError(error) {
   if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
   if (c.includes("FILA_NO_ENCONTRADA")) return "No se encontró la serie registrada. Puede que se haya movido o borrado en la hoja.";
   if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
+  if (c.includes("FILA_CAMBIADA")) return "La fila de la hoja ya no es esa serie (se editó fuera). Recarga la lista y vuelve a intentarlo.";
   if (c.includes("FALTA_NOMBRE")) return "Ponle un nombre a la lista.";
   if (c.includes("LISTA_NO_ENCONTRADA")) return "Esa lista ya no existe.";
   if (c.includes("FALTA_TITULO")) return "Escribe el título de la serie.";
@@ -2415,6 +2514,7 @@ async function cargar() {
   mostrarSync("");
 
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
+  refrescarCabeceraListas();
   cargarCatalogo(configActual?.listaId);
   filtrosEl.hidden = !configActual;
   const cache = configActual ? leerListaCache() : null;
