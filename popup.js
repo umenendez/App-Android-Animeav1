@@ -321,7 +321,7 @@ function cargarFiltros() {
 // La primera vez se descarga y se guarda en la Cache Storage de la extensión
 // (compartida con background.js). Las siguientes veces se lee de ahí, sin red.
 
-const COVER_CACHE = "anime-covers-v1";
+const COVER_CACHE = "anime-covers-v2";
 const portadasEnCache = new Set();
 
 function actualizarContadorPortadas() {
@@ -393,7 +393,7 @@ async function guardarEnCache(url) {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 12000);
       let res;
-      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: "no-referrer", signal: ctl.signal }); } finally { clearTimeout(t); }
+      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: "strict-origin-when-cross-origin", signal: ctl.signal }); } finally { clearTimeout(t); }
       if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
       await cache.put(url, res.clone());
     } finally { portadaLiberar(); }
@@ -428,7 +428,7 @@ function observadorPortadas(raiz) {
 
 // Caja con esqueleto → portada con fundido; "Sin portada" si no hay o falla.
 function crearPortada(anime, clase, observador) {
-  const img = el("img", { alt: anime?.title || "", draggable: false, referrerPolicy: "no-referrer" });
+  const img = el("img", { alt: anime?.title || "", draggable: false, referrerPolicy: "strict-origin-when-cross-origin" });
   const caja = el("div", { className: clase }, img);
   const url = anime?.cover ? String(anime.cover).replace(/^http:\/\//i, "https://") : "";
   if (!url) { caja.classList.add("sin"); img.hidden = true; return caja; }
@@ -966,7 +966,7 @@ function renderItem(anime) {
   const portada = el("div", { className: "portada" });
   let img = null;
   if (anime.cover) {
-    img = el("img", { className: "cover", alt: "", draggable: false, referrerPolicy: "no-referrer" });
+    img = el("img", { className: "cover", alt: "", draggable: false, referrerPolicy: "strict-origin-when-cross-origin" });
     const portadaSrc = String(anime.cover).replace(/^http:\/\//i, "https://");
     img.dataset.src = portadaSrc;
     img.addEventListener("load", () => img.classList.add("lista"));
