@@ -5,6 +5,22 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.20.2
+
+### Portadas de otras webs y pegado de páginas fuente en la PWA **[PWA]**
+
+- Las portadas leídas de otras webs que vienen con `http://` se pasan a `https://`: la PWA
+  (https) bloquea las imágenes `http` y salían sin portada. También se corrige al pintar las
+  que ya estaban guardadas así en la lista.
+- Nuevo botón **«Pegar del portapapeles»** en Opciones > Otras páginas fuente: lee lo copiado
+  en la extensión («Copiar páginas fuente para la PWA») e importa de una vez. El cuadro de
+  texto y «Pegar páginas fuente» siguen ahí por si el navegador no deja leer el portapapeles.
+- Caché de la PWA `v37`. Si la app instalada no muestra la sección, hay que subir esta versión
+  a GitHub Pages y abrir la app con conexión (el Service Worker se actualiza solo).
+- **Limitación:** una PWA no puede poner el `Referer` a una imagen (no existe «Permitir
+  imágenes» como en la extensión). Se piden sin `Referer`; si el servidor de portadas exige el
+  de su web, esa portada no carga en la PWA (se puede pegar otra URL a mano en el modo edición).
+
 ## 1.6.2
 
 ### El separador de empates ya no se bloquea: se permiten notas repetidas

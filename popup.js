@@ -430,7 +430,7 @@ function observadorPortadas(raiz) {
 function crearPortada(anime, clase, observador) {
   const img = el("img", { alt: anime?.title || "", draggable: false, referrerPolicy: "no-referrer" });
   const caja = el("div", { className: clase }, img);
-  const url = anime?.cover;
+  const url = anime?.cover ? String(anime.cover).replace(/^http:\/\//i, "https://") : "";
   if (!url) { caja.classList.add("sin"); img.hidden = true; return caja; }
   caja.classList.add("cargando");
   const asignar = (src) => {
@@ -967,10 +967,11 @@ function renderItem(anime) {
   let img = null;
   if (anime.cover) {
     img = el("img", { className: "cover", alt: "", draggable: false, referrerPolicy: "no-referrer" });
-    img.dataset.src = anime.cover;
+    const portadaSrc = String(anime.cover).replace(/^http:\/\//i, "https://");
+    img.dataset.src = portadaSrc;
     img.addEventListener("load", () => img.classList.add("lista"));
     portada.append(img);
-    if (portadaMem.has(anime.cover)) img.src = anime.cover; else observador.observe(img);
+    if (portadaMem.has(portadaSrc)) img.src = portadaSrc; else observador.observe(img);
   } else {
     portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
   }
@@ -2039,6 +2040,10 @@ async function cargarFuentes() {
       selLista, borrar));
   }
 }
+$("fuentesPortapapeles").addEventListener("click", async () => {
+  try { $("fuentesPegar").value = await navigator.clipboard.readText(); } catch (e) { fuentesStatusEl.textContent = "No se pudo leer el portapapeles: pega el texto a mano en el cuadro."; return; }
+  $("fuentesImportar").click();
+});
 $("fuentesImportar").addEventListener("click", async () => {
   const texto = $("fuentesPegar").value.trim();
   if (!texto) { fuentesStatusEl.textContent = "Pega primero lo copiado en la extensión."; return; }

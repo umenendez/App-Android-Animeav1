@@ -965,13 +965,14 @@
     const sel = f.selectores || {};
     const q = (s) => { try { return s ? doc.querySelector(s) : null; } catch (e) { return null; } };
     const abs = (u) => { try { return new URL(u, url).href; } catch (e) { return ""; } };
+    const https = (u) => (u && /^http:\/\//i.test(u) ? "https://" + u.slice(7) : u); // una PWA https bloquea imágenes http
     const imagen = (el) => {
       if (!el) return "";
       const im = el.tagName === "IMG" ? el : (el.querySelector && el.querySelector("img"));
       if (!im) return "";
       let s = im.getAttribute("src") || im.getAttribute("data-src") || im.getAttribute("data-lazy-src") || "";
       if (!s || s.startsWith("data:")) s = (im.getAttribute("srcset") || "").split(",")[0].trim().split(" ")[0];
-      return s ? abs(s) : "";
+      return s ? https(abs(s)) : "";
     };
     const titulo = (q(sel.titulo)?.textContent || "").replace(/\s+/g, " ").trim();
     const a = q(sel.serie)?.closest?.("a");
@@ -981,7 +982,7 @@
       serieUrl = segs.length >= 2 && /^\d+$/.test(segs[segs.length - 1]) ? `${u.origin}/${segs.slice(0, -1).join("/")}/` : url;
     }
     const og = doc.querySelector('meta[property="og:image"]')?.content || "";
-    return { titulo, serieUrl: serieUrl.split("#")[0], cover: imagen(q(selPortada ?? sel.portada)), og: og ? abs(og) : "" };
+    return { titulo, serieUrl: serieUrl.split("#")[0], cover: imagen(q(selPortada ?? sel.portada)), og: og ? https(abs(og)) : "" };
   }
   const slugTitulo = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 
