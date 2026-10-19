@@ -381,6 +381,20 @@
     return { id: nueva.id, name: nueva.name, titulo, hoja };
   }
 
+  function renombrarLista(id, nombre) {
+    const name = String(nombre ?? "").trim().slice(0, 60);
+    if (!name) throw new Error("FALTA_NOMBRE");
+    const listas = obtenerListasArr();
+    const l = listas.find((x) => x.id === id);
+    if (!l) throw new Error("LISTA_NO_ENCONTRADA");
+    l.name = name;
+    if (l.tipo === "local") l.titulo = name;
+    guardarListasArr(listas);
+    if (idListaActiva() === id && l.tipo === "local") {
+      try { const c = JSON.parse(localStorage.getItem("config") || "null"); if (c) localStorage.setItem("config", JSON.stringify({ ...c, titulo: name })); } catch (e) {}
+    }
+  }
+
   async function eliminarListaGuardada(id) {
     const listas = obtenerListasArr();
     const restantes = listas.filter((l) => l.id !== id);
@@ -1031,6 +1045,7 @@
       case "ADD_SERIE_COMPLETA": return {ok:true,row:await conLista(msg.listaId,()=>agregarSerieCompleta(msg.serie))};
       case "DELETE_SERIE": await eliminarSerie(msg.row,msg.title); return {ok:true};
       case "EXPORT_LISTA_LOCAL": return {ok:true,datos:exportarListaLocal(msg.id)};
+      case "RENAME_LISTA": renombrarLista(msg.id,msg.name); return {ok:true};
       case "DELETE_LISTA": return {ok:true,...await eliminarListaGuardada(msg.id)};
       case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
       case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};

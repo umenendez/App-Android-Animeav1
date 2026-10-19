@@ -65,6 +65,12 @@
     .atajo-lista { flex: 0 0 auto; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border, rgba(128,128,128,.35)); background: transparent; font-size: 12px; }
     .atajo-lista.activo { background: var(--accent, #6c8cff); color: #fff; border-color: transparent; font-weight: 600; cursor: default; }
     .mover-lista { margin-top: 6px; max-width: 100%; font-size: 12px; padding: 4px 22px 4px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(128,128,128,.35)); background-color: transparent; }
+    .campo-ed { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+    .campo-ed input { font: inherit; font-size: 12px; color: var(--text, inherit); padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(128,128,128,.35)); background: transparent; }
+    .aviso-fallo { background: rgba(239,68,68,.14); }
+    .mover-orden { padding: 2px 7px; }
+    .marcar-mover { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; margin-right: 8px; font-size: 12px; cursor: pointer; }
+    .barra-mover { background: rgba(108,140,255,.16); position: sticky; top: 0; z-index: 5; }
     .btn-fijar[aria-pressed="true"] { background: var(--accent, #6c8cff); color: #fff; }
     .aviso-img { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 10px; border-radius: 10px; background: rgba(255,170,0,.14); flex-shrink: 0; }
     .aviso-img[hidden] { display: none; }
@@ -530,6 +536,7 @@
       </button>
     </div>
   </header>
+  <div class="aviso-img barra-mover" id="barraMover" hidden></div>
 
   <div class="filtros">
     <div class="chips" id="chips"></div>

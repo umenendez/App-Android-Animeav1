@@ -996,7 +996,11 @@ function renderItem(anime) {
         mover.value = "";
         if (dest) moverSerie(anime, dest, mover);
       });
-      info.append(mover);
+      // Varias a la vez: se marcan y la barra de arriba las mueve juntas
+      const chk = el("input", { type: "checkbox", ariaLabel: "Elegir para mover varias a la vez" });
+      chk.checked = seleccionMover.has(anime.row);
+      chk.addEventListener("change", () => { if (chk.checked) seleccionMover.set(anime.row, anime); else seleccionMover.delete(anime.row); pintarBarraMover(); });
+      info.append(el("label", { className: "marcar-mover", title: "Elegir para mover varias series a la vez" }, chk, "Elegir"), mover);
     }
     if (configActual?.tipo === "local") {
       // Una lista local no tiene hoja donde borrar la fila: se elimina desde aquí
@@ -1894,6 +1898,7 @@ $("btnEdicion").addEventListener("click", (e) => {
   modoEdicion = !modoEdicion;
   e.currentTarget.setAttribute("aria-pressed", String(modoEdicion));
   toast(modoEdicion ? "Modo edición activado" : "Modo edición desactivado");
+  pintarBarraMover();
   render();
 });
 
@@ -2057,10 +2062,26 @@ function alternarListaFijada(id) {
   if (i >= 0) a.splice(i, 1); else a.push(id);
   guardarListasFijadas(a);
 }
+// Orden de las listas (solo en este dispositivo): se cambia con ▲▼ en Listas y vale para el selector de la cabecera
+function ordenListasGuardado() {
+  try { const a = JSON.parse(localStorage.getItem("ordenListas") || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function ordenarListas(listas) {
+  const o = ordenListasGuardado();
+  const pos = (id) => { const i = o.indexOf(id); return i < 0 ? 1e6 : i; };
+  return listas.map((l, i) => [l, i]).sort((a, b) => pos(a[0].id) - pos(b[0].id) || a[1] - b[1]).map((x) => x[0]);
+}
+function moverOrdenLista(listas, id, d) {
+  const ids = ordenarListas(listas).map((l) => l.id);
+  const i = ids.indexOf(id), j = i + d;
+  if (i < 0 || j < 0 || j >= ids.length) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  try { localStorage.setItem("ordenListas", JSON.stringify(ids)); } catch (e) {}
+}
 let listasCache = []; // listas guardadas (para «Mover a…» en el modo edición)
 async function refrescarCabeceraListas() {
   const res = await enviarMensaje({ type: "GET_LISTAS" });
-  const listas = res?.ok ? (res.listas || []) : [];
+  const listas = ordenarListas(res?.ok ? (res.listas || []) : []);
   listasCache = listas;
   const activa = listas.find((l) => l.activa);
   tituloListaEl.textContent = activa?.name || "Mis animes";
@@ -2090,6 +2111,74 @@ atajosListasEl.addEventListener("wheel", (e) => {
 let cambiandoLista = false;
 // Mueve una serie a otra lista: primero se añade al destino (con nota, estado, género, portada y último
 // capítulo) y solo si sale bien se quita de la lista actual. Si ya está en el destino, no se mueve.
+const seleccionMover = new Map(); // fila -> serie elegida en el modo edición para moverla junto a otras
+function pintarBarraMover() {
+  const barra = $("barraMover");
+  if (!modoEdicion) seleccionMover.clear();
+  barra.textContent = "";
+  if (!seleccionMover.size) { barra.hidden = true; return; }
+  const destinos = listasCache.filter((l) => !l.activa);
+  const n = seleccionMover.size;
+  const sel = el("select", { className: "mover-lista", ariaLabel: "Mover las series elegidas a otra lista", title: "Mover las series elegidas a otra lista" });
+  sel.append(el("option", { value: "", textContent: "Mover a…" }));
+  destinos.forEach((l) => sel.append(el("option", { value: l.id, textContent: l.name })));
+  sel.addEventListener("change", () => {
+    const dest = destinos.find((l) => l.id === sel.value);
+    sel.value = "";
+    if (dest) moverVarias([...seleccionMover.values()], dest, sel);
+  });
+  const limpiar = el("button", { className: "btn-mini", type: "button", textContent: "Quitar selección" });
+  limpiar.addEventListener("click", () => { seleccionMover.clear(); pintarBarraMover(); render(); });
+  barra.append(el("span", { textContent: `${n} serie${n > 1 ? "s" : ""} elegida${n > 1 ? "s" : ""}` }), sel, limpiar);
+  barra.hidden = false;
+}
+
+// Mover varias: primero se añaden todas al destino y solo las que llegaron se quitan de esta lista
+// (de abajo arriba: en una hoja, al borrar una fila las de debajo cambian de número).
+async function moverVarias(animes, dest, selectEl) {
+  if (moviendoSerie || !animes.length) return;
+  if (!confirm(`¿Mover ${animes.length} serie${animes.length > 1 ? "s" : ""} a «${dest.name}»? Se quitarán de esta lista.`)) return;
+  moviendoSerie = true;
+  if (selectEl) selectEl.disabled = true;
+  const movidas = [], repetidas = [], fallos = [], sinQuitar = [];
+  try {
+    const cat = leerCatalogoGuardado(dest.id) || GENEROS_BASE.slice();
+    let catCambio = false;
+    for (const a of animes) {
+      toast(`Moviendo ${movidas.length + repetidas.length + fallos.length + 1} de ${animes.length}…`);
+      const serie = { title: a.title, url: a.url, score: a.score, status: a.status, genre: a.genre, cover: a.cover, lastEpisodeUrl: a.lastEpisodeUrl };
+      const r = await enviarMensaje({ type: "ADD_SERIE_COMPLETA", serie, listaId: dest.id });
+      if (r?.ok) { movidas.push(a); parseGeneros(a.genre).forEach((g) => { if (!cat.includes(g)) { cat.push(g); catCambio = true; } }); }
+      else if (String(r?.error || "").includes("YA_EXISTE")) repetidas.push(a);
+      else fallos.push(a);
+    }
+    if (catCambio) guardarCatalogoDe(dest.id, cat);
+    for (const a of movidas.slice().sort((x, y) => y.row - x.row)) {
+      const d = await enviarMensaje({ type: "DELETE_SERIE", row: a.row, title: a.title });
+      if (!d?.ok) sinQuitar.push(a);
+    }
+    const quitadas = movidas.filter((a) => !sinQuitar.includes(a));
+    const partes = [`${quitadas.length} movida${quitadas.length === 1 ? "" : "s"} a «${dest.name}»`];
+    if (repetidas.length) partes.push(`${repetidas.length} ya estaba${repetidas.length === 1 ? "" : "n"} allí`);
+    if (sinQuitar.length) partes.push(`${sinQuitar.length} copiada${sinQuitar.length === 1 ? "" : "s"} sin poder quitar`);
+    if (fallos.length) partes.push(`${fallos.length} con error`);
+    toast(partes.join(" · "));
+    seleccionMover.clear();
+    if (configActual?.tipo === "local") {
+      const filasQuitadas = new Set(quitadas.map((a) => a.row));
+      todosLosAnimes = todosLosAnimes.filter((x) => !filasQuitadas.has(x.row));
+      render();
+      guardarListaCache();
+    } else {
+      await cargar();
+    }
+  } finally {
+    moviendoSerie = false;
+    if (selectEl) selectEl.disabled = false;
+    pintarBarraMover();
+  }
+}
+
 let moviendoSerie = false;
 async function moverSerie(anime, dest, selectEl) {
   if (moviendoSerie) return;
@@ -2229,16 +2318,31 @@ async function cargarListasPanel() {
   listasContenidoEl.innerHTML = "";
   refrescarCabeceraListas();
   const res = await enviarMensaje({ type: "GET_LISTAS" });
-  const listas = res?.listas || [];
+  const listas = ordenarListas(res?.listas || []);
   if (listas.length === 0) {
     listasContenidoEl.append(el("p", { className: "vacio-listas", textContent: "Todavía no has guardado ninguna lista." }));
     return;
   }
-  listas.forEach((l) => {
+  listas.forEach((l, idx) => {
+    const subir = el("button", { className: "btn-mini mover-orden", type: "button", textContent: "▲", title: "Subir en el selector", ariaLabel: "Subir", disabled: idx === 0 });
+    const bajar = el("button", { className: "btn-mini mover-orden", type: "button", textContent: "▼", title: "Bajar en el selector", ariaLabel: "Bajar", disabled: idx === listas.length - 1 });
+    subir.addEventListener("click", () => { moverOrdenLista(listas, l.id, -1); cargarListasPanel(); });
+    bajar.addEventListener("click", () => { moverOrdenLista(listas, l.id, 1); cargarListasPanel(); });
     const usarBtn = el("button", { className: "btn-mini", type: "button", textContent: l.activa ? "En uso" : "Usar", disabled: l.activa });
     usarBtn.addEventListener("click", () => cambiarAListaGuardada(l, usarBtn));
     const exportarBtn = el("button", { className: "btn-mini", type: "button", textContent: "Exportar", title: "Guardar esta lista en un archivo .json" });
     exportarBtn.addEventListener("click", () => exportarLista(l, exportarBtn));
+    const renombrarBtn = el("button", { className: "btn-mini", type: "button", textContent: "✎", title: "Cambiar el nombre de la lista", ariaLabel: "Cambiar el nombre de la lista" });
+    renombrarBtn.addEventListener("click", async () => {
+      const nuevo = prompt("Nuevo nombre de la lista", l.name);
+      if (nuevo === null || !nuevo.trim() || nuevo.trim() === l.name) return;
+      const r = await enviarMensaje({ type: "RENAME_LISTA", id: l.id, name: nuevo });
+      if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); return; }
+      toast("Nombre cambiado");
+      cargarListasPanel();
+      if (typeof cargarFuentes === "function") cargarFuentes(); // los nombres de lista también salen en Otras páginas fuente
+      if (l.activa) { configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || configActual; $("configTools").innerHTML = ""; $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta()); }
+    });
     const borrarBtn = el("button", { className: "btn-mini peligro", type: "button", textContent: l.tipo === "local" ? "Borrar" : "Quitar" });
     borrarBtn.addEventListener("click", () => borrarListaGuardada(l));
     const fijada = listasFijadas().includes(l.id);
@@ -2249,7 +2353,7 @@ async function cargarListasPanel() {
       el("span", { className: "nombre", textContent: l.name }),
       l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
       l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
-      fijarBtn, usarBtn, (l.tipo === "local" || l.activa) ? exportarBtn : null, borrarBtn));
+      subir, bajar, fijarBtn, renombrarBtn, usarBtn, (l.tipo === "local" || l.activa) ? exportarBtn : null, borrarBtn));
   });
 }
 
@@ -2508,6 +2612,8 @@ function mostrarSync(texto, boton) {
 }
 
 async function cargar() {
+  seleccionMover.clear();
+  pintarBarraMover();
   errorEl.hidden = true;
   vacioEl.hidden = true;
   bienvenidaEl.hidden = true;
