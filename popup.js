@@ -371,6 +371,18 @@ function portadaSlot() {
 }
 function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else portadaSlots++; }
 
+// Algunas portadas de Manwhaweb bloquean la carga directa desde otros dominios.
+// En ese caso se prueba un proxy de imágenes como alternativa; el resto de URLs no cambia.
+function portadaProxy(url) {
+  try {
+    const u = new URL(url, location.href);
+    if (u.hostname === "img1mw.xyz" || u.hostname.endsWith(".img1mw.xyz")) {
+      return "https://images.weserv.nl/?url=" + encodeURIComponent(u.host + u.pathname + u.search);
+    }
+  } catch (_) {}
+  return "";
+}
+
 function predecodificar(url) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -434,9 +446,15 @@ function crearPortada(anime, clase, observador) {
   if (!url) { caja.classList.add("sin"); img.hidden = true; return caja; }
   caja.classList.add("cargando");
   const asignar = (src) => {
-    img.onload = () => { caja.classList.remove("cargando"); img.classList.add("cargada"); };
-    img.onerror = () => { caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true; };
-    img.src = src || url;
+    const original = src || url;
+    let intentoProxy = false;
+    img.onload = () => { caja.classList.remove("cargando"); caja.classList.remove("sin"); img.hidden = false; img.classList.add("cargada"); };
+    img.onerror = () => {
+      const alternativa = !intentoProxy ? portadaProxy(original) : "";
+      if (alternativa) { intentoProxy = true; img.src = alternativa; return; }
+      caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true;
+    };
+    img.src = original;
   };
   const cargar = () => { if (portadaMem.has(url)) asignar(url); else obtenerPortada(url).then(asignar); };
   if (observador) { caja._cargar = cargar; observador.observe(caja); } else cargar();
@@ -970,6 +988,11 @@ function renderItem(anime) {
     const portadaSrc = String(anime.cover).replace(/^http:\/\//i, "https://");
     img.dataset.src = portadaSrc;
     img.addEventListener("load", () => img.classList.add("lista"));
+    img.addEventListener("error", () => {
+      if (img.dataset.proxyTried === "1") return;
+      const alternativa = portadaProxy(portadaSrc);
+      if (alternativa) { img.dataset.proxyTried = "1"; img.src = alternativa; }
+    });
     portada.append(img);
     if (portadaMem.has(portadaSrc)) img.src = portadaSrc; else observador.observe(img);
   } else {

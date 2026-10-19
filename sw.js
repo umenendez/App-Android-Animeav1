@@ -1,6 +1,6 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v27 (botón «Pendientes» compacto y logo personalizable).
-const CACHE = "animeav1-pwa-v38";
+// las cachés antiguas. Último bump: v39 (botón «Pendientes» compacto y logo personalizable).
+const CACHE = "animeav1-pwa-v39";
 const COVER_CACHE = "anime-covers-v2";
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
 
