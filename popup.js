@@ -770,6 +770,93 @@ filtroPendientesEl.addEventListener("click", () => {
   render();
 });
 
+// ---- Qué número de la dirección es el del capítulo ----
+// ref = { seg, num } (parte de la ruta) o { q, num } (parámetro de la dirección). `num` cuenta los números de
+// esa parte DESDE EL FINAL (-1 = el último), así no se rompe si el nombre de la serie lleva números.
+function refCapituloPorDefecto(urlStr) {
+  try {
+    const u = new URL(urlStr);
+    const segs = u.pathname.split("/");
+    for (let i = segs.length - 1; i >= 0; i--) if (/\d/.test(segs[i])) return { seg: i, num: -1 };
+    for (const [k, v] of u.searchParams) if (/\d/.test(v)) return { q: k, num: -1 };
+  } catch (e) {}
+  return null;
+}
+function urlCapituloSiguiente(urlStr, ref) {
+  if (!ref) return "";
+  try {
+    const u = new URL(urlStr);
+    const sumar = (s) => {
+      const total = (s.match(/\d+/g) || []).length;
+      const objetivo = total + ref.num;
+      if (!total || objetivo < 0 || objetivo >= total) return null;
+      let k = -1;
+      return s.replace(/\d+/g, (m) => (++k === objetivo ? String(parseInt(m, 10) + 1).padStart(m.length, "0") : m));
+    };
+    if (ref.q !== undefined) {
+      const v = u.searchParams.get(ref.q);
+      const n = v === null ? null : sumar(v);
+      if (n === null) return "";
+      u.searchParams.set(ref.q, n);
+    } else {
+      const segs = u.pathname.split("/");
+      const n = segs[ref.seg] === undefined ? null : sumar(segs[ref.seg]);
+      if (n === null) return "";
+      segs[ref.seg] = n;
+      u.pathname = segs.join("/");
+    }
+    u.hash = "";
+    return u.href;
+  } catch (e) { return ""; }
+}
+// Otras webs (páginas fuente): se suma 1 al último número de la dirección del capítulo y se comprueba con el
+// patrón de la fuente (así /serie/1/ -> /serie/2/ y /leer/x-12 -> /leer/x-13, pero no se inventa nada raro)
+let fuentesCache = [];
+function fuenteDe(u) { return fuentesCache.find((x) => x.activa !== false && String(u || "").startsWith(x.origen + "/")); }
+function urlSiguienteFuente(u) {
+  const f = fuenteDe(u);
+  if (!f) return "";
+  // El número del capítulo lo marca el usuario en la receta; sin marcar, se usa el último número de la ruta
+  const sig = urlCapituloSiguiente(u, f.capitulo || refCapituloPorDefecto(u));
+  try { return sig && new RegExp(f.patron).test(new URL(sig).pathname) ? sig : ""; } catch (e) { return ""; }
+}
+function siguienteCapitulo(u) { return fuenteDe(u) ? urlSiguienteFuente(u) : (urlSiguienteCap(u) || urlSiguienteFuente(u)); }
+
+// ¿Existe ya el capítulo siguiente en esa otra web? Lo comprueba background (CAP_EXISTE) y se recuerda:
+// existe -> 30 días; no existe -> 30 min; no se sabe -> 10 min. Si no está confirmado, el botón no se muestra.
+let sigCache = {};
+try { sigCache = JSON.parse(localStorage.getItem("sigFuente2") || "{}") || {}; } catch (e) { sigCache = {}; }
+const enSig = new Set();
+function sigFuenteInfo(sig) {
+  const c = sigCache[sig];
+  if (!c) return { existe: undefined, fresco: false };
+  const ttl = c.e === true ? 30 * 864e5 : c.e === false ? 30 * 60e3 : 10 * 60e3;
+  return { existe: c.e, fresco: Date.now() - c.ts < ttl };
+}
+const colaSig = [];
+let activasSig = 0;
+function solicitarSigFuente(sig, serie, patron) {
+  if (enSig.has(sig)) return;
+  enSig.add(sig);
+  colaSig.push({ sig, serie, patron });
+  siguienteSigFuente();
+}
+function siguienteSigFuente() {
+  while (activasSig < 3 && colaSig.length) { activasSig++; consultarSigFuente(colaSig.shift()); }
+}
+function consultarSigFuente({ sig, serie, patron }) {
+  enviarMensaje({ type: "CAP_EXISTE", url: sig, serie, patron })
+    .then((r) => {
+      sigCache[sig] = { e: r?.ok && typeof r.existe === "boolean" ? r.existe : null, ts: Date.now() };
+      const claves = Object.keys(sigCache);
+      if (claves.length > 600) claves.sort((a, b) => sigCache[a].ts - sigCache[b].ts).slice(0, claves.length - 500).forEach((k) => delete sigCache[k]);
+      try { localStorage.setItem("sigFuente2", JSON.stringify(sigCache)); } catch (e) {}
+      (botonesSiguiente.get(sig) || []).forEach((redibujar) => redibujar());
+    })
+    .catch(() => {})
+    .finally(() => { enSig.delete(sig); activasSig--; siguienteSigFuente(); });
+}
+
 // Enlace al capítulo siguiente del último guardado (".../media/<serie>/<n>" -> n + 1; la ficha sin número -> 1), o "" si no se puede
 function urlSiguienteCap(u) {
   const m = String(u || "").match(/^(https?:\/\/[^?#\s]*\/media\/[^/?#]+)(?:\/(\d+))?\/?(?:[?#].*)?$/i);
@@ -910,7 +997,7 @@ function renderItem(anime) {
   // «Viendo»: abre el capítulo siguiente al último registrado y lo marca como el último visto
   const btnSiguienteCap = el("a", { className: "btn-ultimo-cap btn-siguiente", target: "_blank", rel: "noopener", title: "Abrir el siguiente capítulo", ariaLabel: "Siguiente capítulo", textContent: "⏭\uFE0E" });
   btnSiguienteCap.addEventListener("click", (e) => {
-    const sig = urlSiguienteCap(anime.lastEpisodeUrl);
+    const sig = siguienteCapitulo(anime.lastEpisodeUrl);
     e.preventDefault(); // se abre a mano: así el enlace no cambia mientras se procesa el clic
     if (!sig) return;
     window.open(sig, "_blank", "noopener");
@@ -923,9 +1010,17 @@ function renderItem(anime) {
     const visible = anime.status === "📉" && anime.lastEpisodeUrl;
     if (visible) btnUltimoCap.href = anime.lastEpisodeUrl; else btnUltimoCap.removeAttribute("href");
     btnUltimoCap.style.display = visible ? "flex" : "none";
-    let sig = anime.status === "-" ? urlSiguienteCap(anime.lastEpisodeUrl) : "";
-    const inf = sig ? slugYNumero(sig) : null;
-    if (inf) {
+    let sig = anime.status === "-" ? siguienteCapitulo(anime.lastEpisodeUrl) : "";
+    const fuenteWeb = sig ? fuenteDe(anime.lastEpisodeUrl) : null;
+    const inf = sig && !fuenteWeb ? slugYNumero(sig) : null;
+    if (fuenteWeb) { // otra web: solo se muestra si está confirmado que existe el capítulo siguiente
+      const clave = sig;
+      const { existe, fresco } = sigFuenteInfo(clave);
+      if (!botonesSiguiente.has(clave)) botonesSiguiente.set(clave, new Set());
+      botonesSiguiente.get(clave).add(actualizarBotonUltimoCap);
+      if (!fresco) solicitarSigFuente(clave, anime.url, fuenteWeb.patron);
+      if (existe !== true) sig = "";
+    } else if (inf) {
       const { max, fresco } = capsInfo(inf.slug, inf.n);
       if (Number.isFinite(max) && inf.n > max) sig = ""; // la ficha no lista ese capítulo: no hay siguiente
       if (!botonesSiguiente.has(inf.slug)) botonesSiguiente.set(inf.slug, new Set());
@@ -1902,7 +1997,61 @@ $("btnEdicion").addEventListener("click", (e) => {
   render();
 });
 
+// --- Otras páginas fuente (BETA): las recetas se crean en la extensión y se pegan aquí ------------
+const fuentesStatusEl = $("fuentesStatus");
+async function cargarFuentes() {
+  const r = await enviarMensaje({ type: "GET_FUENTES" });
+  const nuevas = r?.fuentes || [];
+  const clave = (a) => JSON.stringify(a.map((x) => [x.origen, x.patron, x.activa, x.capitulo]));
+  const cambio = clave(nuevas) !== clave(fuentesCache);
+  fuentesCache = nuevas;
+  if (cambio && todosLosAnimes.length) render(); // el botón ⏭ de las series de otras webs depende de estas fuentes
+  const listas = (await enviarMensaje({ type: "GET_LISTAS" }))?.listas || [];
+  const cont = $("fuentesLista");
+  cont.innerHTML = "";
+  if (!nuevas.length) cont.append(el("p", { className: "ayuda-opciones", textContent: "Aún no hay ninguna página fuente en esta app." }));
+  for (const f of nuevas) {
+    const selLista = el("select", { ariaLabel: `Lista para ${f.nombre}`, title: "Lista donde se registran las series de esta web" });
+    selLista.append(el("option", { value: "", textContent: "Lista abierta" }));
+    for (const l of listas) selLista.append(el("option", { value: l.id, textContent: l.name }));
+    if (f.listaId && !listas.some((l) => l.id === f.listaId)) selLista.append(el("option", { value: f.listaId, textContent: "(lista borrada)" }));
+    selLista.value = f.listaId || "";
+    selLista.addEventListener("change", async () => {
+      const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, lista: selLista.value });
+      if (!x?.ok) { selLista.value = f.listaId || ""; toast(mensajeError(x?.error || "error desconocido")); } else { f.listaId = selLista.value; toast("Lista asignada"); }
+    });
+    const sw = el("input", { type: "checkbox", id: `fuente_${f.id}` });
+    sw.checked = f.activa !== false;
+    sw.addEventListener("change", async () => {
+      const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, activa: sw.checked });
+      if (!x?.ok) { sw.checked = !sw.checked; toast(mensajeError(x?.error || "error desconocido")); } else cargarFuentes();
+    });
+    const borrar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Borrar" });
+    borrar.addEventListener("click", async () => {
+      if (!confirm(`¿Quitar la página fuente «${f.nombre}»? Las series ya registradas se quedan en tu lista.`)) return;
+      const x = await enviarMensaje({ type: "BORRAR_FUENTE", id: f.id });
+      if (!x?.ok) { toast(mensajeError(x?.error || "error desconocido")); return; }
+      cargarFuentes();
+    });
+    cont.append(el("div", { className: "ajuste ajuste-fuente" },
+      el("label", { className: "ajuste-nombre", htmlFor: `fuente_${f.id}` }, f.nombre, el("small", { textContent: f.origen })),
+      el("label", { className: "switch" }, sw, el("span", { className: "switch-track" })),
+      selLista, borrar));
+  }
+}
+$("fuentesImportar").addEventListener("click", async () => {
+  const texto = $("fuentesPegar").value.trim();
+  if (!texto) { fuentesStatusEl.textContent = "Pega primero lo copiado en la extensión."; return; }
+  const r = await enviarMensaje({ type: "IMPORTAR_FUENTES", texto });
+  if (!r?.ok) { fuentesStatusEl.textContent = mensajeError(r?.error || "error desconocido"); return; }
+  $("fuentesPegar").value = "";
+  fuentesStatusEl.textContent = `Importada${r.total === 1 ? "" : "s"} ${r.total} página${r.total === 1 ? "" : "s"} fuente. Si alguna debe ir a otra lista, elígela abajo.`;
+  toast("Páginas fuente importadas");
+  cargarFuentes();
+});
+
 function setHerramientas(abierto) {
+  if (abierto) cargarFuentes();
   $("herramientas").hidden = !abierto;
   $("btnHerramientas").setAttribute("aria-expanded", String(abierto));
 }
@@ -2001,13 +2150,14 @@ async function agregarAnime() {
       slug: res.pregunta.slug,
       existingUrl: r.candidato?.url || "",
       existingTitle: r.candidato?.title || "",
-      nuevaFila: res.pregunta.nuevaFila
+      nuevaFila: res.pregunta.nuevaFila,
+      listaId: res.pregunta.listaId || undefined
     });
   }
 
   agregarBtnEl.disabled = false;
   if (!res || !res.ok) { agregarStatusEl.textContent = mensajeError(res?.error || "error desconocido"); return; }
-  agregarStatusEl.textContent = res.vinculada ? `Marcada como viendo: ${res.title}` : `Añadido: ${res.title}`;
+  agregarStatusEl.textContent = (res.vinculada ? `Marcada como viendo: ${res.title}` : `Añadido: ${res.title}`) + (res.listaNombre ? ` (en «${res.listaNombre}»)` : "");
   agregarUrlEl.value = "";
   toast(res.vinculada ? "Serie actualizada" : "Anime añadido");
   cargar();
@@ -2023,8 +2173,13 @@ async function procesarCompartido() {
   const textos = ["url", "text", "title"].map((k) => p.get(k) || "");
   if (!textos.some(Boolean)) return;
   try { history.replaceState(null, "", location.pathname); } catch (e) {} // recargar no debe volver a registrarlo
-  const enlace = textos.join(" ").match(/https?:\/\/(?:www\.)?animeav1\.com\/media\/[^\s"'<>]+/i)?.[0];
-  if (!enlace) { toast("Lo compartido no es un enlace de animeav1.com"); return; }
+  const todo = textos.join(" ");
+  let enlace = todo.match(/https?:\/\/(?:www\.)?animeav1\.com\/media\/[^\s"'<>]+/i)?.[0];
+  if (!enlace) { // enlace de una página fuente añadida en Opciones (beta)
+    const fuentes = (await enviarMensaje({ type: "GET_FUENTES" }))?.fuentes || [];
+    enlace = (todo.match(/https?:\/\/[^\s"'<>]+/gi) || []).find((u) => fuentes.some((f) => f.activa !== false && u.startsWith(f.origen + "/")));
+  }
+  if (!enlace) { toast("Ese enlace no es de animeav1.com ni de una página fuente añadida"); return; }
   if (!configActual) { toast("Primero conecta una hoja o crea una lista local"); return; }
   setAgregarPanel(true);
   agregarUrlEl.value = enlace;
@@ -2393,6 +2548,9 @@ function mensajeError(error) {
   if (c.includes("NECESITA_INICIO_SESION")) return "Toca el botón para iniciar sesión con Google.";
   if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
   if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace de AnimeAV1 a la ficha de la serie o a uno de sus episodios (animeav1.com/media/…).";
+  if (c.includes("FUENTES_INVALIDAS")) return "Eso no parece lo copiado en la extensión (Opciones > Otras páginas fuente > «Copiar páginas fuente para la PWA»).";
+  if (c.includes("SIN_TITULO_FUENTE")) return "No se encontró el título en esa página. Puede que la web se dibuje con JavaScript (la app solo lee el HTML) o que haya que ajustar la página fuente en la extensión.";
+  if (c.includes("FUENTE_NO_ENCONTRADA")) return "Esa página fuente ya no existe.";
   if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
   if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
   if (c.includes("FILA_NO_ENCONTRADA")) return "No se encontró la serie registrada. Puede que se haya movido o borrado en la hoja.";
@@ -2712,6 +2870,7 @@ inicializarToolbar();
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
   clientIdActual = (await enviarMensaje({ type: "GET_CLIENT_ID" }))?.clientId || "";
   $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta());
+  cargarFuentes();
   cargar().then(procesarCompartido);
 })();
 

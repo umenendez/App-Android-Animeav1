@@ -71,6 +71,11 @@
     .mover-orden { padding: 2px 7px; }
     .marcar-mover { display: inline-flex; align-items: center; gap: 4px; margin-top: 6px; margin-right: 8px; font-size: 12px; cursor: pointer; }
     .barra-mover { background: rgba(108,140,255,.16); position: sticky; top: 0; z-index: 5; }
+    #fuentesPegar { width: 100%; box-sizing: border-box; font: inherit; font-size: 12px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(128,128,128,.35)); background: transparent; color: inherit; margin: 6px 0; }
+    .etiqueta-beta { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; vertical-align: middle; }
+    .ajuste-fuente { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; }
+    .ajuste.ajuste-fuente .ajuste-nombre { flex: 1 0 100%; min-width: 0; display: block; }
+    .ajuste.ajuste-fuente .ajuste-nombre small { display: block; color: var(--muted); overflow-wrap: anywhere; word-break: normal; }
     .btn-fijar[aria-pressed="true"] { background: var(--accent, #6c8cff); color: #fff; }
     .aviso-img { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 10px; border-radius: 10px; background: rgba(255,170,0,.14); flex-shrink: 0; }
     .aviso-img[hidden] { display: none; }
@@ -633,6 +638,15 @@
         <button class="btn-mini" id="ajLogoQuitar" type="button">Quitar</button>
       </div>
       <input id="ajLogoArchivo" type="file" accept="image/*" hidden />
+    </div>
+
+    <div class="seccion-opciones">
+      <div class="seccion-opciones-titulo">Otras páginas fuente <span class="etiqueta-beta">BETA</span></div>
+      <p class="ayuda-opciones">Registra series de otras webs con «Compartir» o con el «+». Las páginas se configuran en la extensión (Opciones &gt; Otras páginas fuente &gt; «Copiar páginas fuente para la PWA») y aquí se pegan. Solo funcionan webs cuyo título se ve en el HTML (las que se dibujan con JavaScript no se pueden leer desde la app).</p>
+      <div id="fuentesLista"></div>
+      <textarea id="fuentesPegar" rows="3" placeholder="Pega aquí lo copiado en la extensión" aria-label="Páginas fuente copiadas de la extensión"></textarea>
+      <button class="btn" id="fuentesImportar" type="button">Pegar páginas fuente</button>
+      <div class="estado-txt" id="fuentesStatus"></div>
     </div>
 
     <div class="seccion-opciones">

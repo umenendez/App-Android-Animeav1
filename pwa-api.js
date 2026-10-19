@@ -911,7 +911,161 @@
   // título y la portada, y crea la fila. Sustituye a la detección automática
   // que hacía la extensión de Chrome al abrir un episodio (no disponible en
   // una PWA normal).
+  // --- Otras páginas fuente (BETA) --------------------------------------------------------
+  // Las recetas se crean en la extensión y se pegan aquí (IMPORTAR_FUENTES). La PWA no puede abrir las webs ni
+  // ejecutar su JavaScript: lee el HTML de la página a través del Worker y aplica los selectores de la receta.
+  function leerFuentes() { try { const f = JSON.parse(localStorage.getItem("fuentes") || "[]"); return Array.isArray(f) ? f : []; } catch (e) { return []; } }
+  function guardarFuentes(f) { try { localStorage.setItem("fuentes", JSON.stringify(f)); } catch (e) {} }
+  function fuenteDeUrl(u) { return leerFuentes().find((f) => f.activa !== false && String(u || "").startsWith(f.origen + "/")) || null; }
+  function importarFuentes(texto) {
+    let d;
+    try { d = JSON.parse(String(texto || "").trim()); } catch (e) { throw new Error("FUENTES_INVALIDAS"); }
+    if (!d || d.tipo !== "fuentes" || !Array.isArray(d.fuentes)) throw new Error("FUENTES_INVALIDAS");
+    const listas = obtenerListasArr();
+    const actuales = leerFuentes();
+    let n = 0;
+    for (const r of d.fuentes) {
+      let origen;
+      try { const u = new URL(r.origen); if (!/^https?:$/.test(u.protocol) || /(^|\.)animeav1\.com$/i.test(u.hostname)) continue; origen = u.origin; } catch (e) { continue; }
+      if (!r.selectores || typeof r.selectores.titulo !== "string" || !r.selectores.titulo) continue;
+      try { new RegExp(r.patron); } catch (e) { continue; }
+      const previa = actuales.find((f) => f.origen === origen);
+      const porNombre = r.listaNombre ? listas.find((l) => l.name === r.listaNombre) : null;
+      const s = r.selectores;
+      const receta = {
+        id: "fuente-" + origen.replace(/[^a-z0-9]/gi, "_"), nombre: String(r.nombre || origen).slice(0, 60), origen, activa: previa ? previa.activa !== false : true,
+        patron: String(r.patron), capitulo: r.capitulo || null, listaId: previa?.listaId || porNombre?.id || "",
+        selectores: { titulo: s.titulo, portada: String(s.portada || ""), portadaSerie: String(s.portadaSerie || ""), serie: String(s.serie || "") },
+      };
+      const i = actuales.findIndex((f) => f.origen === origen);
+      if (i >= 0) actuales[i] = receta; else actuales.push(receta);
+      n++;
+    }
+    if (!n) throw new Error("FUENTES_INVALIDAS");
+    guardarFuentes(actuales);
+    return n;
+  }
+  function actualizarFuente(id, cambios) {
+    const fs = leerFuentes(), f = fs.find((x) => x.id === id);
+    if (!f) throw new Error("FUENTE_NO_ENCONTRADA");
+    if (cambios.activa !== undefined) f.activa = !!cambios.activa;
+    if (cambios.lista !== undefined) f.listaId = String(cambios.lista || "");
+    guardarFuentes(fs);
+  }
+  function borrarFuente(id) { guardarFuentes(leerFuentes().filter((x) => x.id !== id)); }
+
+  async function leerPaginaWorker(url) {
+    const r = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(url)}`);
+    const upstream = Number(r.headers.get("X-Proxy-Upstream-Status") || 0);
+    if (!r.ok || (upstream && upstream >= 400)) throw new Error("NO_SE_PUDO_LEER_LA_PAGINA");
+    return r.text();
+  }
+  function datosDePagina(f, url, html, selPortada) {
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const sel = f.selectores || {};
+    const q = (s) => { try { return s ? doc.querySelector(s) : null; } catch (e) { return null; } };
+    const abs = (u) => { try { return new URL(u, url).href; } catch (e) { return ""; } };
+    const imagen = (el) => {
+      if (!el) return "";
+      const im = el.tagName === "IMG" ? el : (el.querySelector && el.querySelector("img"));
+      if (!im) return "";
+      let s = im.getAttribute("src") || im.getAttribute("data-src") || im.getAttribute("data-lazy-src") || "";
+      if (!s || s.startsWith("data:")) s = (im.getAttribute("srcset") || "").split(",")[0].trim().split(" ")[0];
+      return s ? abs(s) : "";
+    };
+    const titulo = (q(sel.titulo)?.textContent || "").replace(/\s+/g, " ").trim();
+    const a = q(sel.serie)?.closest?.("a");
+    let serieUrl = a && a.getAttribute("href") ? abs(a.getAttribute("href")) : "";
+    if (!serieUrl) {
+      const u = new URL(url), segs = u.pathname.split("/").filter(Boolean);
+      serieUrl = segs.length >= 2 && /^\d+$/.test(segs[segs.length - 1]) ? `${u.origin}/${segs.slice(0, -1).join("/")}/` : url;
+    }
+    const og = doc.querySelector('meta[property="og:image"]')?.content || "";
+    return { titulo, serieUrl: serieUrl.split("#")[0], cover: imagen(q(selPortada ?? sel.portada)), og: og ? abs(og) : "" };
+  }
+  const slugTitulo = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+  // Registra una serie desde un enlace de una web fuente (en la lista asignada a esa web). Devuelve lo mismo que registrarAnime.
+  // ¿Existe ya el capítulo siguiente? true / false / null (no se sabe). Mismo criterio que la extensión: 1) la página de la
+  // serie lo enlaza -> existe; 2) el servidor de esa web responde 404/410 -> no existe; 3) la página de la serie lista
+  // capítulos y no incluye ese -> no existe. Sin poder confirmarlo (web dibujada con JavaScript) -> null y no se muestra ⏭.
+  async function capituloSiguienteExiste({ url, serie, patron }) {
+    let u;
+    try { u = new URL(url); } catch (e) { return null; }
+    const f = leerFuentes().find((x) => x.origen === u.origin && x.activa !== false);
+    if (!f) return null;
+    let re = null;
+    try { re = new RegExp(patron || f.patron); } catch (e) {}
+    const norm = (p) => { try { p = decodeURIComponent(p); } catch (e) {} return p.replace(/\/+$/, "") || "/"; };
+    const objetivo = norm(u.pathname);
+    let hayLista = false;
+    try {
+      const s = new URL(serie);
+      if (s.origin === u.origin) {
+        const html = await leerPaginaWorker(s.href);
+        for (const m of html.matchAll(/href\s*=\s*["']([^"'#]+)/gi)) {
+          let h;
+          try { h = new URL(m[1].replace(/&amp;/g, "&"), s.href); } catch (e) { continue; }
+          if (h.origin !== u.origin) continue;
+          if (norm(h.pathname) === objetivo) return true;
+          if (re && re.test(h.pathname)) hayLista = true;
+        }
+      }
+    } catch (e) {}
+    try {
+      const r = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(u.href)}`);
+      const up = Number(r.headers.get("X-Proxy-Upstream-Status") || 0);
+      if (up === 404 || up === 410) return false;
+      if (!r.ok || up >= 400) return null;
+      return hayLista ? false : null;
+    } catch (e) { return null; }
+  }
+
+  async function registrarDesdeFuente(url, f) {
+    const u = new URL(url);
+    let esCap = false;
+    try { esCap = new RegExp(f.patron).test(u.pathname); } catch (e) {}
+    let datos;
+    try { datos = datosDePagina(f, url, await leerPaginaWorker(url)); } catch (e) { throw new Error("NO_SE_PUDO_LEER_LA_PAGINA"); }
+    if (!datos.titulo) throw new Error("SIN_TITULO_FUENTE");
+    let cover = datos.cover;
+    if (!cover && datos.serieUrl && datos.serieUrl !== url) {
+      try { const d2 = datosDePagina(f, datos.serieUrl, await leerPaginaWorker(datos.serieUrl), f.selectores?.portadaSerie || ""); cover = d2.cover || d2.og; } catch (e) {}
+    }
+    if (!cover) cover = datos.og;
+    const episodeUrl = esCap ? url.split("#")[0] : "";
+    const slug = slugTitulo(datos.titulo);
+    const nuevaFila = { title: datos.titulo, url: datos.serieUrl, cover: cover || "", episodeUrl };
+    const listaNombre = f.listaId ? (obtenerListasArr().find((l) => l.id === f.listaId)?.name || "") : "";
+    return conLista(f.listaId, async () => {
+      await getSheetName();
+      const existentes = await obtenerListaCompleta();
+      const canon = (x) => String(x || "").replace(/\/+$/, "");
+      const tit = datos.titulo.trim().toLowerCase();
+      const existente = existentes.find((x) => (x.url && canon(x.url) === canon(datos.serieUrl)) || (x.title || "").trim().toLowerCase() === tit);
+      if (existente) {
+        if (!episodeUrl) throw new Error("YA_EXISTE");
+        await marcarViendo(existente, episodeUrl);
+        return { title: existente.title, url: existente.url, vinculada: true, listaNombre };
+      }
+      const vinculo = leerVinculos()[claveVinculo(slug)];
+      if (vinculo) {
+        const anime = filaExistente(existentes, vinculo.url, vinculo.title);
+        if (anime) { await marcarViendo(anime, ultimoParaSerie(anime, episodeUrl, datos.serieUrl)); return { title: anime.title, vinculada: true, listaNombre }; }
+      }
+      const candidatos = [];
+      for (let k = existentes.length - 1; k >= 0; k--) {
+        const x = existentes[k];
+        if (sonSeriesRelacionadas({ title: datos.titulo, slug }, { title: x.title, url: x.url })) candidatos.push({ row: x.row, title: x.title, url: x.url, cover: x.cover });
+      }
+      if (candidatos.length) return { pregunta: { nuevaFila, slug, candidatos: candidatos.slice(0, 4), listaId: f.listaId || "" }, listaNombre };
+      return { ...(await escribirAnimeNuevo(nuevaFila)), listaNombre };
+    });
+  }
+
   async function registrarAnime(enlace) {
+    const fuente = fuenteDeUrl(enlace);
+    if (fuente) return registrarDesdeFuente(String(enlace).trim(), fuente);
     const p = parsearEnlaceAnime(enlace);
     if (!p) throw new Error("ENLACE_ANIME_INVALIDO");
     const { slug, url, episodeUrl } = p;
@@ -1056,7 +1210,12 @@
       case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
       case "GET_CAPITULOS": return {ok:true,max:await capituloMaximo(msg.slug)};
       case "REGISTER_ANIME": return {ok:true,...await registrarAnime(msg.url)};
-      case "RESOLVER_SECUELA": return {ok:true,...await resolverSecuela(msg)};
+      case "RESOLVER_SECUELA": return {ok:true,...await conLista(msg.listaId,()=>resolverSecuela(msg))};
+      case "CAP_EXISTE": return {ok:true,existe:await capituloSiguienteExiste(msg)};
+      case "GET_FUENTES": return {ok:true,fuentes:leerFuentes()};
+      case "IMPORTAR_FUENTES": return {ok:true,total:importarFuentes(msg.texto)};
+      case "ACTUALIZAR_FUENTE": actualizarFuente(msg.id,msg); return {ok:true};
+      case "BORRAR_FUENTE": borrarFuente(msg.id); return {ok:true};
       default: throw new Error("MENSAJE_DESCONOCIDO");
     }
   }

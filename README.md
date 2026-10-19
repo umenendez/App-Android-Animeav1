@@ -37,6 +37,7 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Vista en lista (Opciones > Vista) y filtro «Pendientes» (series en «Viendo» con capítulos publicados que aún no has visto).
 - Logo de la cabecera personalizable (Opciones > Logo e icono) importando una imagen. El icono de la pantalla de inicio lo fija Android al instalar y no se puede cambiar desde la app.
 - Compartir desde Android: en un capítulo de animeav1.com, Compartir → AnimeAV1 Tracker lo registra (serie nueva o «Viendo» + último capítulo). Requiere la PWA instalada; si no aparece en la lista de Compartir, desinstálala y vuelve a instalarla.
+- Otras páginas fuente (beta): las recetas se crean en la extensión («Copiar páginas fuente para la PWA») y se pegan en Opciones > Otras páginas fuente. Luego Compartir o el «+» registran series de esas webs en la lista asignada. Solo webs cuyo título sale en el HTML (no las que se dibujan con JavaScript), y el Worker debe poder leerlas.
 - Botón ⏭ «Siguiente capítulo» en las series en «Viendo»: abre el capítulo siguiente y lo guarda como último visto.
 - Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 
