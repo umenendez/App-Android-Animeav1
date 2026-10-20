@@ -41,6 +41,25 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Botón ⏭ «Siguiente capítulo» en las series en «Viendo»: abre el capítulo siguiente y lo guarda como último visto.
 - Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 
+## Listas en la nube (Cloudflare D1)
+
+Además de Google Sheets y las listas locales, puedes guardar una lista en tu propia base de datos
+de Cloudflare: se sincroniza entre dispositivos, funciona sin conexión y se puede compartir.
+
+**Puesta en marcha (una vez):**
+1. Cloudflare > Storage & Databases > D1 > crear una base y ejecutar `schema.sql` en su consola.
+2. En el Worker: Settings > Bindings > añadir la base D1 con el nombre de variable **`DB`**.
+3. En el Worker: secrets `GOOGLE_CLIENT_ID` (el mismo de la PWA) y `SESSION_SECRET` (una cadena larga
+   y aleatoria inventada por ti). Pega `worker-completo.js` y pulsa Deploy.
+4. Opcional: variable `ORIGENES_PERMITIDOS` con los orígenes que pueden usar la API, separados por
+   comas (**sustituye** al valor por defecto, que es solo `https://umenendez.github.io`).
+5. Para que cualquier cuenta de Google pueda entrar, el proyecto de Google Cloud debe estar en
+   «In production» (para este login solo se piden los permisos básicos; no requiere verificación).
+6. Comprobación: `https://TU-WORKER.workers.dev/api/yo` debe responder «Sesión no válida o caducada».
+
+**Uso:** Tus listas > Listas en la nube > iniciar sesión. Para subir una lista que ya tienes, usa
+**«A la nube»** (copia). Para usarla en otro dispositivo, inicia sesión allí y pulsa «Añadir a este dispositivo».
+
 ## Qué no puede hacer una PWA
 
 El `content.js` de la extensión detectaba automáticamente cuando abrías un episodio de `animeav1.com`. Una PWA normal no puede inyectarse en otras páginas de Chrome, por lo que esa detección automática no está incluida en la versión PWA.

@@ -320,6 +320,10 @@
     .lista-item .etiqueta-local { flex-shrink: 0; font-size: 10px; font-weight: 600; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px; }
     .lista-item .etiqueta-activa { flex-shrink: 0; font-size: 10px; font-weight: 600; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 2px 8px; }
     .vacio-listas { margin: 0; font-size: 12px; color: var(--muted); }
+    .nube-ayuda { margin: 0 0 6px; font-size: 12px; color: var(--muted); }
+    .nube-boton-google { min-height: 44px; margin: 4px 0 6px; }
+    .nube-compartir { margin: 0 0 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; }
+    .nube-compartir input, .nube-compartir select { margin: 6px 6px 0 0; }
     .btn-mini {
       flex-shrink: 0; font-size: 11px; padding: 5px 9px; border-radius: 7px;
       border: 1px solid var(--border); background: var(--field); color: var(--text); cursor: pointer;
@@ -595,6 +599,16 @@
     <button class="btn" id="listaLocalImportarBtn" type="button">Importar desde un archivo .json…</button>
     <input id="listaLocalArchivo" type="file" accept=".json,application/json" hidden />
     <div class="estado-txt" id="listaLocalStatus"></div>
+    <div class="config-sep"></div>
+    <h2>Listas en la nube</h2>
+    <p>Se guardan en tu cuenta de Google, se sincronizan entre tus dispositivos y puedes compartirlas con otras personas. Funcionan también sin conexión: los cambios se envían cuando vuelve internet.</p>
+    <div id="nubeSesion"></div>
+    <div id="nubeAcciones" hidden>
+      <input id="nubeNombre" type="text" placeholder="Nombre de la lista nueva" aria-label="Nombre de la lista en la nube" />
+      <button class="btn" id="nubeCrearBtn" type="button">Crear lista en la nube</button>
+      <div id="nubeListas"></div>
+    </div>
+    <div class="estado-txt" id="nubeStatus"></div>
   </section>
 
   <div id="cargando" class="aviso"><div class="spinner"></div>Cargando tu lista…</div>

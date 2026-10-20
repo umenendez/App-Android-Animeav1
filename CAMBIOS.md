@@ -5,6 +5,40 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.21.0
+
+### Listas en la nube (Cloudflare D1) **[PWA]**
+
+Un tercer tipo de lista, además de Google Sheets y las locales (.json): se guarda en tu cuenta,
+se ve en todos tus dispositivos y se puede compartir con otras cuentas de Google.
+
+- **Cómo funciona:** es una lista local (funciona sin conexión) con una capa de sincronización.
+  Cada cambio se envía al Worker a los ~1,5 s; al abrir la lista se descarga lo nuevo. Si dos
+  dispositivos tocan la misma serie gana el cambio más reciente. Los borrados también llegan a
+  los demás dispositivos. Sin conexión todo se guarda en el dispositivo y se envía al volver internet.
+- **Login:** botón «Iniciar sesión con Google» (solo identificación, sin permisos sobre Drive ni
+  Sheets). El Worker valida el token de Google y entrega su propia sesión, que dura 60 días, así
+  que no hay que volver a entrar cada hora. El permiso de Sheets sigue siendo independiente.
+- **Tus listas > Listas en la nube:** iniciar sesión, crear una lista vacía, ver tus listas de la
+  nube y añadirlas a este dispositivo. En cada lista de Sheets o local aparece **«A la nube»**
+  (sube una copia; la original no se toca). En las tuyas de la nube, **«Compartir»** por email con
+  permiso de edición o solo lectura (quitar acceso cuando quieras).
+- **Quitar una lista de la nube:** «Quitar» solo la saca de este dispositivo; si eres el
+  propietario puedes además borrarla de la nube para todos (aviso aparte, no se puede deshacer).
+- Una lista compartida contigo como **solo lectura** no se puede editar desde este dispositivo;
+  si el propietario cambia tus permisos, se actualizan solos al abrir la lista.
+- Exportar a .json funciona también con las listas de la nube (no se exportan los datos internos
+  de sincronización).
+- **Worker (`worker-completo.js`):** nuevas rutas `/api/...` con su propio CORS restringido
+  (variable `ORIGENES_PERMITIDOS`; por defecto solo `https://umenendez.github.io`). Requiere un
+  binding D1 llamado `DB` (esquema en `schema.sql`) y los secrets `GOOGLE_CLIENT_ID` y
+  `SESSION_SECRET`. Lo anterior (proxy de scraping, portadas y login de Sheets) no cambia.
+- **Portadas de Manwhaweb:** arreglado el bloqueo anti-hotlink (Cloudflare) pidiendo la imagen a
+  través del Worker con el `Referer` correcto. Sustituye a la limitación indicada en 1.20.2:
+  se configura con `mwProxy` en `config.js` (la URL base del Worker).
+- Los géneros del catálogo siguen guardándose por dispositivo (se reconstruyen con las series).
+- Caché de la PWA `v42`.
+
 ## 1.20.2
 
 ### Portadas de otras webs y pegado de páginas fuente en la PWA **[PWA]**

@@ -203,7 +203,7 @@
   let ultimoRefrescoAuto = 0;
   document.addEventListener("pointerdown", () => {
     if (!emailGuardado() || !window.google?.accounts?.oauth2) return;
-    try { if (JSON.parse(localStorage.getItem("config") || "null")?.tipo === "local") return; } catch (e) {} // lista local: sin Google
+    try { const t = JSON.parse(localStorage.getItem("config") || "null")?.tipo; if (t === "local" || t === "nube") return; } catch (e) {} // lista local o de la nube: sin Google Sheets
     if (accessToken && Date.now() < tokenExpiresAt - 10 * 60 * 1000) return;
     if (tokenEnCurso || Date.now() - ultimoRefrescoAuto < 60000) return;
     ultimoRefrescoAuto = Date.now();
@@ -247,10 +247,10 @@
   async function cargarConfig() {
     if (spreadsheetId) return;
     const config = JSON.parse(localStorage.getItem("config") || "null");
-    if (config?.tipo === "local" && config.listaId) {
+    if ((config?.tipo === "local" || config?.tipo === "nube") && config.listaId) {
       // Lista local: sin hoja. spreadsheetId/gid reciben valores propios para que las claves que
       // dependen de ellos (vínculos de temporadas) sigan siendo únicas.
-      listaLocalId = config.listaId; spreadsheetId = `local:${config.listaId}`; gidConfig = 0; gid = 0;
+      listaLocalId = config.listaId; spreadsheetId = `${config.tipo}:${config.listaId}`; gidConfig = 0; gid = 0;
       return;
     }
     if (!config?.spreadsheetId) throw new Error("SIN_CONFIG");
@@ -388,9 +388,10 @@
     const l = listas.find((x) => x.id === id);
     if (!l) throw new Error("LISTA_NO_ENCONTRADA");
     l.name = name;
-    if (l.tipo === "local") l.titulo = name;
+    if (l.tipo === "local" || l.tipo === "nube") l.titulo = name;
     guardarListasArr(listas);
-    if (idListaActiva() === id && l.tipo === "local") {
+    if (l.tipo === "nube" && l.rol === "propietario") nubeFetch(`/api/listas/${encodeURIComponent(id)}`, { method: "PATCH", body: { nombre: name } }).catch(() => {});
+    if (idListaActiva() === id && (l.tipo === "local" || l.tipo === "nube")) {
       try { const c = JSON.parse(localStorage.getItem("config") || "null"); if (c) localStorage.setItem("config", JSON.stringify({ ...c, titulo: name })); } catch (e) {}
     }
   }
@@ -401,7 +402,7 @@
     if (restantes.length === listas.length) throw new Error("LISTA_NO_ENCONTRADA");
     guardarListasArr(restantes);
     const quitada = listas.find((l) => l.id === id);
-    if (quitada?.tipo === "local") { try { localStorage.removeItem(claveDatosLocal(id)); } catch (e) {} }
+    if (quitada?.tipo === "local" || quitada?.tipo === "nube") { try { localStorage.removeItem(claveDatosLocal(id)); } catch (e) {} }
     if (idListaActiva() === id) {
       const siguiente = restantes[0] || null;
       marcarListaActiva(siguiente?.id || null);
@@ -415,7 +416,7 @@
 
   // Configuración activa que corresponde a una lista guardada (hoja de Google o lista local)
   function configDeLista(l) {
-    if (l.tipo === "local") return { tipo: "local", listaId: l.id, url: l.url, titulo: l.titulo, hoja: "" };
+    if (l.tipo === "local" || l.tipo === "nube") return { tipo: l.tipo, listaId: l.id, url: l.url, titulo: l.titulo, hoja: "" };
     return { spreadsheetId: l.spreadsheetId, gid: l.gid, url: l.url, titulo: l.titulo, hoja: l.hoja };
   }
 
@@ -459,7 +460,11 @@
   }
 
   async function obtenerListaCompleta() {
-    if (await esListaLocal()) return leerDatosLocal().items;
+    estadoNube = null;
+    if (await esListaLocal()) {
+      if (listaNube(listaLocalId)) await sincronizarNubeAlAbrir(listaLocalId);
+      return leerDatosLocal().items;
+    }
     const sheetName = await getSheetName();
     const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "A:K"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink,userEnteredValue)`);
     const rows = data.sheets?.[0]?.data?.[0]?.rowData || [];
@@ -664,7 +669,16 @@
     } catch (e) {}
     return { items: [], siguiente: 2 };
   }
-  function guardarDatosLocal(d, id = listaLocalId) { localStorage.setItem(claveDatosLocal(id), JSON.stringify(d)); }
+  // Sin gancho de la nube: lo usa la propia sincronización (y el alta de listas) para guardar tal cual
+  function guardarDatosCrudo(d, id = listaLocalId) { localStorage.setItem(claveDatosLocal(id), JSON.stringify(d)); }
+  function guardarDatosLocal(d, id = listaLocalId) {
+    const nube = listaNube(id);
+    if (!nube) { guardarDatosCrudo(d, id); return; }
+    if (nube.rol === "lectura") throw new Error("SOLO_LECTURA");
+    registrarCambiosNube(d);
+    guardarDatosCrudo(d, id);
+    programarEnvioNube(id);
+  }
 
   // Mismo criterio que la hoja: vacío o ≤ 0 = sin valorar; una décima; máximo 10.
   function notaLocal(valor) {
@@ -699,7 +713,7 @@
   }
 
   function exportarListaLocal(id) {
-    const lista = obtenerListasArr().find((l) => l.id === id && l.tipo === "local");
+    const lista = obtenerListasArr().find((l) => l.id === id && (l.tipo === "local" || l.tipo === "nube"));
     if (!lista) throw new Error("LISTA_NO_ENCONTRADA");
     return { nombre: lista.name, series: leerDatosLocal(id).items.map(({ row, ...resto }) => resto) };
   }
@@ -1176,6 +1190,300 @@
     if(requests.length)await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});return{migradas,portadasFlv,sinCambios};
   }
 
+  // --- Listas en la nube (Cloudflare D1) ----------------------------------------------
+  // Una lista "nube" es una lista local (mismos datos en localStorage, mismas funciones, funciona
+  // sin conexión) con una capa de sincronización contra el Worker:
+  //   · cada serie recibe un id estable (d.nube.ids: fila → id) y se recuerda qué versión se
+  //     envió por última vez (d.nube.rec[id].h) frente a la actual (.l); si difieren, está pendiente;
+  //   · tras cada cambio se envía lo pendiente (con un pequeño retraso) y al abrir la lista se
+  //     descarga lo nuevo; si dos dispositivos tocan la misma serie gana el cambio más reciente;
+  //   · los borrados se envían como "lápidas" para que lleguen a los demás dispositivos.
+  // El login usa un id_token de Google que el Worker canjea por su propia sesión (dura meses).
+  const NUBE_SESION = "nubeSesion";
+  const NUBE_LOTE = 200;
+
+  function leerSesionNube() {
+    try {
+      const s = JSON.parse(localStorage.getItem(NUBE_SESION) || "null");
+      if (s?.token && s.exp * 1000 > Date.now() + 60000) return s;
+    } catch (e) {}
+    return null;
+  }
+  function guardarSesionNube(s) {
+    try { if (s) localStorage.setItem(NUBE_SESION, JSON.stringify(s)); else localStorage.removeItem(NUBE_SESION); } catch (e) {}
+  }
+
+  async function nubeFetch(ruta, { method = "GET", body, sinSesion = false } = {}) {
+    const headers = {};
+    if (!sinSesion) {
+      const s = leerSesionNube();
+      if (!s) throw new Error("NUBE_SESION_CADUCADA");
+      headers.Authorization = "Bearer " + s.token;
+    }
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    let res;
+    try { res = await fetch(WORKER_URL + ruta, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined }); }
+    catch (e) { throw new Error("NUBE_SIN_CONEXION"); }
+    let json = null;
+    try { json = await res.json(); } catch (e) {}
+    if (res.status === 401 && !sinSesion) { guardarSesionNube(null); throw new Error("NUBE_SESION_CADUCADA"); }
+    if (!res.ok) throw new Error(json?.error || `Error de la nube (${res.status})`);
+    return json;
+  }
+
+  async function nubeLoginConIdToken(idToken) {
+    const r = await nubeFetch("/api/login", { method: "POST", body: { id_token: idToken }, sinSesion: true });
+    guardarSesionNube({ token: r.token, exp: r.exp, email: r.usuario.email, name: r.usuario.name });
+    return r.usuario;
+  }
+
+  // Dibuja el botón oficial de "Iniciar sesión con Google" dentro de `contenedor`.
+  async function nubeRenderBoton(contenedor, alOk, alError) {
+    const clientId = obtenerClientId();
+    if (!clientId) return alError(new Error("CONFIGURA_CLIENT_ID_WEB"));
+    try { await esperarGIS(); } catch (e) { return alError(e); }
+    google.accounts.id.initialize({
+      client_id: clientId,
+      callback: async (r) => { try { alOk(await nubeLoginConIdToken(r.credential)); } catch (e) { alError(e); } },
+    });
+    contenedor.innerHTML = "";
+    google.accounts.id.renderButton(contenedor, { theme: "outline", size: "large", text: "signin_with", locale: "es" });
+  }
+
+  window.PWA_NUBE = {
+    estado: () => { const s = leerSesionNube(); return s ? { email: s.email, name: s.name, exp: s.exp } : null; },
+    renderBoton: nubeRenderBoton,
+    loginConIdToken: nubeLoginConIdToken,
+    cerrarSesion: () => guardarSesionNube(null),
+  };
+
+  function listaNube(id) { return obtenerListasArr().find((l) => l.id === id && l.tipo === "nube") || null; }
+  const idSerieNube = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+  const hashItem = (it) => JSON.stringify([it.genre, it.score, it.title, it.url, it.status, it.cover, it.lastEpisodeUrl]);
+
+  function metaNube(d) {
+    if (!d.nube || typeof d.nube !== "object") d.nube = {};
+    const n = d.nube;
+    if (!n.ids) n.ids = {};
+    if (!n.rec) n.rec = {};
+    if (!n.borradas) n.borradas = {};
+    if (!n.desde) n.desde = 0;
+    return n;
+  }
+
+  // Compara los datos con lo último sincronizado: asigna ids a series nuevas, anota la hora de
+  // cada cambio local y convierte las series quitadas en lápidas pendientes de enviar.
+  function registrarCambiosNube(d, ahora = Date.now()) {
+    const n = metaNube(d);
+    const vivas = new Set();
+    for (const it of d.items) {
+      let sid = n.ids[it.row];
+      if (!sid) { sid = idSerieNube(); n.ids[it.row] = sid; }
+      vivas.add(sid);
+      const h = hashItem(it);
+      const rec = n.rec[sid];
+      if (!rec) n.rec[sid] = { h: "", l: h, loc: ahora };
+      // La hora de un cambio local siempre supera a la última conocida: un reloj atrasado no pierde frente a otro dispositivo
+      else if (rec.l !== h) { rec.l = h; rec.loc = Math.max(ahora, rec.loc + 1); }
+      delete n.borradas[sid];
+    }
+    for (const [row, sid] of Object.entries(n.ids)) {
+      if (vivas.has(sid)) continue;
+      const rec = n.rec[sid];
+      delete n.ids[row]; delete n.rec[sid];
+      if (rec && rec.h !== "") n.borradas[sid] = Math.max(ahora, rec.loc + 1); // ya estaba en la nube: hay que avisar
+    }
+  }
+
+  function cambioDeItem(sid, it, loc) {
+    return {
+      id: sid, titulo: it.title, url: it.url, nota: it.score === "" ? null : Number(it.score), estado: it.status,
+      genero: it.genre, portada: it.cover, ultimo_cap_url: it.lastEpisodeUrl, actualizado: loc,
+    };
+  }
+
+  // Todas las operaciones de sincronización de una lista van en fila, de una en una
+  const colaNube = {};
+  function enColaNube(id, fn) {
+    const p = (colaNube[id] || Promise.resolve()).catch(() => {}).then(fn);
+    colaNube[id] = p;
+    return p;
+  }
+
+  async function _enviarNube(id) {
+    const lista = listaNube(id);
+    if (!lista || lista.rol === "lectura") return { enviados: 0 };
+    let enviados = 0;
+    for (;;) {
+      const d = leerDatosLocal(id);
+      const n = metaNube(d);
+      const lote = [];
+      for (const it of d.items) {
+        if (lote.length >= NUBE_LOTE) break;
+        const sid = n.ids[it.row];
+        const rec = sid && n.rec[sid];
+        if (rec && rec.l !== rec.h) lote.push({ sid, hash: rec.l, cambio: cambioDeItem(sid, it, rec.loc) });
+      }
+      for (const [sid, ts] of Object.entries(n.borradas)) {
+        if (lote.length >= NUBE_LOTE) break;
+        lote.push({ sid, hash: null, cambio: { id: sid, borrada: true, actualizado: ts } });
+      }
+      if (!lote.length) break;
+      await nubeFetch(`/api/listas/${id}/series`, { method: "POST", body: { cambios: lote.map((x) => x.cambio) } });
+      // Se vuelve a leer: mientras se enviaba pudo haber cambios locales nuevos (esos siguen pendientes)
+      const d2 = leerDatosLocal(id);
+      const n2 = metaNube(d2);
+      for (const x of lote) {
+        if (x.hash === null) { if (n2.borradas[x.sid] === x.cambio.actualizado) delete n2.borradas[x.sid]; }
+        else if (n2.rec[x.sid]) n2.rec[x.sid].h = x.hash;
+      }
+      guardarDatosCrudo(d2, id);
+      enviados += lote.length;
+    }
+    return { enviados };
+  }
+
+  async function _traerNube(id) {
+    // Se pide con 2 s de margen: aplicar dos veces el mismo cambio es inofensivo, perderlo no
+    const desde = Math.max(0, (metaNube(leerDatosLocal(id)).desde || 0) - 2000);
+    const r = await nubeFetch(`/api/listas/${id}/series?since=${desde}`);
+    const d = leerDatosLocal(id);
+    const n = metaNube(d);
+    const filaDe = new Map(Object.entries(n.ids).map(([row, sid]) => [sid, Number(row)]));
+    let cambios = 0;
+    for (const s of r.series) {
+      const rec = n.rec[s.id];
+      const tumba = n.borradas[s.id];
+      if (tumba !== undefined && tumba > s.actualizado) continue;       // la quité yo después
+      if (rec && rec.l !== rec.h && rec.loc > s.actualizado) continue;  // mi cambio es más reciente (pendiente de enviar)
+      const row = filaDe.get(s.id);
+      const idx = row === undefined ? -1 : d.items.findIndex((i) => i.row === row);
+      if (s.borrada) {
+        if (idx >= 0) { d.items.splice(idx, 1); cambios++; }
+        if (row !== undefined) delete n.ids[row];
+        delete n.rec[s.id]; delete n.borradas[s.id];
+        continue;
+      }
+      if (!s.titulo) continue;
+      const campos = {
+        genre: s.genero || "", score: notaLocal(s.nota ?? ""), title: s.titulo, url: s.url || "",
+        status: s.estado || "", cover: s.portada || "", lastEpisodeUrl: s.ultimo_cap_url || "",
+      };
+      let it;
+      if (idx >= 0) { it = d.items[idx]; if (hashItem({ ...it, ...campos }) !== hashItem(it)) cambios++; Object.assign(it, campos); }
+      else { it = { row: d.siguiente++, ...campos }; d.items.push(it); n.ids[it.row] = s.id; cambios++; }
+      const h = hashItem(it);
+      n.rec[s.id] = { h, l: h, loc: s.actualizado };
+      delete n.borradas[s.id];
+    }
+    n.desde = Math.max(n.desde || 0, r.hasta || 0);
+    guardarDatosCrudo(d, id);
+    // Si el propietario cambió tus permisos (lectura ↔ edición), se refleja aquí
+    if (r.rol) {
+      const listas = obtenerListasArr();
+      const l = listas.find((x) => x.id === id);
+      if (l && l.rol !== r.rol) { l.rol = r.rol; guardarListasArr(listas); }
+    }
+    return { recibidas: r.series.length, cambios };
+  }
+
+  const enviarCambiosNube = (id) => enColaNube(id, () => _enviarNube(id));
+  const sincronizarNube = (id) => enColaNube(id, async () => { await _traerNube(id); return _enviarNube(id); });
+
+  const temporizadoresNube = {};
+  function programarEnvioNube(id) {
+    clearTimeout(temporizadoresNube[id]);
+    temporizadoresNube[id] = setTimeout(() => { enviarCambiosNube(id).catch(() => {}); }, 1500);
+  }
+  try {
+    window.addEventListener("online", () => {
+      const id = idListaActiva();
+      if (id && listaNube(id)) enviarCambiosNube(id).catch(() => {});
+    });
+  } catch (e) {}
+
+  // Estado de la última sincronización al abrir la lista (lo lee la interfaz para avisar si falla)
+  let estadoNube = null;
+  async function sincronizarNubeAlAbrir(id) {
+    estadoNube = { id, ok: true };
+    let timer;
+    try {
+      await Promise.race([
+        sincronizarNube(id),
+        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("NUBE_SIN_CONEXION")), 8000); }),
+      ]);
+    } catch (e) { estadoNube = { id, ok: false, error: String(e?.message || e).replace(/^Error:\s*/, "") }; }
+    finally { clearTimeout(timer); }
+  }
+
+  function anadirEntradaNube(id, nombre, rol) {
+    obtenerListasParaUI(); // asegura la migración de "Mi lista" si hacía falta
+    const listas = obtenerListasArr();
+    if (listas.some((l) => l.id === id)) throw new Error("LISTA_YA_EN_DISPOSITIVO");
+    listas.push({ id, name: nombre, tipo: "nube", url: `nube:${id}`, spreadsheetId: "", gid: null, titulo: nombre, hoja: "", rol });
+    guardarListasArr(listas);
+  }
+  const nombreListaNube = (n) => {
+    const name = String(n ?? "").trim().slice(0, 60);
+    if (!name) throw new Error("FALTA_NOMBRE");
+    return name;
+  };
+
+  async function nubeListar() {
+    const r = await nubeFetch("/api/listas");
+    const locales = new Set(obtenerListasArr().map((l) => l.id));
+    return r.listas.map((l) => ({ id: l.id, nombre: l.nombre, rol: l.rol, enDispositivo: locales.has(l.id) }));
+  }
+
+  async function nubeCrearLista(nombre) {
+    const name = nombreListaNube(nombre);
+    const id = nuevoIdLista();
+    await nubeFetch("/api/listas", { method: "POST", body: { id, nombre: name } });
+    guardarDatosCrudo({ items: [], siguiente: 2 }, id);
+    anadirEntradaNube(id, name, "propietario");
+    return { id, name };
+  }
+
+  // Añade a este dispositivo una lista que ya existe en la nube (tuya en otro dispositivo, o compartida contigo)
+  async function nubeAnadirLista(id) {
+    if (obtenerListasArr().some((l) => l.id === id)) throw new Error("LISTA_YA_EN_DISPOSITIVO");
+    const r = await nubeFetch(`/api/listas/${encodeURIComponent(id)}`);
+    guardarDatosCrudo({ items: [], siguiente: 2 }, id);
+    anadirEntradaNube(id, r.lista.nombre, r.lista.rol);
+    let total = 0;
+    try { await sincronizarNube(id); total = leerDatosLocal(id).items.length; } catch (e) { /* se completará al abrirla */ }
+    return { id, name: r.lista.nombre, total };
+  }
+
+  // Sube una COPIA de una lista (local o de Google Sheets) a la nube; la original no se toca
+  async function nubeSubirCopia(origenId, nombre) {
+    const origen = obtenerListasArr().find((l) => l.id === origenId);
+    if (!origen) throw new Error("LISTA_NO_ENCONTRADA");
+    if (origen.tipo === "nube") throw new Error("YA_ESTA_EN_LA_NUBE");
+    const name = nombreListaNube(nombre || origen.name);
+    const filas = origen.tipo === "local" ? leerDatosLocal(origenId).items : await conLista(origenId, () => obtenerListaCompleta());
+    const items = [];
+    let fila = 2;
+    for (const x of filas) { const it = itemLocal(x, fila); if (it) { items.push(it); fila++; } }
+    const id = nuevoIdLista();
+    await nubeFetch("/api/listas", { method: "POST", body: { id, nombre: name } }); // si falla aquí, no queda nada a medias
+    const d = { items, siguiente: fila };
+    registrarCambiosNube(d);
+    guardarDatosCrudo(d, id);
+    anadirEntradaNube(id, name, "propietario");
+    let error = "";
+    try { await sincronizarNube(id); } catch (e) { error = String(e?.message || e).replace(/^Error:\s*/, ""); }
+    return { id, name, total: items.length, error };
+  }
+
+  async function nubeMiembros(id) { return (await nubeFetch(`/api/listas/${encodeURIComponent(id)}`)).miembros || []; }
+  async function nubeCompartir(id, email, rol) {
+    return nubeFetch(`/api/listas/${encodeURIComponent(id)}/miembros`, { method: "POST", body: { email, rol } });
+  }
+  async function nubeQuitarMiembro(id, email) {
+    return nubeFetch(`/api/listas/${encodeURIComponent(id)}/miembros?email=${encodeURIComponent(email)}`, { method: "DELETE" });
+  }
+
   async function handle(msg){
     switch(msg.type){
       case "GET_CONFIG": { // se añade el id de la lista activa: el catálogo de géneros es propio de cada lista
@@ -1203,7 +1511,18 @@
       case "RENAME_LISTA": renombrarLista(msg.id,msg.name); return {ok:true};
       case "DELETE_LISTA": return {ok:true,...await eliminarListaGuardada(msg.id)};
       case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
-      case "GET_ANIME_LIST": return {ok:true,lista:await obtenerListaCompleta()};
+      case "GET_ANIME_LIST": { const lista = await obtenerListaCompleta(); return {ok:true,lista,nube:estadoNube}; }
+      case "NUBE_ESTADO": return {ok:true,sesion:window.PWA_NUBE.estado(),clientId:obtenerClientId()};
+      case "NUBE_CERRAR_SESION": window.PWA_NUBE.cerrarSesion(); return {ok:true};
+      case "NUBE_LISTAR": return {ok:true,listas:await nubeListar()};
+      case "NUBE_CREAR": return {ok:true,...await nubeCrearLista(msg.name)};
+      case "NUBE_ANADIR": return {ok:true,...await nubeAnadirLista(msg.id)};
+      case "NUBE_SUBIR": return {ok:true,...await nubeSubirCopia(msg.id,msg.name)};
+      case "NUBE_MIEMBROS": return {ok:true,miembros:await nubeMiembros(msg.id)};
+      case "NUBE_COMPARTIR": return {ok:true,...await nubeCompartir(msg.id,msg.email,msg.rol)};
+      case "NUBE_QUITAR_MIEMBRO": await nubeQuitarMiembro(msg.id,msg.email); return {ok:true};
+      case "NUBE_SINCRONIZAR": return {ok:true,...await sincronizarNube(msg.id)};
+      case "NUBE_BORRAR": await nubeFetch(`/api/listas/${encodeURIComponent(msg.id)}`,{method:"DELETE"}); return {ok:true};
       case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
       case "UPDATE_GENRES_BULK": await actualizarGenerosLote(msg.cambios); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};

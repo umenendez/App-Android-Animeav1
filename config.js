@@ -13,8 +13,5 @@
 //   https://tuusuario.github.io
 window.PWA_CONFIG = {
   googleClientId: "123415018434-6dicvlgt2j37v841f9m0hricunuatp9c.apps.googleusercontent.com",
-  googleScopes: "https://www.googleapis.com/auth/spreadsheets",
-  // URL de tu Cloudflare Worker que sirve las portadas de Manwhaweb (ver worker-portadas.js).
-  // Ejemplo: "https://portadas.tuusuario.workers.dev". Déjalo vacío para no usarlo.
-  mwProxy: "https://red-violet-9fed.unaxmenendez.workers.dev/"
+  googleScopes: "https://www.googleapis.com/auth/spreadsheets"
 };

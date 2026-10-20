@@ -1141,8 +1141,8 @@ function renderItem(anime) {
       chk.addEventListener("change", () => { if (chk.checked) seleccionMover.set(anime.row, anime); else seleccionMover.delete(anime.row); pintarBarraMover(); });
       info.append(el("label", { className: "marcar-mover", title: "Elegir para mover varias series a la vez" }, chk, "Elegir"), mover);
     }
-    if (configActual?.tipo === "local") {
-      // Una lista local no tiene hoja donde borrar la fila: se elimina desde aquí
+    if (esListaSinSheet()) {
+      // Una lista local o de la nube no tiene hoja donde borrar la fila: se elimina desde aquí
       const borrar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Eliminar de la lista" });
       borrar.addEventListener("click", async () => {
         if (!confirm(`¿Eliminar «${anime.title}» de esta lista?`)) return;
@@ -2249,6 +2249,7 @@ function setListasPanel(abierto) {
     listaLocalStatusEl.textContent = "";
     listaLocalNombreEl.value = "";
     cargarListasPanel();
+    cargarNubePanel();
   }
 }
 $("btnListas").addEventListener("click", () => setListasPanel(listasPanelEl.hidden));
@@ -2367,7 +2368,7 @@ async function moverVarias(animes, dest, selectEl) {
     if (fallos.length) partes.push(`${fallos.length} con error`);
     toast(partes.join(" · "));
     seleccionMover.clear();
-    if (configActual?.tipo === "local") {
+    if (esListaSinSheet()) {
       const filasQuitadas = new Set(quitadas.map((a) => a.row));
       todosLosAnimes = todosLosAnimes.filter((x) => !filasQuitadas.has(x.row));
       render();
@@ -2401,7 +2402,7 @@ async function moverSerie(anime, dest, selectEl) {
     const d = await enviarMensaje({ type: "DELETE_SERIE", row: anime.row, title: anime.title });
     if (!d?.ok) { toast("Se copió a «" + dest.name + "», pero no se pudo quitar de esta lista: " + mensajeError(d?.error || "error desconocido")); return; }
     toast(`Movida a «${dest.name}»`);
-    if (configActual?.tipo === "local") {
+    if (esListaSinSheet()) {
       todosLosAnimes = todosLosAnimes.filter((x) => x.row !== anime.row);
       render();
       guardarListaCache();
@@ -2431,6 +2432,7 @@ async function cambiarAListaGuardada(l, usarBtn) {
 }
 
 async function borrarListaGuardada(l) {
+  if (l.tipo === "nube") return quitarListaNube(l);
   const aviso = l.tipo === "local"
     ? `¿Borrar la lista local «${l.name}»? Se eliminarán sus series de la extensión y no se puede deshacer. Si quieres conservarlas, exporta antes un .json.`
     : `¿Quitar «${l.name}» de tus listas guardadas? (no borra la hoja de Google, solo el acceso rápido)`;
@@ -2455,7 +2457,7 @@ function descargarJson(nombreArchivo, objeto) {
 async function exportarLista(l, btn) {
   btn.disabled = true;
   let datos;
-  if (l.tipo === "local") {
+  if (l.tipo === "local" || l.tipo === "nube") {
     const r = await enviarMensaje({ type: "EXPORT_LISTA_LOCAL", id: l.id });
     if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); btn.disabled = false; return; }
     datos = r.datos;
@@ -2548,6 +2550,19 @@ async function cargarListasPanel() {
     });
     const borrarBtn = el("button", { className: "btn-mini peligro", type: "button", textContent: l.tipo === "local" ? "Borrar" : "Quitar" });
     borrarBtn.addEventListener("click", () => borrarListaGuardada(l));
+    // Lista de Sheets o local → subir una copia a la nube; lista de la nube propia → compartir
+    let nubeBtn = null, cajaCompartir = null;
+    if (l.tipo === "nube") {
+      if (l.rol === "propietario") {
+        nubeBtn = el("button", { className: "btn-mini", type: "button", textContent: "Compartir", title: "Dar acceso a otras cuentas de Google" });
+        cajaCompartir = el("div", { className: "nube-compartir", hidden: true });
+        nubeBtn.addEventListener("click", () => { if (cajaCompartir.hidden) abrirCompartir(l, cajaCompartir); else cajaCompartir.hidden = true; });
+      }
+    } else {
+      nubeBtn = el("button", { className: "btn-mini", type: "button", textContent: "A la nube", title: "Subir una copia de esta lista a la nube (la original no cambia)" });
+      nubeBtn.addEventListener("click", () => subirListaANube(l, nubeBtn));
+    }
+    const etiquetaNube = l.tipo !== "nube" ? null : el("span", { className: "etiqueta-local", textContent: l.rol === "propietario" ? "Nube" : (l.rol === "lectura" ? "Nube · solo lectura" : "Nube · compartida") });
     const fijada = listasFijadas().includes(l.id);
     const fijarBtn = el("button", { className: "btn-mini btn-fijar", type: "button", textContent: "📌", title: fijada ? "Quitar de la barra de listas" : "Fijar en la barra de listas (si fijas alguna, solo se muestran las fijadas)", ariaLabel: fijada ? "Quitar acceso directo" : "Fijar acceso directo" });
     fijarBtn.setAttribute("aria-pressed", String(fijada));
@@ -2555,8 +2570,10 @@ async function cargarListasPanel() {
     listasContenidoEl.append(el("div", { className: "lista-item" },
       el("span", { className: "nombre", textContent: l.name }),
       l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
+      etiquetaNube,
       l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
-      subir, bajar, fijarBtn, renombrarBtn, usarBtn, (l.tipo === "local" || l.activa) ? exportarBtn : null, borrarBtn));
+      subir, bajar, fijarBtn, renombrarBtn, usarBtn, nubeBtn, (l.tipo === "local" || l.tipo === "nube" || l.activa) ? exportarBtn : null, borrarBtn),
+      cajaCompartir);
   });
 }
 
@@ -2578,9 +2595,172 @@ async function guardarListaNueva() {
 listaGuardarBtnEl.addEventListener("click", guardarListaNueva);
 [listaNombreEl, listaUrlEl].forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarListaNueva(); }));
 
+
+// --- Listas en la nube (Cloudflare D1) -----------------------------------------------
+const nubeSesionEl = $("nubeSesion");
+const nubeAccionesEl = $("nubeAcciones");
+const nubeNombreEl = $("nubeNombre");
+const nubeStatusEl = $("nubeStatus");
+const nubeListasEl = $("nubeListas");
+
+// Aviso sobre la última sincronización al abrir una lista de la nube (la lista se muestra igualmente)
+function avisoNube(n) {
+  if (!n || n.ok) return;
+  const e = String(n.error || "");
+  if (/NUBE_SESION_CADUCADA/.test(e)) {
+    mostrarSync("Sesión de la nube caducada: mostrando lo guardado en este dispositivo.", { texto: "Iniciar sesión", accion: () => setListasPanel(true) });
+  } else if (/NUBE_SIN_CONEXION/.test(e)) {
+    mostrarSync("Sin conexión: tus cambios se enviarán a la nube cuando vuelva internet.", { texto: "Reintentar", accion: cargar });
+  } else {
+    mostrarSync("No se pudo sincronizar con la nube: " + mensajeError(e), { texto: "Reintentar", accion: cargar });
+  }
+}
+
+// Si el error es de sesión, enseña el botón de Google; en cualquier caso muestra el mensaje
+function errorNube(r, destino) {
+  const e = String(r?.error || "error desconocido");
+  const msg = mensajeError(e);
+  if (destino) destino.textContent = msg; else toast(msg);
+  if (/NUBE_SESION_CADUCADA/.test(e)) cargarNubePanel();
+}
+
+async function cargarNubePanel() {
+  nubeStatusEl.textContent = "";
+  nubeListasEl.innerHTML = "";
+  nubeSesionEl.innerHTML = "";
+  const est = await enviarMensaje({ type: "NUBE_ESTADO" });
+  if (!est?.sesion) {
+    nubeAccionesEl.hidden = true;
+    const cont = el("div", { className: "nube-boton-google" });
+    nubeSesionEl.append(el("p", { className: "nube-ayuda", textContent: "Inicia sesión con Google para usar las listas en la nube." }), cont);
+    window.PWA_NUBE.renderBoton(
+      cont,
+      () => { toast("Sesión iniciada"); cargarNubePanel(); cargarListasPanel(); },
+      (e) => { nubeStatusEl.textContent = mensajeError(e?.message || e); }
+    );
+    return;
+  }
+  const salir = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar sesión" });
+  salir.addEventListener("click", async () => { await enviarMensaje({ type: "NUBE_CERRAR_SESION" }); cargarNubePanel(); });
+  nubeSesionEl.append(el("div", { className: "lista-item" }, el("span", { className: "nombre", textContent: "Sesión: " + est.sesion.email }), salir));
+  nubeAccionesEl.hidden = false;
+  listarNube();
+}
+
+async function listarNube() {
+  nubeListasEl.innerHTML = "";
+  const r = await enviarMensaje({ type: "NUBE_LISTAR" });
+  if (!r?.ok) { errorNube(r, nubeStatusEl); return; }
+  if (!r.listas.length) {
+    nubeListasEl.append(el("p", { className: "vacio-listas", textContent: "Todavía no tienes listas en la nube." }));
+    return;
+  }
+  r.listas.forEach((l) => {
+    const rol = l.rol === "propietario" ? "" : (l.rol === "lectura" ? " · compartida, solo lectura" : " · compartida contigo");
+    let accion;
+    if (l.enDispositivo) accion = el("span", { className: "etiqueta-activa", textContent: "En este dispositivo" });
+    else {
+      accion = el("button", { className: "btn-mini", type: "button", textContent: "Añadir a este dispositivo" });
+      accion.addEventListener("click", async () => {
+        accion.disabled = true;
+        const a = await enviarMensaje({ type: "NUBE_ANADIR", id: l.id });
+        if (!a?.ok) { accion.disabled = false; errorNube(a); return; }
+        toast(`«${a.name}» añadida (${a.total} series)`);
+        cargarListasPanel(); listarNube();
+      });
+    }
+    nubeListasEl.append(el("div", { className: "lista-item" }, el("span", { className: "nombre", textContent: l.nombre + rol }), accion));
+  });
+}
+
+$("nubeCrearBtn").addEventListener("click", async () => {
+  const name = nubeNombreEl.value.trim();
+  if (!name) { nubeStatusEl.textContent = "Ponle un nombre a la lista."; return; }
+  $("nubeCrearBtn").disabled = true;
+  const r = await enviarMensaje({ type: "NUBE_CREAR", name });
+  $("nubeCrearBtn").disabled = false;
+  if (!r?.ok) { errorNube(r, nubeStatusEl); return; }
+  nubeNombreEl.value = "";
+  nubeStatusEl.textContent = `Creada: ${r.name}`;
+  toast("Lista creada en la nube");
+  cargarListasPanel(); listarNube();
+});
+nubeNombreEl.addEventListener("keydown", (e) => { if (e.key === "Enter") $("nubeCrearBtn").click(); });
+
+async function subirListaANube(l, btn) {
+  if (!confirm(`¿Subir una copia de «${l.name}» a la nube? La lista original no se modifica. Después podrás usarla desde otros dispositivos y compartirla.`)) return;
+  btn.disabled = true;
+  toast("Subiendo…");
+  const r = await enviarMensaje({ type: "NUBE_SUBIR", id: l.id });
+  btn.disabled = false;
+  if (!r?.ok) { errorNube(r); return; }
+  toast(r.error
+    ? `Copia creada (${r.total} series), pero no se pudo enviar todo: ${mensajeError(r.error)}`
+    : `Copia en la nube creada (${r.total} series)`);
+  cargarListasPanel(); cargarNubePanel();
+}
+
+// Quitar una lista de la nube de ESTE dispositivo; si eres el propietario, opcionalmente borrarla para todos
+async function quitarListaNube(l) {
+  if (!confirm(`¿Quitar «${l.name}» de este dispositivo? Sus series siguen en la nube y podrás volver a añadirla.`)) return;
+  let borrarRemota = false;
+  if (l.rol === "propietario") {
+    borrarRemota = confirm(`¿Borrarla también de la nube?\nSe eliminará para todas las cuentas con las que la compartas y no se puede deshacer.\n\nAceptar = borrar de la nube · Cancelar = solo quitarla de este dispositivo`);
+  }
+  if (borrarRemota) {
+    const b = await enviarMensaje({ type: "NUBE_BORRAR", id: l.id });
+    if (!b?.ok) { errorNube(b); return; }
+  } else {
+    await enviarMensaje({ type: "NUBE_SINCRONIZAR", id: l.id }); // envía antes lo pendiente; si falla, no impide quitarla
+  }
+  const r = await enviarMensaje({ type: "DELETE_LISTA", id: l.id });
+  if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); return; }
+  try { localStorage.removeItem(claveCatalogoDe(l.id)); } catch (e) {}
+  cargarListasPanel(); listarNube();
+}
+
+async function abrirCompartir(l, caja) {
+  caja.hidden = false;
+  caja.innerHTML = "";
+  caja.append(el("p", { className: "nube-ayuda", textContent: "Comparte esta lista con otras cuentas de Google. La otra persona entra con ese email en «Listas en la nube» y la añade a su dispositivo." }));
+  const r = await enviarMensaje({ type: "NUBE_MIEMBROS", id: l.id });
+  if (!r?.ok) { caja.append(el("div", { className: "estado-txt", textContent: mensajeError(r?.error || "error desconocido") })); return; }
+  r.miembros.forEach((m) => {
+    const quitar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Quitar acceso" });
+    quitar.addEventListener("click", async () => {
+      quitar.disabled = true;
+      const q = await enviarMensaje({ type: "NUBE_QUITAR_MIEMBRO", id: l.id, email: m.email });
+      if (!q?.ok) { quitar.disabled = false; errorNube(q); return; }
+      abrirCompartir(l, caja);
+    });
+    caja.append(el("div", { className: "lista-item" },
+      el("span", { className: "nombre", textContent: m.email }),
+      el("span", { className: "etiqueta-local", textContent: m.rol === "lectura" ? "Solo lectura" : "Puede editar" }), quitar));
+  });
+  const email = el("input", { type: "email", placeholder: "email@gmail.com", ariaLabel: "Email de la cuenta de Google" });
+  const rol = el("select", { ariaLabel: "Permisos" },
+    el("option", { value: "edicion", textContent: "Puede editar" }),
+    el("option", { value: "lectura", textContent: "Solo lectura" }));
+  const anadir = el("button", { className: "btn", type: "button", textContent: "Compartir" });
+  const estado = el("div", { className: "estado-txt" });
+  anadir.addEventListener("click", async () => {
+    const e = email.value.trim();
+    if (!e) { estado.textContent = "Escribe un email."; return; }
+    anadir.disabled = true;
+    const a = await enviarMensaje({ type: "NUBE_COMPARTIR", id: l.id, email: e, rol: rol.value });
+    anadir.disabled = false;
+    if (!a?.ok) { errorNube(a, estado); return; }
+    abrirCompartir(l, caja);
+  });
+  email.addEventListener("keydown", (ev) => { if (ev.key === "Enter") anadir.click(); });
+  caja.append(email, rol, anadir, estado);
+}
+
 // --- Configuración: qué Google Sheet se usa -----------------------------------
 
 let configActual = null; // { url, titulo, hoja } o null si aún no se ha elegido hoja
+// Listas que no usan Google Sheets (locales y de la nube): las series se guardan en el dispositivo
+const esListaSinSheet = () => configActual?.tipo === "local" || configActual?.tipo === "nube";
 let clientIdActual = ""; // Client ID de OAuth ya guardado en este dispositivo (si lo hay)
 
 function mensajeError(error) {
@@ -2605,6 +2785,11 @@ function mensajeError(error) {
   if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
   if (c.includes("FILA_CAMBIADA")) return "La fila de la hoja ya no es esa serie (se editó fuera). Recarga la lista y vuelve a intentarlo.";
   if (c.includes("FALTA_NOMBRE")) return "Ponle un nombre a la lista.";
+  if (c.includes("NUBE_SESION_CADUCADA")) return "Tu sesión de la nube ha caducado. Vuelve a iniciar sesión en «Listas en la nube» (dentro de Tus listas).";
+  if (c.includes("NUBE_SIN_CONEXION")) return "No se pudo conectar con la nube. Comprueba tu conexión.";
+  if (c.includes("SOLO_LECTURA")) return "Esta lista está compartida contigo como solo lectura.";
+  if (c.includes("LISTA_YA_EN_DISPOSITIVO")) return "Esa lista ya está en este dispositivo.";
+  if (c.includes("YA_ESTA_EN_LA_NUBE")) return "Esa lista ya está en la nube.";
   if (c.includes("LISTA_NO_ENCONTRADA")) return "Esa lista ya no existe.";
   if (c.includes("FALTA_TITULO")) return "Escribe el título de la serie.";
   if (c.includes("NO_ES_LISTA_LOCAL")) return "Esto solo está disponible en listas locales.";
@@ -2613,11 +2798,11 @@ function mensajeError(error) {
 }
 
 function crearFormConfigBase({ bienvenida }) {
-  const input = el("input", { type: "url", placeholder: "https://docs.google.com/spreadsheets/d/…", value: configActual?.tipo === "local" ? "" : (configActual?.url || ""), ariaLabel: "Enlace de tu Google Sheet" });
+  const input = el("input", { type: "url", placeholder: "https://docs.google.com/spreadsheets/d/…", value: esListaSinSheet() ? "" : (configActual?.url || ""), ariaLabel: "Enlace de tu Google Sheet" });
   const clientIdInput = el("input", { type: "text", placeholder: "Client ID de OAuth (…apps.googleusercontent.com)", value: clientIdActual || "", ariaLabel: "Client ID de OAuth de Google" });
   const estado = el("div", { className: "estado-txt" });
   const btn = el("button", { className: "btn", type: "button", textContent: bienvenida ? "Conectar y empezar" : "Guardar hoja" });
-  if (configActual?.tipo === "local") estado.textContent = `Lista local en uso: ${configActual.titulo} (sin Google Sheets). Pega un enlace aquí si prefieres conectar una hoja.`;
+  if (esListaSinSheet()) estado.textContent = `${configActual.tipo === "nube" ? "Lista en la nube" : "Lista local"} en uso: ${configActual.titulo} (sin Google Sheets). Pega un enlace aquí si prefieres conectar una hoja.`;
   else if (configActual?.titulo) estado.textContent = `Conectada: ${configActual.titulo} (pestaña «${configActual.hoja}»)`;
 
   async function guardarConfig() {
@@ -2669,7 +2854,7 @@ function crearFormConfig(opts) {
 }
 
 function crearBotonCuenta() {
-  if (configActual?.tipo === "local") return el("div"); // lista local: no se usa la cuenta de Google
+  if (esListaSinSheet()) return el("div"); // lista local o de la nube: no se usa la cuenta de Google Sheets
   const estado = el("div", { className: "estado-txt" });
   const btn = el("button", { className: "btn", type: "button", textContent: "Cambiar de cuenta de Google" });
   btn.addEventListener("click", async () => {
@@ -2900,6 +3085,7 @@ async function cargar() {
   }
 
   mostrarSync("");
+  avisoNube(res.nube);
   const igual = cache && JSON.stringify(cache.lista) === JSON.stringify(res.lista);
   todosLosAnimes = res.lista;
   sincronizarCatalogo();
