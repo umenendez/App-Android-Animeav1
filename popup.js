@@ -376,7 +376,8 @@ function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else port
 function portadaProxy(url) {
   try {
     const u = new URL(url, location.href);
-    if (u.hostname === "img1mw.xyz" || u.hostname.endsWith(".img1mw.xyz")) {
+    // Los dominios de imágenes de Manwhaweb se numeran (img1mw.xyz, img2mw.xyz, …)
+    if (/(^|\.)img\d+mw\.xyz$/i.test(u.hostname)) {
       return "https://images.weserv.nl/?url=" + encodeURIComponent(u.host + u.pathname + u.search);
     }
   } catch (_) {}
