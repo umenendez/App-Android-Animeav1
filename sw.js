@@ -1,7 +1,8 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v40 (proxy de portadas para todos los dominios imgNmw.xyz).
-const CACHE = "animeav1-pwa-v40";
+// las cachés antiguas. Último bump: v41 (portadas de Manwhaweb: sin Referer, proxies y sin caché).
+const CACHE = "animeav1-pwa-v41";
 const COVER_CACHE = "anime-covers-v2";
+const MW = /(^|\.)img\d+mw\.xyz$/i;
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
@@ -20,6 +21,11 @@ self.addEventListener("activate", event => {
         if (!keep.has(key)) await caches.delete(key);
       }
     }
+    // Limpia portadas de Manwhaweb guardadas antes (podían ser respuestas de error).
+    try {
+      const cc = await caches.open(COVER_CACHE);
+      for (const r of await cc.keys()) if (MW.test(new URL(r.url).hostname)) await cc.delete(r);
+    } catch (_) {}
     await self.clients.claim();
   })());
 });
@@ -27,6 +33,9 @@ self.addEventListener("activate", event => {
 self.addEventListener("fetch", event => {
   const request = event.request;
   const url = new URL(request.url);
+
+  // Portadas de Manwhaweb: sin caché ni intermediarios, que las gestione el navegador.
+  if (MW.test(url.hostname)) return;
 
   // Si ya existe una copia local de una portada, servirla directamente.
   // Esto permite que <img src="URL-original"> use la copia guardada sin

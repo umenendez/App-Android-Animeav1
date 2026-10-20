@@ -371,17 +371,34 @@ function portadaSlot() {
 }
 function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else portadaSlots++; }
 
-// Algunas portadas de Manwhaweb bloquean la carga directa desde otros dominios.
-// En ese caso se prueba un proxy de imágenes como alternativa; el resto de URLs no cambia.
-function portadaProxy(url) {
+// Las portadas de Manwhaweb (img1mw.xyz, img2mw.xyz, …) bloquean la carga desde otros
+// dominios según el Referer. Por eso: 1) se piden sin Referer, 2) si falla se prueban
+// proxies de imágenes y 3) no se guardan en la caché local (la respuesta opaca podría ser
+// un error 403 y quedaría guardada para siempre). El resto de URLs no cambia.
+function esMW(url) {
+  try { return /(^|\.)img\d+mw\.xyz$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
+}
+function portadaAlternativas(url) {
   try {
     const u = new URL(url, location.href);
-    // Los dominios de imágenes de Manwhaweb se numeran (img1mw.xyz, img2mw.xyz, …)
-    if (/(^|\.)img\d+mw\.xyz$/i.test(u.hostname)) {
-      return "https://images.weserv.nl/?url=" + encodeURIComponent(u.host + u.pathname + u.search);
-    }
-  } catch (_) {}
-  return "";
+    if (!esMW(url)) return [];
+    const sinProtocolo = encodeURIComponent(u.host + u.pathname + u.search);
+    return [
+      "https://images.weserv.nl/?url=" + sinProtocolo,
+      "https://wsrv.nl/?url=" + sinProtocolo,
+      "https://wsrv.nl/?url=" + encodeURIComponent(u.href),
+    ];
+  } catch (_) { return []; }
+}
+// Siguiente intento tras un error de carga; devuelve false si ya no quedan.
+function reintentarPortada(img, original) {
+  const alts = portadaAlternativas(original);
+  const n = Number(img.dataset.intentoPortada || 0);
+  if (n >= alts.length) return false;
+  img.dataset.intentoPortada = String(n + 1);
+  img.referrerPolicy = "no-referrer";
+  img.src = alts[n];
+  return true;
 }
 
 function predecodificar(url) {
@@ -399,6 +416,7 @@ function predecodificar(url) {
 
 // Guarda la portada en la caché local (respuesta opaca, que el Service Worker sabe servir).
 async function guardarEnCache(url) {
+  if (esMW(url)) return; // ver nota sobre Manwhaweb más arriba
   const cache = await caches.open(COVER_CACHE);
   if (!(await cache.match(url))) {
     await portadaSlot();
@@ -448,13 +466,13 @@ function crearPortada(anime, clase, observador) {
   caja.classList.add("cargando");
   const asignar = (src) => {
     const original = src || url;
-    let intentoProxy = false;
+    img.dataset.intentoPortada = "0";
     img.onload = () => { caja.classList.remove("cargando"); caja.classList.remove("sin"); img.hidden = false; img.classList.add("cargada"); };
     img.onerror = () => {
-      const alternativa = !intentoProxy ? portadaProxy(original) : "";
-      if (alternativa) { intentoProxy = true; img.src = alternativa; return; }
+      if (reintentarPortada(img, original)) return;
       caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true;
     };
+    if (esMW(original)) img.referrerPolicy = "no-referrer";
     img.src = original;
   };
   const cargar = () => { if (portadaMem.has(url)) asignar(url); else obtenerPortada(url).then(asignar); };
@@ -989,11 +1007,8 @@ function renderItem(anime) {
     const portadaSrc = String(anime.cover).replace(/^http:\/\//i, "https://");
     img.dataset.src = portadaSrc;
     img.addEventListener("load", () => img.classList.add("lista"));
-    img.addEventListener("error", () => {
-      if (img.dataset.proxyTried === "1") return;
-      const alternativa = portadaProxy(portadaSrc);
-      if (alternativa) { img.dataset.proxyTried = "1"; img.src = alternativa; }
-    });
+    img.addEventListener("error", () => { reintentarPortada(img, portadaSrc); });
+    if (esMW(portadaSrc)) img.referrerPolicy = "no-referrer";
     portada.append(img);
     if (portadaMem.has(portadaSrc)) img.src = portadaSrc; else observador.observe(img);
   } else {
