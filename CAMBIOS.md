@@ -5,6 +5,19 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.21.1
+
+### Tus listas: menú de engranaje y botón de Google integrado **[PWA]**
+
+- **Engranaje por lista:** cada fila de «Tus listas» muestra ahora solo el nombre, las etiquetas,
+  «Usar», «Borrar/Quitar» y un icono de engranaje ⚙. Al pulsarlo se despliegan Subir, Bajar,
+  Nombre, Fijar, A la nube (o Compartir en tus listas de la nube) y Exportar. Ya no se salen
+  botones por la derecha de la pantalla. El menú se queda abierto al subir/bajar una lista.
+- **Botón de inicio de sesión de Google** (Listas en la nube): sustituye al botón blanco estándar
+  por uno con el estilo de la app (tema claro/oscuro, mismos bordes y colores). Por debajo sigue
+  siendo el inicio de sesión oficial de Google, así que no cambia nada en el Worker.
+- Caché de la PWA `v43`.
+
 ## 1.21.0
 
 ### Listas en la nube (Cloudflare D1) **[PWA]**

@@ -1,6 +1,6 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v42 (listas en la nube con Cloudflare D1: sincronización, login de Google y compartir).
-const CACHE = "animeav1-pwa-v42";
+// las cachés antiguas. Último bump: v43 (menú de engranaje en Tus listas y botón de Google con el estilo de la app).
+const CACHE = "animeav1-pwa-v43";
 const COVER_CACHE = "anime-covers-v2";
 const MW = /(^|\.)img\d+mw\.xyz$/i;
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];

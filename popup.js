@@ -2519,6 +2519,9 @@ listaLocalArchivoEl.addEventListener("change", () => {
   if (archivo) importarListaLocal(archivo);
 });
 
+const menusListaAbiertos = new Set(); // ids de listas con el menú del engranaje desplegado
+const SVG_ENGRANAJE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/><path d="m19.4 15 .1.1-1.8 3.1-.2-.1a3 3 0 0 1-3.3.2l-.1-.1a3 3 0 0 0-4.2 0l-.1.1a3 3 0 0 1-3.3-.2l-.2.1-1.8-3.1.1-.1a3 3 0 0 0 .3-3.3v-.2a3 3 0 0 0-.3-3.3l-.1-.1 1.8-3.1.2.1a3 3 0 0 1 3.3-.2l.1.1a3 3 0 0 0 4.2 0l.1-.1a3 3 0 0 1 3.3.2l.2-.1 1.8 3.1-.1.1a3 3 0 0 0-.3 3.3v.2a3 3 0 0 0 .3 3.3Z"/></svg>';
+
 async function cargarListasPanel() {
   listasContenidoEl.innerHTML = "";
   refrescarCabeceraListas();
@@ -2529,15 +2532,15 @@ async function cargarListasPanel() {
     return;
   }
   listas.forEach((l, idx) => {
-    const subir = el("button", { className: "btn-mini mover-orden", type: "button", textContent: "▲", title: "Subir en el selector", ariaLabel: "Subir", disabled: idx === 0 });
-    const bajar = el("button", { className: "btn-mini mover-orden", type: "button", textContent: "▼", title: "Bajar en el selector", ariaLabel: "Bajar", disabled: idx === listas.length - 1 });
+    const subir = el("button", { className: "btn-mini mover-orden", type: "button", textContent: "▲ Subir", title: "Subir en el selector", ariaLabel: "Subir", disabled: idx === 0 });
+    const bajar = el("button", { className: "btn-mini mover-orden", type: "button", textContent: "▼ Bajar", title: "Bajar en el selector", ariaLabel: "Bajar", disabled: idx === listas.length - 1 });
     subir.addEventListener("click", () => { moverOrdenLista(listas, l.id, -1); cargarListasPanel(); });
     bajar.addEventListener("click", () => { moverOrdenLista(listas, l.id, 1); cargarListasPanel(); });
     const usarBtn = el("button", { className: "btn-mini", type: "button", textContent: l.activa ? "En uso" : "Usar", disabled: l.activa });
     usarBtn.addEventListener("click", () => cambiarAListaGuardada(l, usarBtn));
     const exportarBtn = el("button", { className: "btn-mini", type: "button", textContent: "Exportar", title: "Guardar esta lista en un archivo .json" });
     exportarBtn.addEventListener("click", () => exportarLista(l, exportarBtn));
-    const renombrarBtn = el("button", { className: "btn-mini", type: "button", textContent: "✎", title: "Cambiar el nombre de la lista", ariaLabel: "Cambiar el nombre de la lista" });
+    const renombrarBtn = el("button", { className: "btn-mini", type: "button", textContent: "✎ Nombre", title: "Cambiar el nombre de la lista", ariaLabel: "Cambiar el nombre de la lista" });
     renombrarBtn.addEventListener("click", async () => {
       const nuevo = prompt("Nuevo nombre de la lista", l.name);
       if (nuevo === null || !nuevo.trim() || nuevo.trim() === l.name) return;
@@ -2564,16 +2567,28 @@ async function cargarListasPanel() {
     }
     const etiquetaNube = l.tipo !== "nube" ? null : el("span", { className: "etiqueta-local", textContent: l.rol === "propietario" ? "Nube" : (l.rol === "lectura" ? "Nube · solo lectura" : "Nube · compartida") });
     const fijada = listasFijadas().includes(l.id);
-    const fijarBtn = el("button", { className: "btn-mini btn-fijar", type: "button", textContent: "📌", title: fijada ? "Quitar de la barra de listas" : "Fijar en la barra de listas (si fijas alguna, solo se muestran las fijadas)", ariaLabel: fijada ? "Quitar acceso directo" : "Fijar acceso directo" });
+    const fijarBtn = el("button", { className: "btn-mini btn-fijar", type: "button", textContent: fijada ? "📌 Fijada" : "📌 Fijar", title: fijada ? "Quitar de la barra de listas" : "Fijar en la barra de listas (si fijas alguna, solo se muestran las fijadas)", ariaLabel: fijada ? "Quitar acceso directo" : "Fijar acceso directo" });
     fijarBtn.setAttribute("aria-pressed", String(fijada));
     fijarBtn.addEventListener("click", () => { alternarListaFijada(l.id); cargarListasPanel(); });
-    listasContenidoEl.append(el("div", { className: "lista-item" },
-      el("span", { className: "nombre", textContent: l.name }),
-      l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
-      etiquetaNube,
-      l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
-      subir, bajar, fijarBtn, renombrarBtn, usarBtn, nubeBtn, (l.tipo === "local" || l.tipo === "nube" || l.activa) ? exportarBtn : null, borrarBtn),
-      cajaCompartir);
+    const menu = el("div", { className: "lista-menu", hidden: !menusListaAbiertos.has(l.id) },
+      subir, bajar, renombrarBtn, fijarBtn, nubeBtn, (l.tipo === "local" || l.tipo === "nube" || l.activa) ? exportarBtn : null);
+    const engranaje = el("button", { className: "icon-btn btn-engranaje", type: "button", title: "Más opciones de la lista", ariaLabel: "Más opciones de la lista" });
+    engranaje.innerHTML = SVG_ENGRANAJE;
+    engranaje.setAttribute("aria-expanded", String(!menu.hidden));
+    engranaje.addEventListener("click", () => {
+      menu.hidden = !menu.hidden;
+      if (menu.hidden) menusListaAbiertos.delete(l.id); else menusListaAbiertos.add(l.id);
+      engranaje.setAttribute("aria-expanded", String(!menu.hidden));
+    });
+    listasContenidoEl.append(el("div", { className: "lista-bloque" },
+      el("div", { className: "lista-item" },
+        el("span", { className: "nombre", textContent: l.name }),
+        l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
+        etiquetaNube,
+        l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
+        usarBtn, borrarBtn, engranaje),
+      menu,
+      cajaCompartir));
   });
 }
 
