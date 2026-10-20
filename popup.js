@@ -383,6 +383,8 @@ function portadaAlternativas(url) {
     const u = new URL(url, location.href);
     if (!esMW(url)) return [];
     const sinProtocolo = encodeURIComponent(u.host + u.pathname + u.search);
+    const propio = String(window.PWA_CONFIG?.mwProxy || "").trim().replace(/\/+$/, "");
+    if (propio) return [propio + "/?url=" + encodeURIComponent(u.href)];
     return [
       "https://images.weserv.nl/?url=" + sinProtocolo,
       "https://wsrv.nl/?url=" + sinProtocolo,
@@ -437,6 +439,8 @@ function obtenerPortada(url) {
   if (!url) return Promise.resolve("");
   if (portadaMem.has(url)) return Promise.resolve(url);
   if (portadaPend.has(url)) return portadaPend.get(url);
+  // Con proxy propio, las de Manwhaweb van directas por él (la URL original siempre da 403).
+  if (esMW(url) && window.PWA_CONFIG?.mwProxy) return Promise.resolve(portadaAlternativas(url)[0]);
   const p = (async () => {
     // Se muestra ya (el navegador la descarga); la caché local y el predecodificado se hacen en segundo plano
     if (guardarPortadasActivado()) guardarEnCache(url).catch((e) => console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e));
