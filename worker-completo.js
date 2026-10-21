@@ -233,7 +233,9 @@ function jsonError(mensaje, status) {
 //   · secret GOOGLE_CLIENT_ID   (el mismo de siempre; sirve para validar el login)
 //   · secret SESSION_SECRET     (una cadena larga y aleatoria que inventas tú)
 //   · variable ORIGENES_PERMITIDOS (opcional): orígenes web que pueden usar la API,
-//     separados por comas. Por defecto solo https://umenendez.github.io
+//     separados por comas. Por defecto: https://umenendez.github.io (la PWA) y
+//     chrome-extension://cmlaaboekekgplbjbocbjmplnnmjjjpa (la extensión de Chrome). Si defines la
+//     variable, SUSTITUYE a estos: incluye también el de la extensión.
 //
 // Flujo de login: la app obtiene un "id_token" de Google (Google Identity Services), lo
 // manda a POST /api/login y el Worker lo valida con las claves públicas de Google. Si es
@@ -242,7 +244,8 @@ function jsonError(mensaje, status) {
 
 const SESION_DIAS = 60;
 const MAX_CAMBIOS = 200;
-const ORIGENES_POR_DEFECTO = "https://umenendez.github.io";
+// La PWA (GitHub Pages) y la extensión de Chrome (su origen sale del "key" del manifest.json).
+const ORIGENES_POR_DEFECTO = "https://umenendez.github.io,chrome-extension://cmlaaboekekgplbjbocbjmplnnmjjjpa";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

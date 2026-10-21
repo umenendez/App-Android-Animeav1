@@ -889,9 +889,38 @@
     return { migradas, portadasFlv, sinCambios };
   }
 
-  // Mayor número de capítulo que aparece en la ficha de la serie (enlaces .../media/<slug>/<n>).
-  // null = no se pudo saber (sin conexión, o la ficha no lista capítulos): el popup actúa como si existiera.
-  async function capituloMaximo(slug) {
+  // Mayor número de capítulo que aparece en la ficha de la serie (enlaces .../media/<slug>/<n>) y si la serie está en
+  // emisión o terminada. null = no se pudo saber (sin conexión, o la ficha no lista capítulos): el popup actúa como si existiera.
+  // ¿La serie está en emisión o ya ha terminado? Se lee de la ficha (texto visible). Solo se aceptan líneas que
+  // sean exactamente una insignia («Finalizado», «En emisión»…) o «Estado: …», para no confundir una palabra suelta
+  // de una sinopsis o de un menú de filtros. null = no se sabe (entonces no se propone nada).
+  const RE_SERIE_FIN = /^(finalizad[oa]s?|terminad[oa]s?|completad[oa]s?|concluid[oa]s?|finished(?: airing)?|completed|ended)$/i;
+  const RE_SERIE_EMISION = /^(en emisi[oó]n|emiti[eé]ndose|emitiendo|en curso|en publicaci[oó]n|currently airing|airing|ongoing|releasing|pr[oó]ximamente|upcoming|not yet aired|por estrenar)$/i;
+  function clasificarEmision(t) {
+    t = String(t || "").replace(/^[^\p{L}]+/u, "").replace(/[.:!]+$/, "").trim(); // sin iconos/símbolos delante ni puntuación al final
+    if (RE_SERIE_FIN.test(t)) return "terminada";
+    if (RE_SERIE_EMISION.test(t)) return "emision";
+    return null;
+  }
+  function estadoEmisionDeHtml(html) {
+    const limpio = String(html || "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<(script|style|select|nav|footer|noscript|template)\b[\s\S]*?<\/\1>/gi, "");
+    const lineas = limpio.replace(/<[^>]*>/g, "\n").replace(/&nbsp;/g, " ").split("\n").map((s) => s.replace(/\s+/g, " ").trim()).filter(Boolean);
+    for (let i = 0; i < lineas.length; i++) {
+      const l = lineas[i];
+      const m = l.match(/^(?:estado|status|emisi[oó]n)\s*:\s*(.+)$/i);
+      if (m) { const c = clasificarEmision(m[1]); if (c) return c; }
+      if (/^(?:estado|status)\s*:?$/i.test(l) && lineas[i + 1]) { const c = clasificarEmision(lineas[i + 1]); if (c) return c; }
+      if (l.length <= 24) { const c = clasificarEmision(l); if (c) return c; } // insignia suelta
+    }
+    // Respaldo: datos incrustados en la página (status:"Finalizado"…). Solo vale si todos coinciden.
+    const claves = new Set();
+    for (const m of String(html || "").matchAll(/["']?\b(?:status|estado)["']?\s*:\s*["']([^"']{3,24})["']/gi)) { const c = clasificarEmision(m[1]); if (c) claves.add(c); }
+    return claves.size === 1 ? [...claves][0] : null;
+  }
+
+  async function infoCapitulos(slug) {
     if (!/^[a-z0-9-]+$/i.test(slug || "")) return null;
     try {
       const r = await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent("https://animeav1.com/media/" + slug)}`);
@@ -900,9 +929,10 @@
       const html = await r.text();
       let max = 0;
       for (const m of html.matchAll(new RegExp(`/media/${slug}/(\\d+)(?!\\d)`, "gi"))) max = Math.max(max, parseInt(m[1], 10));
-      return max > 0 ? max : null;
+      return { max: max > 0 ? max : null, emision: estadoEmisionDeHtml(html) };
     } catch (e) { return null; }
   }
+  async function capituloMaximo(slug) { return (await infoCapitulos(slug))?.max ?? null; }
 
   async function resolverSecuela({ decision, slug, existingUrl, existingTitle, nuevaFila }) {
     if (decision === "misma") {
@@ -1542,7 +1572,7 @@
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};
       case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
-      case "GET_CAPITULOS": return {ok:true,max:await capituloMaximo(msg.slug)};
+      case "GET_CAPITULOS": { const i=await infoCapitulos(msg.slug); return {ok:true,max:i?.max??null,emision:i?.emision??null}; }
       case "REGISTER_ANIME": return {ok:true,...await registrarAnime(msg.url)};
       case "RESOLVER_SECUELA": return {ok:true,...await conLista(msg.listaId,()=>resolverSecuela(msg))};
       case "CAP_EXISTE": return {ok:true,existe:await capituloSiguienteExiste(msg)};

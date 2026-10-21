@@ -5,6 +5,62 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.23.0
+
+### Registrar al terminar de ver y proponer «Visto» al acabar una serie
+
+- **Cuándo se registra un capítulo [ext]:** nuevo ajuste en Opciones > Registro de capítulos.
+  «Al abrir el capítulo» (como hasta ahora) o «Al terminar de verlo»: se guarda como último visto cuando
+  llegas al 80 % del vídeo. Si el reproductor está en otro dominio y la extensión no puede medirlo, cuenta tras
+  15 minutos con la pestaña visible. Si cambias de capítulo o cierras antes de llegar, no se registra. Vale
+  también para las otras páginas fuente (beta). Por defecto sigue siendo «al abrir».
+- **Cambio de capítulo sin recargar [ext]:** animeav1.com es una web de una sola página; ahora la extensión detecta
+  el paso de un capítulo al siguiente aunque no se recargue la página (antes solo registraba al cargarla).
+- **Estado «Visto» automático (propuesta) [ext + PWA]:**
+  - En animeav1.com, al terminar de ver el último capítulo publicado de una serie que la ficha marca como
+    terminada y que está en «Viendo», aparece una tarjeta: «¿La marcas como Visto?» (Sí / Ahora no). «Ahora no»
+    se recuerda para ese capítulo; la X o Esc lo vuelven a preguntar la próxima vez.
+  - En las cards (extensión y PWA), las series en «Viendo» con el último capítulo publicado visto y la serie
+    terminada muestran el botón «✔ Terminada: marcar como Visto».
+  - Solo se propone si la ficha indica claramente que la serie ha terminado; si no se sabe, no se propone nada.
+    El texto que se busca está en `estadoEmisionDeHtml` (`background.js` y `pwa-api.js`).
+- Extensión `1.23.0`; caché de la PWA `v44`. Archivo nuevo en la extensión: `visto.js`.
+
+## 1.22.0
+
+### Listas en la nube en la extensión de Chrome **[ext]**
+
+La extensión ya tiene el mismo tipo de lista que la PWA (1.21.0): se guarda en tu cuenta, se ve en
+la extensión y en la PWA a la vez y se puede compartir con otras cuentas de Google.
+
+- **Tus listas > Listas en la nube:** iniciar sesión, crear una lista vacía, ver tus listas de la
+  nube y añadirlas a este dispositivo. En cada lista de Sheets o local aparece **«A la nube»** (sube
+  una copia; la original no se toca) y en las tuyas de la nube **«Compartir»** por email (edición o
+  solo lectura). «Quitar» la saca solo de este dispositivo; si eres el propietario puedes además
+  borrarla de la nube. Una lista compartida como solo lectura no se puede editar.
+- **Sincronización:** igual que en la PWA (mismo formato y mismas reglas: gana el cambio más reciente,
+  los borrados llegan a los demás dispositivos). Cada cambio se envía a los ~1,5 s y al abrir la lista
+  se descarga lo nuevo. Sin conexión todo se guarda en la extensión y se reintenta cada minuto
+  (alarma de Chrome) y al arrancar el navegador. Las series que abres en animeav1.com se registran
+  igual en una lista de la nube, y el símbolo «Viendo» de la portada sigue a esa lista.
+- **Login:** botón «Continuar con Google» (ventana de Google, solo identificación: sin permisos
+  sobre Drive ni Sheets). El Worker lo canjea por su propia sesión de 60 días. El Sheets sigue
+  usando su inicio de sesión de siempre.
+- **Menú de engranaje por lista** (también en la extensión): cada fila muestra nombre, etiquetas,
+  «Usar», «Borrar/Quitar» y ⚙, que despliega Subir, Bajar, Nombre, Fijar, A la nube/Compartir y Exportar.
+- **Puesta en marcha (una sola vez):**
+  1. Vuelve a pegar `worker-completo.js` en el Worker y pulsa Deploy: ahora admite por defecto el
+     origen de la extensión (`chrome-extension://cmlaaboekekgplbjbocbjmplnnmjjjpa`). Si usas la
+     variable `ORIGENES_PERMITIDOS`, añádelo a la lista.
+  2. En Google Cloud Console > Credenciales > tu cliente OAuth de tipo **Aplicación web** (el mismo
+     que usa el Worker como `GOOGLE_CLIENT_ID`) > «URIs de redireccionamiento autorizados», añade
+     `https://cmlaaboekekgplbjbocbjmplnnmjjjpa.chromiumapp.org/`. (La propia extensión muestra esta
+     dirección en «¿Google da un error al iniciar sesión?».)
+  3. Recarga la extensión en `chrome://extensions`: añade el permiso «alarms» y el acceso al Worker.
+- Si cambias de Worker o de cliente OAuth, se editan las constantes `NUBE_WORKER_URL` y
+  `NUBE_CLIENT_ID` al principio de `background.js`.
+- Versión `1.22.0`.
+
 ## 1.21.1
 
 ### Tus listas: menú de engranaje y botón de Google integrado **[PWA]**

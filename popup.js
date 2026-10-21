@@ -763,7 +763,7 @@ function siguienteConsultaCaps() {
     consultandoCaps++;
     enviarMensaje({ type: "GET_CAPITULOS", slug })
       .then((r) => {
-        epsCache[slug] = { max: r?.ok && Number.isFinite(r.max) ? r.max : null, ts: Date.now() };
+        epsCache[slug] = { max: r?.ok && Number.isFinite(r.max) ? r.max : null, emision: r?.ok ? (r.emision || null) : null, ts: Date.now() };
         try { localStorage.setItem("epsDisponibles", JSON.stringify(epsCache)); } catch (e) {}
         (botonesSiguiente.get(slug) || []).forEach((redibujar) => redibujar());
         volverAFiltrarPendientes();
@@ -1050,6 +1050,10 @@ function renderItem(anime) {
       .then((r) => { if (!r?.ok) toast(mensajeError(r?.error || "error desconocido")); });
     actualizarBotonUltimoCap();
   });
+  // Serie terminada y ya vista hasta el último capítulo publicado: sugiere pasarla a «Visto» con un toque
+  const chipVisto = el("button", { className: "btn-mini chip-visto", type: "button", textContent: "✔ Terminada: marcar como Visto", title: "Has visto el último capítulo publicado y la serie ya ha terminado" });
+  chipVisto.style.display = "none";
+  chipVisto.addEventListener("click", () => { selectEstado.value = "✔"; selectEstado.dispatchEvent(new Event("change")); });
   function actualizarBotonUltimoCap() {
     const visible = anime.status === "📉" && anime.lastEpisodeUrl;
     if (visible) btnUltimoCap.href = anime.lastEpisodeUrl; else btnUltimoCap.removeAttribute("href");
@@ -1073,6 +1077,10 @@ function renderItem(anime) {
     }
     if (sig) btnSiguienteCap.href = sig; else btnSiguienteCap.removeAttribute("href");
     btnSiguienteCap.style.display = sig ? "flex" : "none";
+    // ¿Terminada y vista hasta el último capítulo publicado? (los datos llegan de GET_CAPITULOS y esta función se vuelve a llamar)
+    const infV = anime.status === "-" ? infoUltimo(anime.lastEpisodeUrl) : null;
+    const cV = infV ? epsCache[infV.slug] : null;
+    chipVisto.style.display = cV && cV.emision === "terminada" && Number.isFinite(cV.max) && infV.n > 0 && infV.n >= cV.max ? "" : "none";
   }
   actualizarBotonUltimoCap();
   portada.append(inputScore, btnUltimoCap, btnSiguienteCap);
@@ -1096,7 +1104,7 @@ function renderItem(anime) {
   selectGenero.ariaLabel = "Géneros";
   selectGenero.addEventListener("click", () => abrirDialogoGeneros(anime));
 
-  info.append(link, selectEstado, selectGenero);
+  info.append(link, selectEstado, selectGenero, chipVisto);
 
   // Bloque de edición (solo con "Modo edición" activado)
   if (modoEdicion) {
