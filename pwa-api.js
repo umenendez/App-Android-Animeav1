@@ -203,7 +203,7 @@
   let ultimoRefrescoAuto = 0;
   document.addEventListener("pointerdown", () => {
     if (!emailGuardado() || !window.google?.accounts?.oauth2) return;
-    try { const t = JSON.parse(localStorage.getItem("config") || "null")?.tipo; if (t === "local" || t === "nube") return; } catch (e) {} // lista local o de la nube: sin Google Sheets
+    try { const t = JSON.parse(localStorage.getItem("config") || "null")?.tipo; if ((t === "local" || t === "nube") && !activaVinculada()) return; } catch (e) {} // lista local o de la nube: sin Google Sheets (salvo que esté vinculada a una hoja)
     if (accessToken && Date.now() < tokenExpiresAt - 10 * 60 * 1000) return;
     if (tokenEnCurso || Date.now() - ultimoRefrescoAuto < 60000) return;
     ultimoRefrescoAuto = Date.now();
@@ -400,8 +400,13 @@
     const listas = obtenerListasArr();
     const restantes = listas.filter((l) => l.id !== id);
     if (restantes.length === listas.length) throw new Error("LISTA_NO_ENCONTRADA");
-    guardarListasArr(restantes);
     const quitada = listas.find((l) => l.id === id);
+    if (quitada?.vinculo) { // la otra lista del vínculo queda suelta
+      const par = restantes.find((l) => l.id === quitada.vinculo.con);
+      if (par) delete par.vinculo;
+      try { localStorage.removeItem(claveBaseVinculo(id, quitada.vinculo.con)); localStorage.removeItem(claveBaseVinculo(quitada.vinculo.con, id)); } catch (e) {}
+    }
+    guardarListasArr(restantes);
     if (quitada?.tipo === "local" || quitada?.tipo === "nube") { try { localStorage.removeItem(claveDatosLocal(id)); } catch (e) {} }
     if (idListaActiva() === id) {
       const siguiente = restantes[0] || null;
@@ -1257,6 +1262,8 @@
     let json = null;
     try { json = await res.json(); } catch (e) {}
     if (res.status === 401 && !sinSesion) { guardarSesionNube(null); throw new Error("NUBE_SESION_CADUCADA"); }
+    // La lista ya no existe en la nube (la borraron desde otro dispositivo, o dejó de estar compartida contigo)
+    if (res.status === 404 && /^Lista no encontrada/i.test(String(json?.error || ""))) throw new Error("NUBE_LISTA_NO_EXISTE");
     if (!res.ok) throw new Error(json?.error || `Error de la nube (${res.status})`);
     return json;
   }
@@ -1528,6 +1535,192 @@
     return nubeFetch(`/api/listas/${encodeURIComponent(id)}/miembros?email=${encodeURIComponent(email)}`, { method: "DELETE" });
   }
 
+  // --- Vínculo hoja de Google ↔ lista de la nube -------------------------------------------------
+  // Dos listas vinculadas se mantienen iguales en los dos sentidos. Cada serie se identifica por su enlace
+  // (o por su título si no tiene). Para saber QUÉ lado cambió se guarda, por serie, cómo era la última vez que se
+  // sincronizaron («base»): si solo cambió la nube se escribe en la hoja; si solo cambió la hoja se escribe en la
+  // nube; si cambiaron los dos, gana la hoja. Una serie que existe en un solo lado se añade al otro, salvo que
+  // estuviera en la base (entonces es que se borró en el otro lado y se borra aquí también).
+  const CAMPOS_VINCULO = ["genre", "score", "title", "url", "status", "cover", "lastEpisodeUrl"];
+  function normItemVinculo(it) {
+    const t = (v) => String(v ?? "").trim();
+    const n = parseFloat(t(it?.score).replace(",", "."));
+    return {
+      genre: t(it?.genre), score: Number.isFinite(n) && n > 0 ? String(Math.round(n * 10) / 10) : "", title: t(it?.title),
+      url: t(it?.url), status: t(it?.status), cover: t(it?.cover), lastEpisodeUrl: t(it?.lastEpisodeUrl),
+    };
+  }
+  const hashVinculo = (it) => JSON.stringify(CAMPOS_VINCULO.map((c) => normItemVinculo(it)[c]));
+  function claveSerieVinculo(it) {
+    const u = String(it?.url ?? "").trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/[?#].*$/, "").replace(/\/+$/, "");
+    return u ? "u:" + u : "t:" + String(it?.title ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  }
+  function diferenciasVinculo(de, a) {
+    const x = normItemVinculo(de), y = normItemVinculo(a);
+    const campos = [];
+    for (const c of ["genre", "score", "status", "cover", "lastEpisodeUrl"]) if (x[c] !== y[c]) campos.push([c, y[c]]);
+    return { campos, tituloUrl: x.title !== y.title || x.url !== y.url, title: y.title, url: y.url };
+  }
+  function planificarVinculo(base, hoja, nube) {
+    base = base || {};
+    const mapa = (arr) => { const m = new Map(); for (const it of arr) { const k = claveSerieVinculo(it); if (!m.has(k)) m.set(k, it); } return m; };
+    const H = mapa(hoja), N = mapa(nube);
+    const plan = { aHoja: { actualizar: [], anadir: [], eliminar: [] }, aNube: { actualizar: [], anadir: [], eliminar: [] }, base: {}, previo: base, sospechoso: false, borrados: 0 };
+    for (const k of new Set([...H.keys(), ...N.keys()])) {
+      const s = H.get(k), c = N.get(k), b = base[k];
+      const hs = s ? hashVinculo(s) : undefined, hc = c ? hashVinculo(c) : undefined;
+      if (s && c) {
+        if (hs === hc) plan.base[k] = hs;
+        else if (b !== undefined && hs === b) { plan.aHoja.actualizar.push({ k, row: s.row, de: s, a: c }); plan.base[k] = hc; } // cambió la nube
+        else { plan.aNube.actualizar.push({ k, row: c.row, a: s }); plan.base[k] = hs; }                                        // cambió la hoja (o las dos: gana la hoja)
+      } else if (s) {
+        if (b !== undefined && hs === b) plan.aHoja.eliminar.push({ k, row: s.row, title: s.title });                           // se borró en la nube
+        else { plan.aNube.anadir.push({ k, item: s }); plan.base[k] = hs; }
+      } else {
+        if (b !== undefined && hc === b) plan.aNube.eliminar.push({ k, row: c.row });                                           // se borró en la hoja
+        else { plan.aHoja.anadir.push({ k, item: c }); plan.base[k] = hc; }
+      }
+    }
+    // Seguro: si el plan borraría una parte grande de la lista (hoja vacía por un error, pestaña equivocada…), no se hace nada
+    plan.borrados = plan.aHoja.eliminar.length + plan.aNube.eliminar.length;
+    plan.sospechoso = plan.borrados > Math.max(5, Math.ceil(0.4 * Math.max(H.size, N.size)));
+    return plan;
+  }
+  const claveBaseVinculo = (nubeId, hojaId) => `vinculoBase:${nubeId}:${hojaId}`;
+  // Datos de una serie tal como se guardan en una lista de la nube (la nota con una décima)
+  const camposParaNube = (it) => { const x = normItemVinculo(it); return { ...x, score: notaLocal(x.score) }; };
+  const resumenVinculoVacio = () => ({ hoja: { actualizadas: 0, anadidas: 0, eliminadas: 0 }, nube: { actualizadas: 0, anadidas: 0, eliminadas: 0 } });
+
+  // --- Vínculo hoja ↔ nube: motor en la PWA ---------------------------------------------------
+  // Corre en segundo plano al abrir cualquiera de las dos listas en un dispositivo con acceso a la hoja. Si no hay
+  // sesión de Google Sheets (o no hay conexión) no hace nada ni abre ventanas: la lista de la nube sigue funcionando.
+  // Para tocar la hoja se cambia un momento la configuración activa (conLista); mientras tanto el resto de la API
+  // espera (pausaApi), para que ninguna acción de la pantalla se ejecute contra la lista equivocada.
+  let pausaApi = null;
+  async function conListaExclusiva(listaId, fn) {
+    let liberar;
+    pausaApi = new Promise((r) => { liberar = r; });
+    try { return await conLista(listaId, fn); }
+    finally { pausaApi = null; liberar(); }
+  }
+  const activaVinculada = () => !!obtenerListasArr().find((l) => l.id === idListaActiva())?.vinculo;
+
+  let colaVinculo = Promise.resolve();
+  const ultimaSincVinculo = {};
+  const sincronizarVinculo = (id, opciones = {}) => {
+    const p = colaVinculo.catch(() => {}).then(() => _sincronizarVinculo(id, opciones));
+    colaVinculo = p;
+    return p;
+  };
+
+  async function _sincronizarVinculo(id, { forzar = false, interactivo = false } = {}) {
+    if (!id) id = idListaActiva();
+    const listas = obtenerListasArr();
+    const l = listas.find((x) => x.id === id);
+    const otra = l?.vinculo ? listas.find((x) => x.id === l.vinculo.con) : null;
+    if (!l || !otra) return { omitido: "sin_vinculo" };
+    const nubeL = l.tipo === "nube" ? l : otra;
+    const hojaL = l.tipo === "nube" ? otra : l;
+    if (nubeL.tipo !== "nube" || hojaL.tipo === "nube" || hojaL.tipo === "local") return { omitido: "sin_vinculo" };
+    if (nubeL.rol === "lectura") return { omitido: "solo_lectura" };
+    const clave = claveBaseVinculo(nubeL.id, hojaL.id);
+    if (!forzar && Date.now() - (ultimaSincVinculo[clave] || 0) < 45000) return { omitido: "reciente" };
+    ultimaSincVinculo[clave] = Date.now();
+
+    // 1) La lista de la nube, al día (envía lo pendiente y trae lo de otros dispositivos)
+    try { await sincronizarNube(nubeL.id); }
+    catch (e) { return { omitido: "sin_nube", error: String(e?.message || e).replace(/^Error:\s*/, "") }; }
+    // 2) Acceso a la hoja: sin ventanas salvo que el usuario lo haya pedido (botón «Sincronizar ahora»)
+    try { await ensureToken(interactivo); } catch (e) { return { omitido: "sin_sesion_hoja" }; }
+
+    let base = {};
+    try { base = JSON.parse(localStorage.getItem(clave) || "null") || {}; } catch (e) {}
+    const resultado = await conListaExclusiva(hojaL.id, async () => {
+      const hoja = await obtenerListaCompleta();
+      const plan = planificarVinculo(base, hoja, leerDatosLocal(nubeL.id).items);
+      if (plan.sospechoso) return { omitido: "borrados_masivos", borrados: plan.borrados };
+      const res = resumenVinculoVacio();
+      const fallos = new Set();
+      // --- Hoja: primero las ediciones (las filas no se mueven), luego los borrados de abajo arriba y al final las altas
+      for (const op of plan.aHoja.actualizar) {
+        try {
+          const dif = diferenciasVinculo(op.de, op.a);
+          for (const [campo, valor] of dif.campos) await actualizarCampo(op.row, campo, valor);
+          if (dif.tituloUrl) await actualizarTituloUrl(op.row, dif.title, dif.url);
+          res.hoja.actualizadas++;
+        } catch (e) { fallos.add(op.k); }
+      }
+      for (const op of [...plan.aHoja.eliminar].sort((a, b) => b.row - a.row)) {
+        try { await eliminarSerie(op.row, op.title); res.hoja.eliminadas++; } catch (e) { fallos.add(op.k); }
+      }
+      for (const op of plan.aHoja.anadir) {
+        try { await agregarSerieCompleta(normItemVinculo(op.item)); res.hoja.anadidas++; }
+        catch (e) { if (!/YA_EXISTE/.test(String(e?.message || e))) fallos.add(op.k); }
+      }
+      // --- Nube: sobre los datos locales de la lista (se envían solos al Worker)
+      const d = leerDatosLocal(nubeL.id);
+      const pos = (k) => d.items.findIndex((i) => claveSerieVinculo(i) === k);
+      const portadas = [];
+      let cambios = 0;
+      for (const op of plan.aNube.actualizar) {
+        const i = pos(op.k);
+        if (i < 0) { fallos.add(op.k); continue; }
+        d.items[i] = { ...d.items[i], ...camposParaNube(op.a) };
+        if (d.items[i].cover) portadas.push(d.items[i].cover);
+        res.nube.actualizadas++; cambios++;
+      }
+      for (const op of plan.aNube.anadir) {
+        if (pos(op.k) >= 0) continue;
+        const it = { row: d.siguiente++, ...camposParaNube(op.item) };
+        d.items.push(it);
+        if (it.cover) portadas.push(it.cover);
+        res.nube.anadidas++; cambios++;
+      }
+      for (const op of plan.aNube.eliminar) {
+        const i = pos(op.k);
+        if (i >= 0) { d.items.splice(i, 1); res.nube.eliminadas++; cambios++; }
+      }
+      if (cambios) guardarDatosLocal(d, nubeL.id);
+      portadas.forEach((u) => precachearImagen(u));
+      // Lo que falló se reintenta en la próxima sincronización (su base no cambia)
+      const nuevaBase = { ...plan.base };
+      for (const k of fallos) { if (k in base) nuevaBase[k] = base[k]; else delete nuevaBase[k]; }
+      try { localStorage.setItem(clave, JSON.stringify(nuevaBase)); } catch (e) {}
+      return { ...res, fallos: fallos.size };
+    });
+    if (resultado.omitido) return resultado;
+    const activa = idListaActiva();
+    const tocaHoja = resultado.hoja.actualizadas + resultado.hoja.anadidas + resultado.hoja.eliminadas > 0;
+    const tocaNube = resultado.nube.actualizadas + resultado.nube.anadidas + resultado.nube.eliminadas > 0;
+    return { ...resultado, cambiosActiva: (activa === hojaL.id && tocaHoja) || (activa === nubeL.id && tocaNube) };
+  }
+
+  function crearVinculo(hojaId, nubeId) {
+    const listas = obtenerListasArr();
+    const h = listas.find((l) => l.id === hojaId), n = listas.find((l) => l.id === nubeId);
+    if (!h || !n) throw new Error("LISTA_NO_ENCONTRADA");
+    if (h.tipo === "local" || h.tipo === "nube" || n.tipo !== "nube") throw new Error("VINCULO_INVALIDO");
+    if (n.rol === "lectura") throw new Error("SOLO_LECTURA");
+    if (h.vinculo || n.vinculo) throw new Error("YA_VINCULADA");
+    h.vinculo = { con: n.id };
+    n.vinculo = { con: h.id };
+    guardarListasArr(listas);
+    try { localStorage.removeItem(claveBaseVinculo(n.id, h.id)); } catch (e) {} // sin base: la primera sincronización las une
+    return {};
+  }
+
+  function quitarVinculo(id) {
+    const listas = obtenerListasArr();
+    const l = listas.find((x) => x.id === id);
+    if (!l?.vinculo) return {};
+    const par = listas.find((x) => x.id === l.vinculo.con);
+    delete l.vinculo;
+    if (par) delete par.vinculo;
+    guardarListasArr(listas);
+    try { localStorage.removeItem(claveBaseVinculo(l.id, par?.id)); localStorage.removeItem(claveBaseVinculo(par?.id, l.id)); } catch (e) {}
+    return {};
+  }
+
   async function handle(msg){
     switch(msg.type){
       case "GET_CONFIG": { // se añade el id de la lista activa: el catálogo de géneros es propio de cada lista
@@ -1561,12 +1754,19 @@
       case "NUBE_LISTAR": return {ok:true,listas:await nubeListar()};
       case "NUBE_CREAR": return {ok:true,...await nubeCrearLista(msg.name)};
       case "NUBE_ANADIR": return {ok:true,...await nubeAnadirLista(msg.id)};
+      case "VINCULO_CREAR": return {ok:true,...crearVinculo(msg.hojaId,msg.nubeId)};
+      case "VINCULO_QUITAR": return {ok:true,...quitarVinculo(msg.id)};
+      case "VINCULO_SINCRONIZAR": return {ok:true,...await sincronizarVinculo(msg.id,{forzar:!!msg.forzar,interactivo:!!msg.interactivo})};
       case "NUBE_SUBIR": return {ok:true,...await nubeSubirCopia(msg.id,msg.name)};
       case "NUBE_MIEMBROS": return {ok:true,miembros:await nubeMiembros(msg.id)};
       case "NUBE_COMPARTIR": return {ok:true,...await nubeCompartir(msg.id,msg.email,msg.rol)};
       case "NUBE_QUITAR_MIEMBRO": await nubeQuitarMiembro(msg.id,msg.email); return {ok:true};
       case "NUBE_SINCRONIZAR": return {ok:true,...await sincronizarNube(msg.id)};
-      case "NUBE_BORRAR": await nubeFetch(`/api/listas/${encodeURIComponent(msg.id)}`,{method:"DELETE"}); return {ok:true};
+      case "NUBE_BORRAR": { // si ya la borraron desde otro dispositivo, el objetivo (que no exista) ya está cumplido
+        try { await nubeFetch(`/api/listas/${encodeURIComponent(msg.id)}`,{method:"DELETE"}); }
+        catch (e) { if (!/NUBE_LISTA_NO_EXISTE/.test(String(e?.message || e))) throw e; }
+        return {ok:true};
+      }
       case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
       case "UPDATE_GENRES_BULK": await actualizarGenerosLote(msg.cambios); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
@@ -1583,5 +1783,5 @@
       default: throw new Error("MENSAJE_DESCONOCIDO");
     }
   }
-  window.enviarMensajePWA = async msg => { try{return await handle(msg);}catch(e){return {ok:false,error:String(e?.message||e).replace(/^Error:\s*/,"")};} };
+  window.enviarMensajePWA = async msg => { try{ while (pausaApi && !/^VINCULO_/.test(String(msg?.type))) await pausaApi; return await handle(msg);}catch(e){return {ok:false,error:String(e?.message||e).replace(/^Error:\s*/,"")};} };
 })();

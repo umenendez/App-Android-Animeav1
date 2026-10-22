@@ -60,6 +60,15 @@ de Cloudflare: se sincroniza entre dispositivos, funciona sin conexión y se pue
 **Uso:** Tus listas > Listas en la nube > iniciar sesión. Para subir una lista que ya tienes, usa
 **«A la nube»** (copia). Para usarla en otro dispositivo, inicia sesión allí y pulsa «Añadir a este dispositivo».
 
+## Vincular una hoja de Google con una lista de la nube
+
+Una hoja y una lista de la nube se pueden **vincular**: se mantienen iguales en los dos sentidos. Así usas la lista
+de la nube en cualquier dispositivo sin iniciar sesión en Google Sheets y sigues pudiendo editar la hoja directamente.
+
+**Uso:** Tus listas > ⚙ de la hoja (o de la lista de la nube) > **🔗 Vincular…** > elegir la pareja. O con **«A la nube»**
+en una hoja y aceptar «Dejar la copia vinculada». La sincronización ocurre al abrir cualquiera de las dos listas en un
+dispositivo con sesión de Google Sheets; si cambian los dos lados a la vez, gana la hoja. Detalles en `CAMBIOS.md` (1.24.0).
+
 ## Qué no puede hacer una PWA
 
 El `content.js` de la extensión detectaba automáticamente cuando abrías un episodio de `animeav1.com`. Una PWA normal no puede inyectarse en otras páginas de Chrome, por lo que esa detección automática no está incluida en la versión PWA.

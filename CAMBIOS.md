@@ -5,6 +5,36 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.24.0
+
+### Corrección: lista de la nube borrada desde otro dispositivo [ext + PWA]
+
+- Si una lista de la nube estaba añadida en dos dispositivos y la borrabas desde uno, en el otro «Quitar» fallaba
+  con «Lista no encontrada» y no había forma de quitarla. Ahora, si la lista ya no existe en la nube, el borrado
+  se da por hecho y se quita del dispositivo; y al abrirla aparece el aviso «Esta lista ya no existe en la nube»
+  con el botón «Quitar de este dispositivo». Ya no se reintenta enviar cambios de una lista que no existe.
+
+### Vincular una hoja de Google con una lista de la nube [ext + PWA]
+
+- **Qué hace:** mantiene iguales, en los dos sentidos, una hoja de Google Sheets y una lista de la nube. Así la
+  lista de la nube se usa en cualquier dispositivo sin iniciar sesión en Google Sheets, y la hoja se puede seguir
+  editando directamente en el documento: lo que cambies allí llega a la nube, y lo que cambies en la nube llega a la hoja.
+- **Cómo se usa:** en «Tus listas», menú ⚙ de la hoja o de la lista de la nube > **🔗 Vincular…** y eliges la
+  pareja. También al usar **«A la nube»** en una hoja se ofrece dejar la copia vinculada. Una vez vinculadas
+  aparece la etiqueta 🔗 con el nombre de la otra, y en el ⚙ **🔗 Sincronizar** (ahora) y **Desvincular**.
+- **Cuándo se sincroniza:** al abrir cualquiera de las dos listas en un dispositivo que tenga sesión de Google
+  Sheets, en segundo plano y sin ventanas. En los dispositivos sin acceso a la hoja, la lista de la nube
+  funciona igual y su contenido llega a la hoja la próxima vez que un dispositivo con acceso la sincronice.
+  En la PWA, la sesión de la hoja se renueva sola mientras la usas, también con la lista de la nube abierta.
+- **Reglas:** cada serie se identifica por su enlace (o por su título si no tiene). Si solo cambia un lado, el cambio
+  pasa al otro; si cambian los dos a la vez, gana la hoja. Una serie que solo está en un lado se añade al otro; si
+  la borras en un lado, se borra en el otro. La primera vez, las series que falten en una se añaden a la otra.
+- **Seguros:** si una sincronización fuese a borrar de golpe una parte grande de la lista (por ejemplo, la hoja aparece
+  vacía por un error), se detiene y avisa sin tocar nada. Si falla la escritura de alguna serie, se reintenta en la
+  siguiente sincronización. Cada lista solo puede estar vinculada con otra; una lista de la nube de solo lectura no se
+  puede vincular.
+- Extensión `1.24.0`; caché de la PWA `v45`.
+
 ## 1.23.0
 
 ### Registrar al terminar de ver y proponer «Visto» al acabar una serie

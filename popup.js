@@ -2574,12 +2574,33 @@ async function cargarListasPanel() {
       nubeBtn.addEventListener("click", () => subirListaANube(l, nubeBtn));
     }
     const etiquetaNube = l.tipo !== "nube" ? null : el("span", { className: "etiqueta-local", textContent: l.rol === "propietario" ? "Nube" : (l.rol === "lectura" ? "Nube · solo lectura" : "Nube · compartida") });
+    // Vínculo hoja ↔ nube
+    const par = l.vinculo ? listas.find((x) => x.id === l.vinculo.con) : null;
+    let vinculoBtns = [], cajaVinculo = null;
+    if (par) {
+      const sinc = el("button", { className: "btn-mini", type: "button", textContent: "🔗 Sincronizar", title: `Sincronizar ahora con «${par.name}»` });
+      sinc.addEventListener("click", () => sincronizarVinculoManual(l, sinc));
+      const desv = el("button", { className: "btn-mini peligro", type: "button", textContent: "Desvincular", title: `Dejar de sincronizar con «${par.name}»` });
+      desv.addEventListener("click", async () => {
+        if (!confirm(`¿Desvincular «${l.name}» de «${par.name}»?\nLas dos listas se quedan como están, pero dejan de sincronizarse.`)) return;
+        const r = await enviarMensaje({ type: "VINCULO_QUITAR", id: l.id });
+        if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); return; }
+        cargarListasPanel();
+      });
+      vinculoBtns = [sinc, desv];
+    } else if (l.tipo === "nube" ? l.rol !== "lectura" : l.tipo !== "local") {
+      const vb = el("button", { className: "btn-mini", type: "button", textContent: "🔗 Vincular…", title: l.tipo === "nube" ? "Vincular con una hoja de Google" : "Vincular con una lista de la nube" });
+      cajaVinculo = el("div", { className: "nube-compartir", hidden: true });
+      vb.addEventListener("click", () => { if (cajaVinculo.hidden) abrirVincular(l, listas, cajaVinculo); else cajaVinculo.hidden = true; });
+      vinculoBtns = [vb];
+    }
+    const etiquetaVinculo = par ? el("span", { className: "etiqueta-local etiqueta-vinculo", textContent: "🔗 " + par.name, title: `Vinculada con «${par.name}»` }) : null;
     const fijada = listasFijadas().includes(l.id);
     const fijarBtn = el("button", { className: "btn-mini btn-fijar", type: "button", textContent: fijada ? "📌 Fijada" : "📌 Fijar", title: fijada ? "Quitar de la barra de listas" : "Fijar en la barra de listas (si fijas alguna, solo se muestran las fijadas)", ariaLabel: fijada ? "Quitar acceso directo" : "Fijar acceso directo" });
     fijarBtn.setAttribute("aria-pressed", String(fijada));
     fijarBtn.addEventListener("click", () => { alternarListaFijada(l.id); cargarListasPanel(); });
     const menu = el("div", { className: "lista-menu", hidden: !menusListaAbiertos.has(l.id) },
-      subir, bajar, renombrarBtn, fijarBtn, nubeBtn, (l.tipo === "local" || l.tipo === "nube" || l.activa) ? exportarBtn : null);
+      subir, bajar, renombrarBtn, fijarBtn, nubeBtn, ...vinculoBtns, (l.tipo === "local" || l.tipo === "nube" || l.activa) ? exportarBtn : null);
     const engranaje = el("button", { className: "icon-btn btn-engranaje", type: "button", title: "Más opciones de la lista", ariaLabel: "Más opciones de la lista" });
     engranaje.innerHTML = SVG_ENGRANAJE;
     engranaje.setAttribute("aria-expanded", String(!menu.hidden));
@@ -2593,10 +2614,12 @@ async function cargarListasPanel() {
         el("span", { className: "nombre", textContent: l.name }),
         l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
         etiquetaNube,
+        etiquetaVinculo,
         l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
         usarBtn, borrarBtn, engranaje),
       menu,
-      cajaCompartir));
+      cajaCompartir,
+      cajaVinculo));
   });
 }
 
@@ -2632,6 +2655,8 @@ function avisoNube(n) {
   const e = String(n.error || "");
   if (/NUBE_SESION_CADUCADA/.test(e)) {
     mostrarSync("Sesión de la nube caducada: mostrando lo guardado en este dispositivo.", { texto: "Iniciar sesión", accion: () => setListasPanel(true) });
+  } else if (/NUBE_LISTA_NO_EXISTE/.test(e)) {
+    mostrarSync("Esta lista ya no existe en la nube (la borraron o dejó de estar compartida contigo). Lo que tienes guardado aquí sigue en este dispositivo.", { texto: "Quitar de este dispositivo", accion: () => quitarListaDeEsteDispositivo(n.id) });
   } else if (/NUBE_SIN_CONEXION/.test(e)) {
     mostrarSync("Sin conexión: tus cambios se enviarán a la nube cuando vuelva internet.", { texto: "Reintentar", accion: cargar });
   } else {
@@ -2710,6 +2735,77 @@ $("nubeCrearBtn").addEventListener("click", async () => {
 });
 nubeNombreEl.addEventListener("keydown", (e) => { if (e.key === "Enter") $("nubeCrearBtn").click(); });
 
+// --- Vincular una hoja de Google con una lista de la nube ------------------------------------
+// Las dos listas se mantienen iguales en los dos sentidos. La nube se puede usar en cualquier dispositivo sin
+// iniciar sesión en Google Sheets; la hoja se actualiza cuando un dispositivo con acceso a ella abre cualquiera de las dos.
+function candidatosVinculo(l, listas) {
+  if (l.tipo === "nube") return listas.filter((x) => x.tipo !== "nube" && x.tipo !== "local" && !x.vinculo);
+  return listas.filter((x) => x.tipo === "nube" && x.rol !== "lectura" && !x.vinculo);
+}
+
+function resumenVinculo(r) {
+  if (!r?.ok) return mensajeError(r?.error || "error desconocido");
+  const o = r.omitido;
+  if (o === "sin_sesion_hoja") return "Vinculadas. Para sincronizar hace falta tener sesión de Google Sheets en este dispositivo.";
+  if (o === "sin_nube") return "No se pudo sincronizar la lista de la nube: " + mensajeError(r.error || "NUBE_SIN_CONEXION");
+  if (o === "borrados_masivos") return `Sincronización detenida: iba a borrar ${r.borrados} series de golpe. Revisa que la hoja y la lista estén bien y vuelve a intentarlo.`;
+  if (o === "solo_lectura") return "La lista de la nube es de solo lectura.";
+  if (o) return "Nada que sincronizar.";
+  const t = (x) => x.actualizadas + x.anadidas + x.eliminadas;
+  const partes = [];
+  if (t(r.hoja)) partes.push(`hoja: ${t(r.hoja)} cambio${t(r.hoja) === 1 ? "" : "s"}`);
+  if (t(r.nube)) partes.push(`nube: ${t(r.nube)} cambio${t(r.nube) === 1 ? "" : "s"}`);
+  const fallos = r.fallos ? ` ${r.fallos} no se pudo escribir y se reintentará.` : "";
+  if (!partes.length) return r.fallos ? fallos.trim() : "Todo al día: la hoja y la nube ya coinciden.";
+  return "Sincronizadas (" + partes.join(", ") + ")." + fallos;
+}
+
+function abrirVincular(l, listas, caja) {
+  caja.hidden = false;
+  caja.innerHTML = "";
+  const esNube = l.tipo === "nube";
+  const cands = candidatosVinculo(l, listas);
+  caja.append(el("p", { className: "nube-ayuda", textContent: esNube ? "Elige la hoja de Google que quieres mantener sincronizada con esta lista." : "Elige la lista de la nube que quieres mantener sincronizada con esta hoja." }));
+  if (!cands.length) {
+    caja.append(el("div", { className: "estado-txt", textContent: esNube ? "No tienes ninguna hoja de Google guardada sin vincular en este dispositivo. Añádela antes en «Tus listas»." : "No tienes en este dispositivo ninguna lista de la nube (tuya o con permiso de edición) sin vincular." }));
+    return;
+  }
+  const sel = el("select", { ariaLabel: "Lista a vincular" }, ...cands.map((c) => el("option", { value: c.id, textContent: c.name })));
+  const ok = el("button", { className: "btn", type: "button", textContent: "Vincular" });
+  const estado = el("div", { className: "estado-txt" });
+  ok.addEventListener("click", async () => {
+    const otra = cands.find((c) => c.id === sel.value);
+    if (!otra) return;
+    if (!confirm(`Se vincularán «${l.name}» y «${otra.name}».\n\nLas series que falten en una se añadirán a la otra y, desde ahora, los cambios de una llegarán a la otra (si cambias lo mismo en las dos a la vez, gana la hoja). Se sincronizan al abrir cualquiera de las dos en un dispositivo con acceso a la hoja.\n\n¿Vincular?`)) return;
+    ok.disabled = true;
+    estado.textContent = "Vinculando y sincronizando…";
+    const r = await enviarMensaje({ type: "VINCULO_CREAR", hojaId: esNube ? otra.id : l.id, nubeId: esNube ? l.id : otra.id });
+    if (!r?.ok) { ok.disabled = false; estado.textContent = mensajeError(r?.error || "error desconocido"); return; }
+    const s = await enviarMensaje({ type: "VINCULO_SINCRONIZAR", id: l.id, forzar: true, interactivo: true });
+    toast(resumenVinculo(s));
+    cargarListasPanel();
+    if (s?.cambiosActiva) cargar();
+  });
+  caja.append(sel, ok, estado);
+}
+
+async function sincronizarVinculoManual(l, btn) {
+  btn.disabled = true;
+  toast("Sincronizando…");
+  const r = await enviarMensaje({ type: "VINCULO_SINCRONIZAR", id: l.id, forzar: true, interactivo: true });
+  btn.disabled = false;
+  toast(resumenVinculo(r));
+  if (r?.ok && r.cambiosActiva) cargar();
+}
+
+// Al abrir una lista vinculada: sincroniza en segundo plano, sin ventanas ni avisos (si no hay sesión de la hoja, no hace nada)
+async function sincronizarVinculoSilencioso() {
+  try {
+    const r = await enviarMensaje({ type: "VINCULO_SINCRONIZAR" });
+    if (r?.ok && r.cambiosActiva) cargar(); // la sincronización siguiente sale como «reciente»: no hay bucle
+  } catch (e) {}
+}
+
 async function subirListaANube(l, btn) {
   if (!confirm(`¿Subir una copia de «${l.name}» a la nube? La lista original no se modifica. Después podrás usarla desde otros dispositivos y compartirla.`)) return;
   btn.disabled = true;
@@ -2720,10 +2816,25 @@ async function subirListaANube(l, btn) {
   toast(r.error
     ? `Copia creada (${r.total} series), pero no se pudo enviar todo: ${mensajeError(r.error)}`
     : `Copia en la nube creada (${r.total} series)`);
+  // Una hoja de Google puede quedar vinculada a su copia: los cambios de una llegan a la otra
+  if (l.tipo !== "local" && !l.vinculo && confirm("¿Dejar la copia vinculada con la hoja?\nAsí los cambios de la hoja llegarán a la nube y los de la nube a la hoja, y en otros dispositivos podrás usar la lista de la nube sin iniciar sesión en Google Sheets.")) {
+    const v = await enviarMensaje({ type: "VINCULO_CREAR", hojaId: l.id, nubeId: r.id });
+    toast(v?.ok ? "Listas vinculadas" : mensajeError(v?.error || "error desconocido"));
+  }
   cargarListasPanel(); cargarNubePanel();
 }
 
 // Quitar una lista de la nube de ESTE dispositivo; si eres el propietario, opcionalmente borrarla para todos
+// Quita del dispositivo una lista de la nube que ya no existe allí (sin preguntar por borrarla de la nube)
+async function quitarListaDeEsteDispositivo(id) {
+  if (!confirm("¿Quitar esta lista de este dispositivo?\nYa no existe en la nube, así que las series que tengas guardadas solo aquí se perderán. Si quieres conservarlas, exporta antes un .json desde Tus listas.")) return;
+  const r = await enviarMensaje({ type: "DELETE_LISTA", id });
+  if (!r?.ok) { toast(mensajeError(r?.error || "error desconocido")); return; }
+  try { localStorage.removeItem(claveCatalogoDe(id)); } catch (e) {}
+  toast("Lista quitada de este dispositivo");
+  cargar();
+}
+
 async function quitarListaNube(l) {
   if (!confirm(`¿Quitar «${l.name}» de este dispositivo? Sus series siguen en la nube y podrás volver a añadirla.`)) return;
   let borrarRemota = false;
@@ -2808,6 +2919,9 @@ function mensajeError(error) {
   if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
   if (c.includes("FILA_CAMBIADA")) return "La fila de la hoja ya no es esa serie (se editó fuera). Recarga la lista y vuelve a intentarlo.";
   if (c.includes("FALTA_NOMBRE")) return "Ponle un nombre a la lista.";
+  if (c.includes("YA_VINCULADA")) return "Una de las dos listas ya está vinculada con otra. Desvincúlala primero.";
+  if (c.includes("VINCULO_INVALIDO")) return "Solo se puede vincular una hoja de Google con una lista de la nube.";
+  if (c.includes("NUBE_LISTA_NO_EXISTE")) return "Esa lista ya no existe en la nube (la borraron o dejó de estar compartida contigo). Puedes quitarla de este dispositivo.";
   if (c.includes("NUBE_SESION_CADUCADA")) return "Tu sesión de la nube ha caducado. Vuelve a iniciar sesión en «Listas en la nube» (dentro de Tus listas).";
   if (c.includes("NUBE_SIN_CONEXION")) return "No se pudo conectar con la nube. Comprueba tu conexión.";
   if (c.includes("SOLO_LECTURA")) return "Esta lista está compartida contigo como solo lectura.";
@@ -3109,6 +3223,7 @@ async function cargar() {
 
   mostrarSync("");
   avisoNube(res.nube);
+  sincronizarVinculoSilencioso();
   const igual = cache && JSON.stringify(cache.lista) === JSON.stringify(res.lista);
   todosLosAnimes = res.lista;
   sincronizarCatalogo();
