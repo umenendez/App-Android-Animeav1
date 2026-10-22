@@ -2650,6 +2650,32 @@ const nubeStatusEl = $("nubeStatus");
 const nubeListasEl = $("nubeListas");
 
 // Aviso sobre la última sincronización al abrir una lista de la nube (la lista se muestra igualmente)
+// Resultado de la sincronización que se lanzó al abrir la lista (la lista ya se ha enseñado con lo guardado):
+// si llegaron cambios de otros dispositivos se repinta, y si falló se avisa.
+async function esperarSyncNube(id) {
+  const r = await enviarMensaje({ type: "NUBE_ESPERAR_SYNC", id });
+  if (!r?.ok || !r.nube) return;
+  avisoNube(r.nube);
+  if (r.nube.ok && r.nube.cambios > 0 && configActual?.listaId === id) cargar({ sinSync: true });
+}
+
+// Cambios de otros dispositivos: se miran al volver a la ventana y cada 30 s mientras está a la vista
+let ultimoRefrescoNube = 0;
+async function refrescarNubeSiToca(alVolver) {
+  if (document.visibilityState !== "visible" || configActual?.tipo !== "nube" || !configActual.listaId) return;
+  if (Date.now() - ultimoRefrescoNube < (alVolver ? 4000 : 25000)) return;
+  const a = document.activeElement;
+  if (a && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) return; // no molestar mientras se escribe
+  if (seleccionMover.size) return;                              // ni en mitad de mover series
+  ultimoRefrescoNube = Date.now();
+  const id = configActual.listaId;
+  const r = await enviarMensaje({ type: "NUBE_SINCRONIZAR", id });
+  if (r?.ok && r.cambios > 0 && configActual?.listaId === id) cargar({ sinSync: true });
+}
+document.addEventListener("visibilitychange", () => refrescarNubeSiToca(true));
+window.addEventListener("focus", () => refrescarNubeSiToca(true));
+setInterval(() => refrescarNubeSiToca(false), 30000);
+
 function avisoNube(n) {
   if (!n || n.ok) return;
   const e = String(n.error || "");
@@ -3139,7 +3165,7 @@ function mostrarSync(texto, boton) {
   syncEl.hidden = false;
 }
 
-async function cargar() {
+async function cargar(opciones = {}) {
   seleccionMover.clear();
   pintarBarraMover();
   errorEl.hidden = true;
@@ -3174,7 +3200,7 @@ async function cargar() {
     return;
   }
 
-  const res = await enviarMensaje({ type: "GET_ANIME_LIST" });
+  const res = await enviarMensaje({ type: "GET_ANIME_LIST", sinSync: !!opciones?.sinSync });
   refrescandoLista = false;
   cargandoEl.hidden = true;
 
@@ -3222,7 +3248,7 @@ async function cargar() {
   }
 
   mostrarSync("");
-  avisoNube(res.nube);
+  if (res.nube?.pendiente) esperarSyncNube(res.nube.id); else avisoNube(res.nube);
   sincronizarVinculoSilencioso();
   const igual = cache && JSON.stringify(cache.lista) === JSON.stringify(res.lista);
   todosLosAnimes = res.lista;

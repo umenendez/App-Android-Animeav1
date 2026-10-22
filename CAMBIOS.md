@@ -5,6 +5,26 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.25.0
+
+### Sincronización más rápida [ext + PWA]
+
+- **La lista de la nube se abre al instante.** Antes esperaba a que terminara la sincronización con la nube (hasta 8 s
+  si la conexión era mala) antes de enseñar nada. Ahora se muestra enseguida lo guardado en el dispositivo, la
+  sincronización corre en segundo plano y la lista solo se repinta si llegó algo nuevo.
+- **Vínculo hoja ↔ nube: de decenas de peticiones a 4.** Los cambios se escribían en la hoja serie a serie (varias
+  peticiones a Google por cada una; 33 cambios eran 40 peticiones, ~10-15 s). Ahora se envían en lote: 4 peticiones
+  fijas sea cual sea el número de cambios. Además la nube y la hoja se leen a la vez, la nube no se vuelve a
+  sincronizar si acaba de hacerse al abrir la lista, y tras sincronizar la pantalla se repinta sin volver a la red.
+  Si a la pestaña le faltan filas para añadir series, se amplía sola.
+- **Cambios de otros dispositivos sin recargar.** Con una lista de la nube abierta se comprueba al volver a la
+  ventana y cada 30 s mientras está a la vista (no interrumpe si estás escribiendo o moviendo series).
+- **Tus cambios salen antes:** se envían 0,5 s después de editar (antes 1,5 s) y, en la PWA, al salir o ocultar la app.
+- **Tiempo máximo de 15 s por petición al Worker.** Una petición colgada ya no bloquea la sincronización de esa lista.
+- **Worker:** una consulta menos a la base de datos en cada petición (comprobar el acceso a la lista). Opcional:
+  para aprovecharlo, vuelve a pegar `worker-completo.js` y pulsa Deploy.
+- Extensión `1.25.0`; caché de la PWA `v46`.
+
 ## 1.24.0
 
 ### Corrección: lista de la nube borrada desde otro dispositivo [ext + PWA]

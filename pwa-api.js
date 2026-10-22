@@ -44,6 +44,7 @@
   let spreadsheetId = null;
   let gidConfig = null;
   let gid = 0;
+  let gridFilas = null; // filas de la pestaña (para saber si hay que ampliarla al añadir series)
   let cachedSheetName = null;
   let listaLocalId = null; // id de la lista activa si es una lista local (sin Google Sheets)
   let tokenClient = null;
@@ -270,7 +271,7 @@
     const hojas = (data.sheets || []).map(s => s.properties);
     const hoja = (gidConfig !== null && hojas.find(h => h.sheetId === gidConfig)) || hojas[0];
     if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
-    gid = hoja.sheetId; cachedSheetName = hoja.title;
+    gid = hoja.sheetId; gridFilas = hoja.gridProperties?.rowCount ?? null; cachedSheetName = hoja.title;
     return cachedSheetName;
   }
 
@@ -464,10 +465,13 @@
     return /^https?:\/\//i.test(texto) ? texto : "";
   }
 
-  async function obtenerListaCompleta() {
+  async function obtenerListaCompleta(opciones = {}) {
     estadoNube = null;
     if (await esListaLocal()) {
-      if (listaNube(listaLocalId)) await sincronizarNubeAlAbrir(listaLocalId);
+      if (!opciones.sinSync && listaNube(listaLocalId)) { // se sincroniza en segundo plano; la lista no espera
+        lanzarSyncAlAbrir(listaLocalId);
+        estadoNube = { id: listaLocalId, ok: true, pendiente: true };
+      }
       return leerDatosLocal().items;
     }
     const sheetName = await getSheetName();
@@ -1236,6 +1240,7 @@
   // El login usa un id_token de Google que el Worker canjea por su propia sesión (dura meses).
   const NUBE_SESION = "nubeSesion";
   const NUBE_LOTE = 200;
+  const NUBE_TIMEOUT_MS = 15000; // tiempo máximo de una petición al Worker
 
   function leerSesionNube() {
     try {
@@ -1257,8 +1262,12 @@
     }
     if (body !== undefined) headers["Content-Type"] = "application/json";
     let res;
-    try { res = await fetch(WORKER_URL + ruta, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined }); }
+    // Con tiempo máximo: una petición colgada (red mala) no debe bloquear para siempre la cola de sincronización
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), NUBE_TIMEOUT_MS);
+    try { res = await fetch(WORKER_URL + ruta, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined, signal: ctrl.signal }); }
     catch (e) { throw new Error("NUBE_SIN_CONEXION"); }
+    finally { clearTimeout(timer); }
     let json = null;
     try { json = await res.json(); } catch (e) {}
     if (res.status === 401 && !sinSesion) { guardarSesionNube(null); throw new Error("NUBE_SESION_CADUCADA"); }
@@ -1439,13 +1448,31 @@
   }
 
   const enviarCambiosNube = (id) => enColaNube(id, () => _enviarNube(id));
-  const sincronizarNube = (id) => enColaNube(id, async () => { await _traerNube(id); return _enviarNube(id); });
+  const ultimaSincNube = {}; // id → cuándo terminó la última sincronización completa
+  const sincronizarNube = (id) => enColaNube(id, async () => {
+    const t = await _traerNube(id);
+    const e = await _enviarNube(id);
+    ultimaSincNube[id] = Date.now();
+    return { ...t, ...e }; // { recibidas, cambios, enviados }
+  });
 
   const temporizadoresNube = {};
   function programarEnvioNube(id) {
     clearTimeout(temporizadoresNube[id]);
-    temporizadoresNube[id] = setTimeout(() => { enviarCambiosNube(id).catch(() => {}); }, 1500);
+    temporizadoresNube[id] = setTimeout(() => { enviarCambiosNube(id).catch(() => {}); }, 500);
   }
+  // Al salir de la app (o ocultarla) se envía ya lo pendiente: un temporizador no sobreviviría
+  const enviarPendientesYa = () => {
+    for (const l of obtenerListasArr()) {
+      if (l.tipo !== "nube" || l.rol === "lectura") continue;
+      clearTimeout(temporizadoresNube[l.id]);
+      enviarCambiosNube(l.id).catch(() => {});
+    }
+  };
+  try {
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") enviarPendientesYa(); });
+    window.addEventListener("pagehide", enviarPendientesYa);
+  } catch (e) {}
   try {
     window.addEventListener("online", () => {
       const id = idListaActiva();
@@ -1453,18 +1480,36 @@
     });
   } catch (e) {}
 
-  // Estado de la última sincronización al abrir la lista (lo lee la interfaz para avisar si falla)
+  // --- Sincronizar al abrir una lista de la nube ------------------------------------------------
+  // La lista se enseña AL INSTANTE con lo guardado en el dispositivo; la sincronización con la nube corre en segundo
+  // plano y la interfaz se entera después (NUBE_ESPERAR_SYNC): solo repinta si llegó algo nuevo. Sin conexión, la lista
+  // no espera nada.
   let estadoNube = null;
-  async function sincronizarNubeAlAbrir(id) {
-    estadoNube = { id, ok: true };
-    let timer;
-    try {
-      await Promise.race([
-        sincronizarNube(id),
-        new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("NUBE_SIN_CONEXION")), 8000); }),
-      ]);
-    } catch (e) { estadoNube = { id, ok: false, error: String(e?.message || e).replace(/^Error:\s*/, "") }; }
-    finally { clearTimeout(timer); }
+  const syncAlAbrir = {};      // id → promesa mientras dura la sincronización
+  const resultadoAlAbrir = {}; // id → resultado de la última, hasta que la interfaz lo recoge
+  function lanzarSyncAlAbrir(id) {
+    if (syncAlAbrir[id]) return syncAlAbrir[id];
+    const p = (async () => {
+      let timer;
+      try {
+        const r = await Promise.race([
+          sincronizarNube(id),
+          new Promise((_, rej) => { timer = setTimeout(() => rej(new Error("NUBE_SIN_CONEXION")), 10000); }),
+        ]);
+        return { id, ok: true, cambios: r?.cambios || 0 };
+      } catch (e) {
+        return { id, ok: false, error: String(e?.message || e).replace(/^Error:\s*/, "") };
+      } finally { clearTimeout(timer); }
+    })().then((r) => { resultadoAlAbrir[id] = { ...r, ts: Date.now() }; delete syncAlAbrir[id]; return r; });
+    syncAlAbrir[id] = p;
+    return p;
+  }
+  // La nube al día para quien la necesite ya: si se está sincronizando se espera a esa; si acaba de sincronizarse
+  // (menos de maxEdadMs) solo se envía lo pendiente, sin volver a pedir nada.
+  function nubeAlDia(id, maxEdadMs = 8000) {
+    if (syncAlAbrir[id]) return syncAlAbrir[id].then((r) => { if (!r.ok) throw new Error(r.error); return r; });
+    if (Date.now() - (ultimaSincNube[id] || 0) < maxEdadMs) return enviarCambiosNube(id);
+    return sincronizarNube(id);
   }
 
   function anadirEntradaNube(id, nombre, rol) {
@@ -1591,6 +1636,102 @@
   const camposParaNube = (it) => { const x = normItemVinculo(it); return { ...x, score: notaLocal(x.score) }; };
   const resumenVinculoVacio = () => ({ hoja: { actualizadas: 0, anadidas: 0, eliminadas: 0 }, nube: { actualizadas: 0, anadidas: 0, eliminadas: 0 } });
 
+  // Peticiones de Sheets para aplicar a la hoja los cambios del plan EN POCAS LLAMADAS (no serie a serie):
+  // ediciones, borrados (de abajo arriba) y altas se agrupan en lotes; el coste ya no crece con el número de series.
+  function requestCampoHoja(sheetId, row, campo, valor) {
+    const col = { genre: 0, score: 2, status: 5, cover: 9, lastEpisodeUrl: 10 }[campo];
+    const c = {};
+    let fields = "userEnteredValue";
+    if (campo === "score") {
+      const n = parseFloat(String(valor).replace(",", "."));
+      c.userEnteredValue = !Number.isFinite(n) || n <= 0 ? { stringValue: "" } : { numberValue: n };
+      c.userEnteredFormat = { numberFormat: { type: "NUMBER", pattern: "0.0" } };
+      fields += ",userEnteredFormat.numberFormat";
+    } else if (campo === "cover") {
+      c.userEnteredValue = valor ? { formulaValue: `=IMAGE("${String(valor).replace(/"/g, '""')}",1)` } : { stringValue: "" };
+    } else c.userEnteredValue = { stringValue: String(valor ?? "") };
+    return { updateCells: { range: { sheetId, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: col, endColumnIndex: col + 1 }, rows: [{ values: [c] }], fields } };
+  }
+  function construirLotesHoja(sheetId, aHoja, hojaActual, filasHoja) {
+    const lotes = { actualizar: [], eliminar: [], anadir: [] };
+    for (const op of aHoja.actualizar) {
+      const dif = diferenciasVinculo(op.de, op.a);
+      const reqs = dif.campos.map(([campo, valor]) => requestCampoHoja(sheetId, op.row, campo, valor));
+      if (dif.tituloUrl) reqs.push({ updateCells: {
+        range: { sheetId, startRowIndex: op.row - 1, endRowIndex: op.row, startColumnIndex: 3, endColumnIndex: 4 },
+        rows: [{ values: [{ userEnteredValue: { stringValue: dif.title }, textFormatRuns: dif.url ? [{ startIndex: 0, format: { link: { uri: dif.url } } }] : [] }] }],
+        fields: "userEnteredValue,textFormatRuns",
+      } });
+      lotes.actualizar.push({ k: op.k, reqs });
+    }
+    const borradas = aHoja.eliminar.map((o) => o.row);
+    for (const op of [...aHoja.eliminar].sort((a, b) => b.row - a.row)) {
+      lotes.eliminar.push({ k: op.k, reqs: [{ deleteDimension: { range: { sheetId, dimension: "ROWS", startIndex: op.row - 1, endIndex: op.row } } }] });
+    }
+    if (aHoja.anadir.length) {
+      // Primera fila libre DESPUÉS de los borrados (cada borrado por encima sube las filas de debajo)
+      let ultima = 1;
+      for (const it of hojaActual) {
+        if (borradas.includes(it.row)) continue;
+        ultima = Math.max(ultima, it.row - borradas.filter((r) => r < it.row).length);
+      }
+      let fila = ultima + 1;
+      for (const op of aHoja.anadir) {
+        const x = normItemVinculo(op.item);
+        const num = parseFloat(x.score);
+        const valores = Array.from({ length: 11 }, () => ({}));
+        valores[0] = { userEnteredValue: { stringValue: x.genre } };
+        if (Number.isFinite(num) && num > 0) valores[2] = { userEnteredValue: { numberValue: num }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } };
+        valores[3] = x.url ? { userEnteredValue: { stringValue: x.title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: x.url } } }] } : { userEnteredValue: { stringValue: x.title } };
+        valores[5] = { userEnteredValue: { stringValue: x.status } };
+        if (x.cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${x.cover.replace(/"/g, '""')}",1)` } };
+        if (x.lastEpisodeUrl) valores[10] = { userEnteredValue: { stringValue: x.lastEpisodeUrl } };
+        lotes.anadir.push({ k: op.k, reqs: [{ updateCells: {
+          range: { sheetId, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+          rows: [{ values: valores }], fields: "userEnteredValue,textFormatRuns,userEnteredFormat.numberFormat",
+        } }] });
+        fila++;
+      }
+      // Si la hoja se queda sin filas para tantas altas, se amplía (solo se sabe el tamaño si la API lo dio)
+      const disponibles = Number.isFinite(filasHoja) ? filasHoja - borradas.length : Infinity;
+      if (fila - 1 > disponibles) lotes.anadir[0].reqs.unshift({ appendDimension: { sheetId, dimension: "ROWS", length: fila - 1 - disponibles } });
+    }
+    return lotes;
+  }
+  // Envía los lotes por fases (ediciones → borrados → altas), con un máximo de peticiones por llamada. Cada llamada de
+  // la API de Sheets es atómica: o entra entera o no entra. Lo que no entra se devuelve en `fallos` para reintentarlo.
+  async function ejecutarLotesHoja(lotes, enviar, maxReqs = 300) {
+    const hechos = { actualizadas: 0, eliminadas: 0, anadidas: 0, fallos: new Set() };
+    const fase = async (items, contador) => {
+      let i = 0, roto = false;
+      while (i < items.length) {
+        const trozo = [];
+        let n = 0;
+        while (i < items.length && (n === 0 || n + items[i].reqs.length <= maxReqs)) { trozo.push(items[i]); n += items[i].reqs.length; i++; }
+        if (roto) { trozo.forEach((x) => hechos.fallos.add(x.k)); continue; }
+        try { await enviar(trozo.flatMap((x) => x.reqs)); hechos[contador] += trozo.length; }
+        catch (e) { roto = true; trozo.forEach((x) => hechos.fallos.add(x.k)); }
+      }
+      return !roto;
+    };
+    await fase(lotes.actualizar, "actualizadas");
+    const bien = await fase(lotes.eliminar, "eliminadas");
+    if (bien) await fase(lotes.anadir, "anadidas");
+    else lotes.anadir.forEach((x) => hechos.fallos.add(x.k)); // las altas dependen de dónde queden las filas tras los borrados
+    return hechos;
+  }
+  // Filas que tiene ahora la pestaña (null si no se puede saber: entonces no se amplía nada)
+  async function leerFilasHoja() {
+    try {
+      const data = await sheetsFetch("?fields=sheets.properties");
+      const hoja = (data.sheets || []).map((s) => s.properties).find((p) => p.sheetId === gid);
+      return hoja?.gridProperties?.rowCount ?? null;
+    } catch (e) { return null; }
+  }
+  async function enviarRequestsHoja(requests) {
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+  }
+
   // --- Vínculo hoja ↔ nube: motor en la PWA ---------------------------------------------------
   // Corre en segundo plano al abrir cualquiera de las dos listas en un dispositivo con acceso a la hoja. Si no hay
   // sesión de Google Sheets (o no hay conexión) no hace nada ni abre ventanas: la lista de la nube sigue funcionando.
@@ -1627,60 +1768,52 @@
     if (!forzar && Date.now() - (ultimaSincVinculo[clave] || 0) < 45000) return { omitido: "reciente" };
     ultimaSincVinculo[clave] = Date.now();
 
-    // 1) La lista de la nube, al día (envía lo pendiente y trae lo de otros dispositivos)
-    try { await sincronizarNube(nubeL.id); }
-    catch (e) { return { omitido: "sin_nube", error: String(e?.message || e).replace(/^Error:\s*/, "") }; }
-    // 2) Acceso a la hoja: sin ventanas salvo que el usuario lo haya pedido (botón «Sincronizar ahora»)
+    // 1) Acceso a la hoja: sin ventanas salvo que el usuario lo haya pedido (botón «Sincronizar ahora»)
     try { await ensureToken(interactivo); } catch (e) { return { omitido: "sin_sesion_hoja" }; }
-
-    let base = {};
-    try { base = JSON.parse(localStorage.getItem(clave) || "null") || {}; } catch (e) {}
+    // 2) En paralelo: la lista de la nube al día y la hoja leída (no dependen una de otra). Si la nube se acaba de
+    //    sincronizar (al abrir la lista) no se repite.
+    const pNube = nubeAlDia(nubeL.id, forzar ? 0 : 8000).then(() => null, (e) => e);
+    let baseGuardada = null;
+    try { baseGuardada = JSON.parse(localStorage.getItem(clave) || "null"); } catch (e) {}
     const resultado = await conListaExclusiva(hojaL.id, async () => {
-      const hoja = await obtenerListaCompleta();
+      const [errNube, hoja] = await Promise.all([pNube, obtenerListaCompleta()]);
+      if (errNube) return { omitido: "sin_nube", error: String(errNube?.message || errNube).replace(/^Error:\s*/, "") };
+      const base = baseGuardada || {};
       const plan = planificarVinculo(base, hoja, leerDatosLocal(nubeL.id).items);
       if (plan.sospechoso) return { omitido: "borrados_masivos", borrados: plan.borrados };
       const res = resumenVinculoVacio();
       const fallos = new Set();
-      // --- Hoja: primero las ediciones (las filas no se mueven), luego los borrados de abajo arriba y al final las altas
-      for (const op of plan.aHoja.actualizar) {
-        try {
-          const dif = diferenciasVinculo(op.de, op.a);
-          for (const [campo, valor] of dif.campos) await actualizarCampo(op.row, campo, valor);
-          if (dif.tituloUrl) await actualizarTituloUrl(op.row, dif.title, dif.url);
-          res.hoja.actualizadas++;
-        } catch (e) { fallos.add(op.k); }
-      }
-      for (const op of [...plan.aHoja.eliminar].sort((a, b) => b.row - a.row)) {
-        try { await eliminarSerie(op.row, op.title); res.hoja.eliminadas++; } catch (e) { fallos.add(op.k); }
-      }
-      for (const op of plan.aHoja.anadir) {
-        try { await agregarSerieCompleta(normItemVinculo(op.item)); res.hoja.anadidas++; }
-        catch (e) { if (!/YA_EXISTE/.test(String(e?.message || e))) fallos.add(op.k); }
-      }
+      // --- Hoja: todos los cambios en una o pocas peticiones
+      if (plan.aHoja.anadir.length) gridFilas = await leerFilasHoja();
+      const hechos = await ejecutarLotesHoja(construirLotesHoja(gid, plan.aHoja, hoja, gridFilas), enviarRequestsHoja);
+      res.hoja.actualizadas = hechos.actualizadas; res.hoja.eliminadas = hechos.eliminadas; res.hoja.anadidas = hechos.anadidas;
+      hechos.fallos.forEach((k) => fallos.add(k));
       // --- Nube: sobre los datos locales de la lista (se envían solos al Worker)
-      const d = leerDatosLocal(nubeL.id);
-      const pos = (k) => d.items.findIndex((i) => claveSerieVinculo(i) === k);
       const portadas = [];
-      let cambios = 0;
-      for (const op of plan.aNube.actualizar) {
-        const i = pos(op.k);
-        if (i < 0) { fallos.add(op.k); continue; }
-        d.items[i] = { ...d.items[i], ...camposParaNube(op.a) };
-        if (d.items[i].cover) portadas.push(d.items[i].cover);
-        res.nube.actualizadas++; cambios++;
+      {
+        const d = leerDatosLocal(nubeL.id);
+        const pos = (k) => d.items.findIndex((i) => claveSerieVinculo(i) === k);
+        let cambios = 0;
+        for (const op of plan.aNube.actualizar) {
+          const i = pos(op.k);
+          if (i < 0) { fallos.add(op.k); continue; }
+          d.items[i] = { ...d.items[i], ...camposParaNube(op.a) };
+          if (d.items[i].cover) portadas.push(d.items[i].cover);
+          res.nube.actualizadas++; cambios++;
+        }
+        for (const op of plan.aNube.anadir) {
+          if (pos(op.k) >= 0) continue;
+          const it = { row: d.siguiente++, ...camposParaNube(op.item) };
+          d.items.push(it);
+          if (it.cover) portadas.push(it.cover);
+          res.nube.anadidas++; cambios++;
+        }
+        for (const op of plan.aNube.eliminar) {
+          const i = pos(op.k);
+          if (i >= 0) { d.items.splice(i, 1); res.nube.eliminadas++; cambios++; }
+        }
+        if (cambios) guardarDatosLocal(d, nubeL.id);
       }
-      for (const op of plan.aNube.anadir) {
-        if (pos(op.k) >= 0) continue;
-        const it = { row: d.siguiente++, ...camposParaNube(op.item) };
-        d.items.push(it);
-        if (it.cover) portadas.push(it.cover);
-        res.nube.anadidas++; cambios++;
-      }
-      for (const op of plan.aNube.eliminar) {
-        const i = pos(op.k);
-        if (i >= 0) { d.items.splice(i, 1); res.nube.eliminadas++; cambios++; }
-      }
-      if (cambios) guardarDatosLocal(d, nubeL.id);
       portadas.forEach((u) => precachearImagen(u));
       // Lo que falló se reintenta en la próxima sincronización (su base no cambia)
       const nuevaBase = { ...plan.base };
@@ -1689,11 +1822,12 @@
       return { ...res, fallos: fallos.size };
     });
     if (resultado.omitido) return resultado;
-    const activa = idListaActiva();
+    const listaActivaId = idListaActiva();
     const tocaHoja = resultado.hoja.actualizadas + resultado.hoja.anadidas + resultado.hoja.eliminadas > 0;
     const tocaNube = resultado.nube.actualizadas + resultado.nube.anadidas + resultado.nube.eliminadas > 0;
-    return { ...resultado, cambiosActiva: (activa === hojaL.id && tocaHoja) || (activa === nubeL.id && tocaNube) };
+    return { ...resultado, cambiosActiva: (listaActivaId === hojaL.id && tocaHoja) || (listaActivaId === nubeL.id && tocaNube) };
   }
+
 
   function crearVinculo(hojaId, nubeId) {
     const listas = obtenerListasArr();
@@ -1748,7 +1882,7 @@
       case "RENAME_LISTA": renombrarLista(msg.id,msg.name); return {ok:true};
       case "DELETE_LISTA": return {ok:true,...await eliminarListaGuardada(msg.id)};
       case "SWITCH_LISTA": return {ok:true,...await cambiarListaActiva(msg.id)};
-      case "GET_ANIME_LIST": { const lista = await obtenerListaCompleta(); return {ok:true,lista,nube:estadoNube}; }
+      case "GET_ANIME_LIST": { const lista = await obtenerListaCompleta({sinSync:!!msg.sinSync}); return {ok:true,lista,nube:estadoNube}; }
       case "NUBE_ESTADO": return {ok:true,sesion:window.PWA_NUBE.estado(),clientId:obtenerClientId()};
       case "NUBE_CERRAR_SESION": window.PWA_NUBE.cerrarSesion(); return {ok:true};
       case "NUBE_LISTAR": return {ok:true,listas:await nubeListar()};
@@ -1762,6 +1896,12 @@
       case "NUBE_COMPARTIR": return {ok:true,...await nubeCompartir(msg.id,msg.email,msg.rol)};
       case "NUBE_QUITAR_MIEMBRO": await nubeQuitarMiembro(msg.id,msg.email); return {ok:true};
       case "NUBE_SINCRONIZAR": return {ok:true,...await sincronizarNube(msg.id)};
+      case "NUBE_ESPERAR_SYNC": { // resultado de la sincronización que se lanzó al abrir la lista
+        let r = syncAlAbrir[msg.id] ? await syncAlAbrir[msg.id] : resultadoAlAbrir[msg.id];
+        if (!r || (r.ts && Date.now() - r.ts > 60000)) r = { id: msg.id, ok: true, cambios: 0 };
+        delete resultadoAlAbrir[msg.id];
+        return {ok:true,nube:r};
+      }
       case "NUBE_BORRAR": { // si ya la borraron desde otro dispositivo, el objetivo (que no exista) ya está cumplido
         try { await nubeFetch(`/api/listas/${encodeURIComponent(msg.id)}`,{method:"DELETE"}); }
         catch (e) { if (!/NUBE_LISTA_NO_EXISTE/.test(String(e?.message || e))) throw e; }

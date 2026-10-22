@@ -356,11 +356,13 @@ async function leerJson(request) {
 // Devuelve "propietario" | "edicion" | "lectura" | null. Sin acceso se responde 404 (no se
 // revela si la lista existe).
 async function rolEnLista(env, usuario, listaId) {
-  const l = await env.DB.prepare("SELECT propietario FROM listas WHERE id = ?").bind(listaId).first();
-  if (!l) return null;
-  if (l.propietario === usuario.sub) return "propietario";
-  const m = await env.DB.prepare("SELECT rol FROM miembros WHERE lista_id = ? AND email = ?").bind(listaId, usuario.email).first();
-  return m ? m.rol : null;
+  // Una sola consulta (antes eran dos seguidas): la lista y, si no eres el propietario, tu fila de miembro
+  const f = await env.DB.prepare(
+    "SELECT l.propietario AS propietario, m.rol AS rol FROM listas l LEFT JOIN miembros m ON m.lista_id = l.id AND m.email = ? WHERE l.id = ?"
+  ).bind(usuario.email, listaId).first();
+  if (!f) return null;
+  if (f.propietario === usuario.sub) return "propietario";
+  return f.rol || null;
 }
 async function exigirRol(env, usuario, listaId, roles) {
   const rol = await rolEnLista(env, usuario, listaId);
