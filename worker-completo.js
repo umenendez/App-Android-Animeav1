@@ -1,6 +1,6 @@
 // Proxy + backend de login mínimo para AnimeAV1 Tracker (Android/PWA).
 //
-// Hace cuatro trabajos:
+// Hace cinco trabajos:
 //
 // 1) PROXY CORS: un navegador normal (a diferencia de una extensión con
 //    host_permissions) no puede leer el HTML de animeav1.com/animeflv.net
@@ -22,6 +22,11 @@
 //
 // 4) LISTAS EN LA NUBE (D1): varios usuarios, login con Google y sincronización entre
 //    dispositivos. Todo lo de /api/... (ver la sección «API de listas en la nube» abajo).
+//
+// 5) ENLACE PÚBLICO DE SOLO LECTURA: el propietario de una lista de la nube puede generar un enlace
+//    (https://TU-WORKER.workers.dev/v/<código>) que muestra la lista como página web, sin cuenta ni app,
+//    y revocarlo cuando quiera. Ver la sección «Enlace público» abajo. No necesita ningún paso extra:
+//    la tabla que usa se crea sola la primera vez.
 //
 // ───────────────────────────── DESPLIEGUE ─────────────────────────────
 // 1. En Google Cloud Console, en el MISMO cliente OAuth "Aplicación web"
@@ -61,6 +66,10 @@ export default {
 
     // API de listas en la nube (D1): tiene su propio CORS restringido, por eso va antes
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return manejarApi(request, env, url);
+
+    // Página pública de una lista compartida con enlace (solo lectura, sin sesión)
+    const pub = url.pathname.match(/^\/v\/([A-Za-z0-9_-]{16,64})\/?$/);
+    if (pub && (request.method === "GET" || request.method === "HEAD")) return paginaPublica(request, env, pub[1], url);
 
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS_BASE });
@@ -402,6 +411,9 @@ async function manejarApi(request, env, url) {
       if (ruta.length === 2 && metodo === "DELETE") return await apiBorrarLista(request, env, usuario, id);
       if (ruta[2] === "series" && ruta.length === 3 && metodo === "GET") return await apiSeriesGet(request, env, usuario, id, url);
       if (ruta[2] === "series" && ruta.length === 3 && metodo === "POST") return await apiSeriesPost(request, env, usuario, id);
+      if (ruta[2] === "enlace" && ruta.length === 3 && metodo === "GET") return await apiEnlaceGet(request, env, usuario, id, url);
+      if (ruta[2] === "enlace" && ruta.length === 3 && metodo === "POST") return await apiEnlaceCrear(request, env, usuario, id, url);
+      if (ruta[2] === "enlace" && ruta.length === 3 && metodo === "DELETE") return await apiEnlaceQuitar(request, env, usuario, id);
       if (ruta[2] === "miembros" && ruta.length === 3 && metodo === "POST") return await apiMiembroAnadir(request, env, usuario, id);
       if (ruta[2] === "miembros" && ruta.length === 3 && metodo === "DELETE") return await apiMiembroQuitar(request, env, usuario, id, url);
     }
@@ -490,7 +502,9 @@ async function apiEditarLista(request, env, usuario, id) {
 
 async function apiBorrarLista(request, env, usuario, id) {
   await exigirRol(env, usuario, id, ["propietario"]);
+  await asegurarTablaEnlaces(env);
   await env.DB.batch([
+    env.DB.prepare("DELETE FROM enlaces_publicos WHERE lista_id = ?").bind(id),
     env.DB.prepare("DELETE FROM series WHERE lista_id = ?").bind(id),
     env.DB.prepare("DELETE FROM miembros WHERE lista_id = ?").bind(id),
     env.DB.prepare("DELETE FROM listas WHERE id = ?").bind(id),
@@ -571,4 +585,268 @@ async function apiMiembroQuitar(request, env, usuario, id, url) {
   if (!email) throw new ErrorApi(400, "Falta ?email=");
   await env.DB.prepare("DELETE FROM miembros WHERE lista_id = ? AND email = ?").bind(id, email).run();
   return resp(request, env, { ok: true });
+}
+
+// --- Enlace público de solo lectura ----------------------------------------
+// El propietario de una lista de la nube genera un enlace /v/<código> que cualquiera puede abrir
+// (sin cuenta y sin instalar nada) para ver la lista como una página web. Es solo lectura: el
+// código solo sirve para ver esa página, no da acceso a la API ni a las demás listas.
+//   · Una lista tiene como mucho un enlace.
+//   · «Revocar» borra el enlace: deja de funcionar al instante (la página no se guarda en caché).
+//   · «Renovar» lo sustituye por otro código nuevo: el anterior deja de valer.
+//   · Se muestran título, portada, nota, estado, géneros y enlace de cada serie; nada más
+//     (ni el último capítulo visto, ni quién más tiene acceso a la lista, ni el email del dueño).
+// La tabla se crea sola la primera vez que se usa: no hay que tocar schema.sql.
+
+let _tablaEnlaces = false;
+async function asegurarTablaEnlaces(env) {
+  if (_tablaEnlaces) return;
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS enlaces_publicos (token TEXT PRIMARY KEY, lista_id TEXT NOT NULL UNIQUE, creado INTEGER NOT NULL)"
+  ).run();
+  _tablaEnlaces = true;
+}
+const urlEnlace = (url, token) => `${url.origin}/v/${token}`;
+
+async function apiEnlaceGet(request, env, usuario, id, url) {
+  await exigirRol(env, usuario, id, ["propietario"]);
+  await asegurarTablaEnlaces(env);
+  const f = await env.DB.prepare("SELECT token, creado FROM enlaces_publicos WHERE lista_id = ?").bind(id).first();
+  return resp(request, env, { enlace: f ? { token: f.token, url: urlEnlace(url, f.token), creado: f.creado } : null });
+}
+
+// POST /api/listas/:id/enlace            → crea el enlace (o devuelve el que ya existe)
+// POST /api/listas/:id/enlace {renovar}  → lo sustituye por uno nuevo
+async function apiEnlaceCrear(request, env, usuario, id, url) {
+  await exigirRol(env, usuario, id, ["propietario"]);
+  await asegurarTablaEnlaces(env);
+  let renovar = false;
+  try { const b = await request.json(); renovar = !!(b && b.renovar); } catch (_) {}
+  if (!renovar) {
+    const ya = await env.DB.prepare("SELECT token, creado FROM enlaces_publicos WHERE lista_id = ?").bind(id).first();
+    if (ya) return resp(request, env, { enlace: { token: ya.token, url: urlEnlace(url, ya.token), creado: ya.creado } });
+  }
+  const token = b64uDeBytes(crypto.getRandomValues(new Uint8Array(24))); // 192 bits: imposible de adivinar
+  const creado = Date.now();
+  // lista_id es UNIQUE: si ya había enlace, INSERT OR REPLACE lo sustituye (el código viejo deja de valer)
+  await env.DB.prepare("INSERT OR REPLACE INTO enlaces_publicos (token, lista_id, creado) VALUES (?, ?, ?)").bind(token, id, creado).run();
+  return resp(request, env, { enlace: { token, url: urlEnlace(url, token), creado } }, 201);
+}
+
+async function apiEnlaceQuitar(request, env, usuario, id) {
+  await exigirRol(env, usuario, id, ["propietario"]);
+  await asegurarTablaEnlaces(env);
+  await env.DB.prepare("DELETE FROM enlaces_publicos WHERE lista_id = ?").bind(id).run();
+  return resp(request, env, { ok: true });
+}
+
+// ---- Página pública (GET /v/<código>) ----
+// Mismos estados que la app: [valor guardado, etiqueta, clase CSS]
+const ESTADOS_PUBLICOS = [
+  ["-", "Viendo", "viendo"], ["✔", "Visto", "visto"], ["✖", "Sin ver", "sin"], ["📉", "Dropeado", "drop"], ["@", "Por ver", "por"],
+];
+const escHtml = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function enlaceHttp(u) {
+  try { const d = new URL(String(u || "").trim()); return d.protocol === "https:" || d.protocol === "http:" ? d.toString() : ""; }
+  catch (_) { return ""; }
+}
+// Las portadas de Manwhaweb solo se ven con el Referer correcto: pasan por el proxy de este mismo Worker
+function portadaPublica(u, origen) {
+  let d;
+  try { d = new URL(String(u || "").trim()); } catch (_) { return ""; }
+  if (d.protocol !== "https:") return "";
+  if (HOST_IMG_MW.test(d.hostname)) return origen + "/?url=" + encodeURIComponent(d.toString());
+  return d.toString();
+}
+
+const LOGO_PUBLICO = "data:image/png;base64,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";
+
+// Mismo diseño que la app (index.html): mismos colores, tamaños, rejilla y tarjetas teñidas según el estado
+const CSS_PUBLICO = `
+:root{color-scheme:light dark;
+--bg:light-dark(#f4f5f8,#0e131b);--surface:light-dark(#fff,#171d29);--field:light-dark(#eef0f4,#202837);--border:light-dark(#e1e4ea,#2a3345);--text:light-dark(#141824,#e8ebf2);--muted:light-dark(#667085,#8b95a7);--accent:light-dark(#dc2626,#f05252);
+--c-viendo:light-dark(#c2410c,#fb923c);--c-visto:light-dark(#15803d,#4ade80);--c-sin:light-dark(#b91c1c,#f87171);--c-drop:light-dark(#9f1239,#f472b6);--c-por:light-dark(#7e22ce,#c084fc);
+--st:var(--muted);--tinte:var(--surface)}
+[data-estado="-"]{--st:var(--c-viendo);--tinte:#f97316}
+[data-estado="✔"]{--st:var(--c-visto);--tinte:#22c55e}
+[data-estado="✖"]{--st:var(--c-sin);--tinte:#ef4444}
+[data-estado="📉"]{--st:var(--c-drop);--tinte:#9f1239}
+[data-estado="@"]{--st:var(--c-por);--tinte:#9333ea}
+[hidden]{display:none!important}
+*{box-sizing:border-box}
+body{margin:0;padding:12px;background:var(--bg);color:var(--text);font:13px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1200px;margin:0 auto;display:flex;flex-direction:column;gap:10px}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button,select,input{font:inherit;color:inherit}
+button{cursor:pointer}
+.cabecera{display:flex;align-items:center;gap:8px}
+.logo{width:24px;height:24px;border-radius:50%;flex-shrink:0}
+h1{font-size:15px;font-weight:700;margin:0;min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#contador{font-size:12px;color:var(--muted);flex-shrink:0}
+.filtros{display:flex;flex-direction:column;gap:5px}
+.fila{display:flex;flex-wrap:wrap;gap:5px}
+.fila>*{flex:1 1 80px;min-width:0}
+.fila>#q{flex:2 1 120px}
+#q,.filtros select{height:28px;padding:0 8px;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+#q::placeholder{color:var(--muted)}
+select{appearance:none;-webkit-appearance:none;cursor:pointer;padding-right:20px;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%239ca3af' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");background-repeat:no-repeat;background-position:right 7px center}
+.chips{display:flex;flex-wrap:nowrap;gap:5px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:1px}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:0 0 auto;display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);background:var(--surface);font-size:11.5px;font-weight:500}
+.chip:hover{border-color:var(--muted)}
+.chip .punto{width:7px;height:7px;border-radius:50%;background:var(--st)}
+.chip .n{color:var(--muted);font-size:11px}
+.chip.vacio{opacity:.4}
+.chip[aria-pressed="true"]{background:var(--text);color:var(--bg);border-color:var(--text)}
+.chip[aria-pressed="true"] .n{color:inherit;opacity:.7}
+.chip[aria-pressed="true"][data-estado]{background:color-mix(in srgb,var(--st) 16%,var(--surface));color:var(--st);border-color:var(--st)}
+#grid{display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:min-content;align-content:start;gap:7px;margin:0;padding:0 0 12px;list-style:none}
+@media (min-width:480px){#grid{grid-template-columns:repeat(4,1fr)}}
+@media (min-width:620px){#grid{grid-template-columns:repeat(5,1fr)}}
+@media (min-width:860px){#grid{grid-template-columns:repeat(6,1fr)}}
+.card{display:flex;flex-direction:column;min-width:0;background:color-mix(in srgb,var(--tinte) 12%,var(--surface));border:1px solid color-mix(in srgb,var(--tinte) 40%,var(--border));border-radius:12px}
+.portada{position:relative;aspect-ratio:2/3;background:var(--field);overflow:hidden;border-radius:11px 11px 0 0}
+.portada::after{content:"";position:absolute;inset:auto 0 0 0;height:3px;background:var(--st)}
+.cover{width:100%;height:100%;object-fit:cover;display:block}
+.js .cover{opacity:0;transition:opacity .25s}
+.js .cover.lista{opacity:1}
+.sin-portada{height:100%;display:grid;place-items:center;color:var(--muted);font-size:11px}
+.nota{position:absolute;top:5px;left:5px;width:34px;height:19px;line-height:19px;text-align:center;font-size:10.5px;font-weight:700;border-radius:6px;background:rgba(15,20,29,.72);color:rgba(255,255,255,.6);z-index:10}
+.info{display:flex;flex-direction:column;gap:4px;padding:6px}
+.titulo{color:var(--text);text-decoration:none;font-weight:650;font-size:10.5px;line-height:1.2;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-height:25px;overflow-wrap:anywhere}
+a.titulo:hover{text-decoration:underline}
+.est,.gen{display:block;width:100%;height:23px;line-height:21px;padding:0 6px;font-size:10.5px;border:1px solid var(--border);border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.est{font-weight:600;color:var(--st);border-color:color-mix(in srgb,var(--st) 45%,var(--border));background:color-mix(in srgb,var(--st) 12%,var(--surface))}
+.gen{color:var(--muted);background:var(--field)}
+.aviso{text-align:center;color:var(--muted);padding:40px 12px}
+footer{color:var(--muted);font-size:11px;text-align:center;padding:0 0 14px}
+`;
+
+function htmlAviso(titulo, texto, nonce) {
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escHtml(titulo)}</title><style nonce="${nonce}">${CSS_PUBLICO}</style></head><body><main><header class="cabecera"><img class="logo" src="${LOGO_PUBLICO}" alt=""><h1>AnimeAV1 Tracker</h1></header><div class="aviso"><strong>${escHtml(titulo)}</strong><br>${escHtml(texto)}</div></main></body></html>`;
+}
+
+// Código que se ejecuta en el navegador de quien abre el enlace (buscar, filtrar por estado y género, ordenar).
+// Se inserta con .toString(): no puede usar nada de fuera de la función.
+function guionPublico() {
+  var q = document.getElementById("q"), orden = document.getElementById("orden"), gen = document.getElementById("gen"), grid = document.getElementById("grid");
+  var vacio = document.getElementById("vacio"), cont = document.getElementById("contador");
+  var cartas = Array.prototype.slice.call(grid.children), chips = document.querySelectorAll(".chip"), estado = "";
+  function norm(s) { return String(s).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""); }
+  cartas.forEach(function (c) { c._b = norm(c.getAttribute("data-b")); });
+  function aplicar() {
+    var t = norm(q.value.trim()), g = gen ? gen.value : "", n = 0;
+    cartas.forEach(function (c) {
+      var ok = (!estado || c.getAttribute("data-estado") === estado) && (!t || c._b.indexOf(t) !== -1) &&
+        (!g || c.getAttribute("data-g").indexOf("|" + g + "|") !== -1);
+      c.hidden = !ok;
+      if (ok) n++;
+    });
+    cont.textContent = n + (n === 1 ? " serie" : " series");
+    vacio.hidden = n !== 0;
+  }
+  function ordenar() {
+    var m = orden.value;
+    cartas.slice().sort(function (a, b) {
+      if (m === "score-desc" || m === "score-asc") {
+        var x = +a.getAttribute("data-n"), y = +b.getAttribute("data-n");
+        if (x < 0 && y >= 0) return 1; // las series sin nota van siempre al final
+        if (y < 0 && x >= 0) return -1;
+        if (x !== y) return m === "score-desc" ? y - x : x - y;
+      }
+      return a.getAttribute("data-i") - b.getAttribute("data-i");
+    }).forEach(function (c) { grid.appendChild(c); });
+  }
+  q.addEventListener("input", aplicar);
+  if (gen) gen.addEventListener("change", aplicar);
+  orden.addEventListener("change", ordenar);
+  Array.prototype.forEach.call(chips, function (ch) {
+    ch.addEventListener("click", function () {
+      estado = ch.getAttribute("data-estado") || "";
+      Array.prototype.forEach.call(chips, function (o) { o.setAttribute("aria-pressed", String(o === ch)); });
+      aplicar();
+    });
+  });
+  aplicar();
+}
+
+function htmlListaPublica(nombre, series, origen, nonce) {
+  const cuentas = {}, todosGeneros = new Set(), coloresNota = new Map();
+  const tarjetas = series.map((f, i) => {
+    cuentas[f.estado || ""] = (cuentas[f.estado || ""] || 0) + 1;
+    const est = ESTADOS_PUBLICOS.find((e) => e[0] === f.estado);
+    const titulo = String(f.titulo || "").trim() || "(sin título)";
+    const enlace = enlaceHttp(f.url);
+    const portada = portadaPublica(f.portada, origen);
+    const nota = f.nota === null || f.nota === undefined ? NaN : Number(f.nota);
+    const hayNota = Number.isFinite(nota) && nota > 0; // en la app, 0 significa «sin valorar»
+    const generos = String(f.genero || "").split(",").map((g) => g.trim().replace(/\|/g, "")).filter(Boolean);
+    generos.forEach((g) => todosGeneros.add(g));
+    // Misma escala que la app: rojo (0) → verde (10); fuera de escala, amarillo
+    // (con la CSP no valen los style="" en línea: se generan clases en el <style> de la página)
+    const claseNota = !hayNota ? "" : nota > 10 ? "cy" : "c" + Math.round(nota * 10);
+    if (claseNota && !coloresNota.has(claseNota)) coloresNota.set(claseNota, nota > 10 ? "background:#facc15;color:#78350f" : `background:hsl(${(nota / 10) * 120},72%,38%);color:#fff`);
+    const tituloHtml = enlace
+      ? `<a class="titulo" href="${escHtml(enlace)}" target="_blank" rel="noopener noreferrer" title="${escHtml(titulo)}">${escHtml(titulo)}</a>`
+      : `<span class="titulo" title="${escHtml(titulo)}">${escHtml(titulo)}</span>`;
+    return `<li class="card" data-estado="${escHtml(f.estado || "")}" data-n="${hayNota ? nota : -1}" data-i="${i}" data-g="${escHtml("|" + generos.join("|") + "|")}" data-b="${escHtml(titulo + " " + generos.join(" "))}">` +
+      `<div class="portada">${portada ? `<img class="cover" src="${escHtml(portada)}" alt="" loading="lazy" decoding="async">` : `<div class="sin-portada">Sin portada</div>`}` +
+      `<span class="nota${claseNota ? " " + claseNota : ""}">${hayNota ? escHtml(String(nota).replace(".", ",")) : "-"}</span></div>` +
+      `<div class="info">${tituloHtml}${est ? `<span class="est">${est[1]}</span>` : ""}<span class="gen" title="${escHtml(generos.join(", "))}">${escHtml(generos.join(" · ") || "Sin género")}</span></div></li>`;
+  }).join("");
+
+  const chips = [`<button class="chip" type="button" aria-pressed="true">Todos<span class="n">${series.length}</span></button>`]
+    .concat(ESTADOS_PUBLICOS.map((e) =>
+      `<button class="chip${cuentas[e[0]] ? "" : " vacio"}" type="button" data-estado="${escHtml(e[0])}" aria-pressed="false"><span class="punto"></span>${e[1]}<span class="n">${cuentas[e[0]] || 0}</span></button>`)).join("");
+
+  const listaGeneros = [...todosGeneros].sort((a, b) => a.localeCompare(b, "es"));
+  const selGenero = listaGeneros.length
+    ? `<select id="gen" aria-label="Filtrar por género"><option value="">Todos los géneros</option>${listaGeneros.map((g) => `<option value="${escHtml(g)}">${escHtml(g)}</option>`).join("")}</select>` : "";
+
+  const ultimo = series.reduce((m, f) => Math.max(m, Number(f.servidor) || 0), 0);
+  const fecha = ultimo ? new Date(ultimo).toLocaleDateString("es-ES", { day: "numeric", month: "long", year: "numeric", timeZone: "Europe/Madrid" }) : "";
+  const n = series.length;
+
+  return `<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow">` +
+    `<title>${escHtml(nombre)} · AnimeAV1 Tracker</title><style nonce="${nonce}">${CSS_PUBLICO}${[...coloresNota].map(([c, r]) => `.nota.${c}{${r}}`).join("")}</style>` +
+    `<script nonce="${nonce}">document.documentElement.className="js";` +
+    `document.addEventListener("load",function(e){var t=e.target;if(t&&t.tagName==="IMG"&&t.className==="cover")t.classList.add("lista")},true);` +
+    `document.addEventListener("error",function(e){var t=e.target;if(t&&t.tagName==="IMG"&&t.className==="cover"){var p=t.parentNode,d=document.createElement("div");d.className="sin-portada";d.textContent="Sin portada";t.remove();p.insertBefore(d,p.firstChild)}},true);` +
+    `</script></head><body><main>` +
+    `<header class="cabecera"><img class="logo" src="${LOGO_PUBLICO}" alt=""><h1>${escHtml(nombre)}</h1><span id="contador">${n} ${n === 1 ? "serie" : "series"}</span></header>` +
+    `<div class="filtros"><div class="chips">${chips}</div><div class="fila"><input id="q" type="search" placeholder="Buscar por título" aria-label="Buscar por título">${selGenero}` +
+    `<select id="orden" aria-label="Ordenar"><option value="">Sin ordenar</option><option value="score-desc">Nota: mayor a menor</option><option value="score-asc">Nota: menor a mayor</option></select></div></div>` +
+    `<ul id="grid">${tarjetas}</ul><div id="vacio" class="aviso" hidden>Ninguna serie coincide con los filtros.</div>` +
+    `<footer>Lista compartida en solo lectura${fecha ? ` · actualizada el ${escHtml(fecha)}` : ""}</footer></main>` +
+    `<script nonce="${nonce}">(${guionPublico.toString()})()</script></body></html>`;
+}
+
+async function paginaPublica(request, env, token, url) {
+  const nonce = b64uDeBytes(crypto.getRandomValues(new Uint8Array(12)));
+  const cabeceras = {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store", // si se revoca el enlace, deja de verse al instante
+    "X-Robots-Tag": "noindex, nofollow",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "origin", // nunca se envía el código a otras webs (las portadas sí necesitan saber de qué web vienen)
+    "Content-Security-Policy": `default-src 'none'; img-src https: data:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
+  };
+  const cuerpo = (html) => (request.method === "HEAD" ? null : html);
+  const aviso = (titulo, texto, status) => new Response(cuerpo(htmlAviso(titulo, texto, nonce)), { status, headers: cabeceras });
+  if (!env.DB) return aviso("Servicio no disponible", "Este Worker no tiene configurada la base de datos.", 500);
+  try {
+    await asegurarTablaEnlaces(env);
+    const lista = await env.DB.prepare(
+      "SELECT l.id AS id, l.nombre AS nombre FROM enlaces_publicos e JOIN listas l ON l.id = e.lista_id WHERE e.token = ?"
+    ).bind(token).first();
+    if (!lista) return aviso("Enlace no disponible", "Este enlace no existe o su dueño lo ha desactivado.", 404);
+    const { results } = await env.DB.prepare(
+      "SELECT titulo, url, nota, estado, genero, portada, servidor FROM series WHERE lista_id = ? AND borrada = 0 ORDER BY titulo COLLATE NOCASE"
+    ).bind(lista.id).all();
+    return new Response(cuerpo(htmlListaPublica(lista.nombre, results, url.origin, nonce)), { headers: cabeceras });
+  } catch (e) {
+    console.error("Error en la página pública:", e && e.stack || e);
+    return aviso("Error", "No se pudo cargar la lista. Inténtalo de nuevo dentro de un rato.", 500);
+  }
 }

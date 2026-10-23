@@ -39,6 +39,7 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Compartir desde Android: en un capítulo de animeav1.com, Compartir → AnimeAV1 Tracker lo registra (serie nueva o «Viendo» + último capítulo). Requiere la PWA instalada; si no aparece en la lista de Compartir, desinstálala y vuelve a instalarla.
 - Otras páginas fuente (beta): las recetas se crean en la extensión («Copiar páginas fuente para la PWA») y se pegan en Opciones > Otras páginas fuente. Luego Compartir o el «+» registran series de esas webs en la lista asignada. Solo webs cuyo título sale en el HTML (no las que se dibujan con JavaScript), y el Worker debe poder leerlas.
 - Botón ⏭ «Siguiente capítulo» en las series en «Viendo»: abre el capítulo siguiente y lo guarda como último visto.
+- Avisos de capítulos nuevos (Opciones, desactivado por defecto): al abrir la app, contador de series en «Viendo» con capítulos sin ver en el icono (si Android lo admite) y sobre el botón ⏭. No avisa con la app cerrada.
 - Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 
 ## Listas en la nube (Cloudflare D1)
@@ -59,6 +60,18 @@ de Cloudflare: se sincroniza entre dispositivos, funciona sin conexión y se pue
 
 **Uso:** Tus listas > Listas en la nube > iniciar sesión. Para subir una lista que ya tienes, usa
 **«A la nube»** (copia). Para usarla en otro dispositivo, inicia sesión allí y pulsa «Añadir a este dispositivo».
+
+## Enlace público de solo lectura
+
+Para enseñar una lista de la nube a alguien **sin que tenga cuenta ni instale nada**: genera un enlace y el Worker sirve
+una página con tus series (con buscador, filtro por estado y orden). Se puede revocar cuando quieras.
+
+**Uso:** Tus listas > ⚙ de la lista de la nube > **🌐 Enlace público** > **Crear enlace público** > Copiar / Enviar.
+**Desactivar** lo borra al instante; **Renovar** crea un código nuevo e invalida el anterior.
+
+**Puesta en marcha:** vuelve a pegar `worker-completo.js` en el Worker y pulsa Deploy. No requiere cambios en D1 (la tabla
+`enlaces_publicos` se crea sola). Se ve título, portada, nota, estado, géneros y enlace de cada serie; nada más. Detalles en
+`CAMBIOS.md` (1.27.0).
 
 ## Vincular una hoja de Google con una lista de la nube
 

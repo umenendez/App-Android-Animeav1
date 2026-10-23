@@ -1579,6 +1579,12 @@
   async function nubeQuitarMiembro(id, email) {
     return nubeFetch(`/api/listas/${encodeURIComponent(id)}/miembros?email=${encodeURIComponent(email)}`, { method: "DELETE" });
   }
+  // Enlace público de solo lectura (solo el propietario): ver, crear/renovar y revocar
+  async function nubeEnlace(id) { return (await nubeFetch(`/api/listas/${encodeURIComponent(id)}/enlace`)).enlace || null; }
+  async function nubeEnlaceCrear(id, renovar) {
+    return (await nubeFetch(`/api/listas/${encodeURIComponent(id)}/enlace`, { method: "POST", body: { renovar: !!renovar } })).enlace;
+  }
+  async function nubeEnlaceQuitar(id) { await nubeFetch(`/api/listas/${encodeURIComponent(id)}/enlace`, { method: "DELETE" }); }
 
   // --- Vínculo hoja de Google ↔ lista de la nube -------------------------------------------------
   // Dos listas vinculadas se mantienen iguales en los dos sentidos. Cada serie se identifica por su enlace
@@ -1895,6 +1901,9 @@
       case "NUBE_MIEMBROS": return {ok:true,miembros:await nubeMiembros(msg.id)};
       case "NUBE_COMPARTIR": return {ok:true,...await nubeCompartir(msg.id,msg.email,msg.rol)};
       case "NUBE_QUITAR_MIEMBRO": await nubeQuitarMiembro(msg.id,msg.email); return {ok:true};
+      case "NUBE_ENLACE": return {ok:true,enlace:await nubeEnlace(msg.id)};
+      case "NUBE_ENLACE_CREAR": return {ok:true,enlace:await nubeEnlaceCrear(msg.id,msg.renovar)};
+      case "NUBE_ENLACE_QUITAR": await nubeEnlaceQuitar(msg.id); return {ok:true};
       case "NUBE_SINCRONIZAR": return {ok:true,...await sincronizarNube(msg.id)};
       case "NUBE_ESPERAR_SYNC": { // resultado de la sincronización que se lanzó al abrir la lista
         let r = syncAlAbrir[msg.id] ? await syncAlAbrir[msg.id] : resultadoAlAbrir[msg.id];

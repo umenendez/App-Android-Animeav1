@@ -5,6 +5,62 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.27.1
+
+### Página pública con el diseño de la app y listas en ventanas estrechas [ext + PWA + Worker]
+
+- **Página pública del enlace:** ahora usa el mismo diseño que la app: cabecera con el logo, chips de estado con su punto de
+  color y contador, tarjetas teñidas según el estado, portada con la franja de color, nota con el degradado rojo → verde,
+  estado y géneros en cajitas como en la app, y la misma rejilla (3, 4, 5 o 6 columnas según el ancho). Sigue el modo
+  claro/oscuro del dispositivo. Añade filtro por género y el orden por nota «mayor a menor» / «menor a mayor».
+  Si una portada no carga, se muestra «Sin portada».
+- **Panel «Tus listas» en ventanas estrechas:** cada fila se organiza ahora en dos bloques (nombre con sus etiquetas, y
+  botones a la derecha) y se recoloca sola cuando falta sitio, en vez de dejar el engranaje o «Quitar» sueltos. Los nombres
+  y los correos ya no se cortan con «…»: se parten en varias líneas. Los formularios de «Compartir» y «Enlace público»
+  se adaptan al ancho. Se acabó el desbordamiento horizontal.
+- **PWA:** la página ya no tiene un ancho mínimo de 320 px y la cabecera con los iconos baja a una segunda fila si no caben.
+- **Worker:** hay que volver a pegar `worker-completo.js` y pulsar Deploy (solo cambia la página pública).
+- Extensión `1.27.1`; caché de la PWA `v49`.
+
+## 1.27.0
+
+### Enlace público de solo lectura [ext + PWA + Worker]
+
+- **Qué hace:** desde una lista de la nube tuya puedes generar un enlace que cualquiera abre en el navegador, **sin cuenta
+  y sin instalar nada**, para enseñarle tu lista. El Worker sirve una página con las series (buscador, filtro por estado,
+  orden por nombre o nota, y modo claro/oscuro según el dispositivo). Se puede revocar cuando quieras.
+- **Cómo se usa:** «Tus listas» > ⚙ de la lista de la nube > **🌐 Enlace público** > **Crear enlace público**. Debajo salen
+  el enlace y los botones **Copiar**, **Enviar…** (si el dispositivo lo admite), **Abrir**, **Renovar** y **Desactivar**.
+  Solo el propietario de la lista ve este botón.
+- **Revocar y renovar:** **Desactivar** borra el enlace y deja de funcionar al instante (la página no se guarda en caché).
+  **Renovar** crea un código nuevo y el anterior deja de valer, útil si el enlace se ha compartido donde no debía.
+  Una lista tiene como mucho un enlace. Al borrar la lista se borra también su enlace.
+- **Qué se ve:** título, portada, nota, estado, géneros y enlace de cada serie. No se ve el último capítulo visto, ni con quién
+  más compartes la lista, ni tu email. Las series borradas no salen. La página no se puede editar ni da acceso a la API.
+- **Seguridad:** el código tiene 192 bits aleatorios (no se puede adivinar), la página lleva `noindex` (los buscadores no
+  la indexan) y una política CSP estricta, y todo el texto de la lista se escapa antes de pintarse.
+  Las portadas de Manwhaweb se sirven a través del proxy del propio Worker.
+- **Worker:** hay que volver a pegar `worker-completo.js` y pulsar Deploy. **No hace falta ningún paso en D1**: la tabla
+  `enlaces_publicos` se crea sola la primera vez que se usa. Rutas nuevas: `GET/POST/DELETE /api/listas/:id/enlace`
+  (propietario) y `GET /v/<código>` (público). El `worker-completo.js` de la extensión se sincroniza con el de la PWA
+  (incluye la consulta de menos de 1.25.0, que la copia de la extensión aún no tenía).
+- Extensión `1.27.0`; caché de la PWA `v48`.
+
+## 1.26.0
+
+### Avisos de capítulos nuevos [ext + PWA]
+
+- **Nuevo ajuste «Avisos de capítulos nuevos»** (Opciones, desactivado por defecto).
+- **Extensión:** cada 3 horas (y al activarlo) se mira la ficha de cada serie en «Viendo». Si hay capítulos publicados
+  que no has visto, sale **una notificación** (agrupada si son varias series; al pulsarla se abre el capítulo siguiente)
+  y el icono muestra **el número de series pendientes**. El contador baja solo al registrar un capítulo y el «!» rojo de
+  un registro fallido tiene prioridad sobre él. Solo se avisa una vez por capítulo nuevo; al activar el ajuste o cambiar
+  de lista se rellena el contador sin notificar lo que ya estaba pendiente. Sin conexión no se toca nada.
+- **PWA:** al abrir la app se actualiza el contador (en el icono de la app, donde Android lo admita, y sobre el botón ⏭).
+  Avisos con la app cerrada exigirían notificaciones push y una tarea programada en el Worker: no incluido.
+- «Restablecer apariencia» no desactiva los avisos.
+- Extensión `1.26.0`; caché de la PWA `v47`.
+
 ## 1.25.0
 
 ### Sincronización más rápida [ext + PWA]

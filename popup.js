@@ -152,7 +152,7 @@ function aplicarTema(modo) {
 aplicarTema(document.documentElement.dataset.tema || "auto");
 
 // --- Ajustes de apariencia y comportamiento (se guardan en este dispositivo) -------
-const AJUSTES_BASE = { vista: "cuadricula", columnas: "auto", tamano: 155, espacio: 8, nota: true, estado: true, genero: true, siguienteCap: true };
+const AJUSTES_BASE = { vista: "cuadricula", columnas: "auto", tamano: 155, espacio: 8, nota: true, estado: true, genero: true, siguienteCap: true, avisosCaps: false };
 let ajustes = { ...AJUSTES_BASE };
 try {
   const g = JSON.parse(localStorage.getItem("ajustes") || "null");
@@ -202,6 +202,7 @@ function sincronizarControlesAjustes() {
   $("ajEstado").checked = !!ajustes.estado;
   $("ajGenero").checked = !!ajustes.genero;
   $("ajSiguienteCap").checked = !!ajustes.siguienteCap;
+  $("ajAvisos").checked = !!ajustes.avisosCaps;
 }
 
 function guardarAjustes() {
@@ -221,7 +222,8 @@ $("ajEspacio").addEventListener("input", (e) => { ajustes.espacio = Number(e.tar
 [["ajNota", "nota"], ["ajEstado", "estado"], ["ajGenero", "genero"], ["ajSiguienteCap", "siguienteCap"]].forEach(([id, clave]) => {
   $(id).addEventListener("change", (e) => { ajustes[clave] = e.target.checked; guardarAjustes(); });
 });
-$("ajReset").addEventListener("click", () => { ajustes = { ...AJUSTES_BASE }; guardarAjustes(); toast("Apariencia restablecida"); });
+$("ajReset").addEventListener("click", () => { ajustes = { ...AJUSTES_BASE, avisosCaps: ajustes.avisosCaps }; // los avisos no son de apariencia: se conservan
+   guardarAjustes(); toast("Apariencia restablecida"); });
 aplicarAjustes();
 sincronizarControlesAjustes();
 
@@ -796,11 +798,37 @@ function prepararPendientes() {
 }
 let tmrPendientes = null;
 function volverAFiltrarPendientes() { // llega una respuesta: se repinta (agrupando las que llegan juntas)
+  actualizarContadorAvisos();
   if (!pendientesActivo()) return;
   clearTimeout(tmrPendientes);
   tmrPendientes = setTimeout(render, 200);
 }
 const filtroPendientesEl = $("filtroPendientes");
+// Avisos de capítulos nuevos: número de series en «Viendo» con capítulos sin ver, en el botón ⏭ y (PWA) en el icono de la app.
+// En la extensión el icono y las notificaciones los gestiona background.js (SET_AVISOS / GET_AVISOS).
+function actualizarContadorAvisos() {
+  const n = ajustes.avisosCaps ? todosLosAnimes.filter(tieneCapituloPendiente).length : 0;
+  if (n) filtroPendientesEl.dataset.n = n > 99 ? "99+" : String(n); else delete filtroPendientesEl.dataset.n;
+  if (!ES_EXTENSION && navigator.setAppBadge) {
+    try { (n ? navigator.setAppBadge(n) : navigator.clearAppBadge()).catch(() => {}); } catch (e) {}
+  }
+}
+$("ajAvisos").addEventListener("change", async (e) => {
+  ajustes.avisosCaps = e.target.checked;
+  guardarAjustes();
+  if (ES_EXTENSION) {
+    const r = await enviarMensaje({ type: "SET_AVISOS", activo: ajustes.avisosCaps }).catch(() => null);
+    if (!r?.ok) { ajustes.avisosCaps = !ajustes.avisosCaps; guardarAjustes(); toast("No se pudo cambiar el ajuste"); return; }
+  }
+  if (ajustes.avisosCaps) prepararPendientes();
+  actualizarContadorAvisos();
+  toast(ajustes.avisosCaps ? "Avisos de capítulos nuevos activados" : "Avisos desactivados");
+});
+if (ES_EXTENSION) { // la fuente de verdad es el segundo plano (el popup no puede programar alarmas)
+  enviarMensaje({ type: "GET_AVISOS" }).then((r) => {
+    if (r?.ok && !!r.activo !== !!ajustes.avisosCaps) { ajustes.avisosCaps = !!r.activo; guardarAjustes(); render(); }
+  }).catch(() => {});
+}
 function actualizarBotonPendientes() {
   filtroPendientesEl.hidden = filtroEstado !== "-";
   filtroPendientesEl.setAttribute("aria-pressed", String(filtroPendientes));
@@ -907,7 +935,9 @@ function urlSiguienteCap(u) {
 function render() {
   botonesSiguiente.clear(); // las cards se recrean: se vuelven a registrar al dibujarlas
   actualizarBotonPendientes();
-  if (pendientesActivo()) prepararPendientes();
+  // Con los avisos activados en la PWA hay que conocer los capítulos de todas las series en «Viendo» (en la extensión lo hace el segundo plano)
+  if (pendientesActivo() || (ajustes.avisosCaps && !ES_EXTENSION)) prepararPendientes();
+  actualizarContadorAvisos();
   const orden = ordenEl.value;
   const q = normalizar(busquedaEl.value.trim());
 
@@ -2562,12 +2592,15 @@ async function cargarListasPanel() {
     const borrarBtn = el("button", { className: "btn-mini peligro", type: "button", textContent: l.tipo === "local" ? "Borrar" : "Quitar" });
     borrarBtn.addEventListener("click", () => borrarListaGuardada(l));
     // Lista de Sheets o local → subir una copia a la nube; lista de la nube propia → compartir
-    let nubeBtn = null, cajaCompartir = null;
+    let nubeBtn = null, cajaCompartir = null, enlaceBtn = null, cajaEnlace = null;
     if (l.tipo === "nube") {
       if (l.rol === "propietario") {
         nubeBtn = el("button", { className: "btn-mini", type: "button", textContent: "Compartir", title: "Dar acceso a otras cuentas de Google" });
         cajaCompartir = el("div", { className: "nube-compartir", hidden: true });
         nubeBtn.addEventListener("click", () => { if (cajaCompartir.hidden) abrirCompartir(l, cajaCompartir); else cajaCompartir.hidden = true; });
+        enlaceBtn = el("button", { className: "btn-mini", type: "button", textContent: "🌐 Enlace público", title: "Generar un enlace de solo lectura para enseñar la lista sin que el otro tenga cuenta" });
+        cajaEnlace = el("div", { className: "nube-compartir", hidden: true });
+        enlaceBtn.addEventListener("click", () => { if (cajaEnlace.hidden) abrirEnlacePublico(l, cajaEnlace); else cajaEnlace.hidden = true; });
       }
     } else {
       nubeBtn = el("button", { className: "btn-mini", type: "button", textContent: "A la nube", title: "Subir una copia de esta lista a la nube (la original no cambia)" });
@@ -2600,7 +2633,7 @@ async function cargarListasPanel() {
     fijarBtn.setAttribute("aria-pressed", String(fijada));
     fijarBtn.addEventListener("click", () => { alternarListaFijada(l.id); cargarListasPanel(); });
     const menu = el("div", { className: "lista-menu", hidden: !menusListaAbiertos.has(l.id) },
-      subir, bajar, renombrarBtn, fijarBtn, nubeBtn, ...vinculoBtns, (l.tipo === "local" || l.tipo === "nube" || l.activa) ? exportarBtn : null);
+      subir, bajar, renombrarBtn, fijarBtn, nubeBtn, enlaceBtn, ...vinculoBtns, (l.tipo === "local" || l.tipo === "nube" || l.activa) ? exportarBtn : null);
     const engranaje = el("button", { className: "icon-btn btn-engranaje", type: "button", title: "Más opciones de la lista", ariaLabel: "Más opciones de la lista" });
     engranaje.innerHTML = SVG_ENGRANAJE;
     engranaje.setAttribute("aria-expanded", String(!menu.hidden));
@@ -2611,14 +2644,17 @@ async function cargarListasPanel() {
     });
     listasContenidoEl.append(el("div", { className: "lista-bloque" },
       el("div", { className: "lista-item" },
-        el("span", { className: "nombre", textContent: l.name }),
-        l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
-        etiquetaNube,
-        etiquetaVinculo,
-        l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null,
-        usarBtn, borrarBtn, engranaje),
+        el("div", { className: "lista-info" },
+          el("span", { className: "nombre", textContent: l.name }),
+          el("div", { className: "lista-etiquetas" },
+            l.tipo === "local" ? el("span", { className: "etiqueta-local", textContent: "Local" }) : null,
+            etiquetaNube,
+            etiquetaVinculo,
+            l.activa ? el("span", { className: "etiqueta-activa", textContent: "Activa" }) : null)),
+        el("div", { className: "lista-acciones" }, usarBtn, borrarBtn, engranaje)),
       menu,
       cajaCompartir,
+      cajaEnlace,
       cajaVinculo));
   });
 }
@@ -2743,7 +2779,9 @@ async function listarNube() {
         cargarListasPanel(); listarNube();
       });
     }
-    nubeListasEl.append(el("div", { className: "lista-item" }, el("span", { className: "nombre", textContent: l.nombre + rol }), accion));
+    nubeListasEl.append(el("div", { className: "lista-item" },
+      el("div", { className: "lista-info" }, el("span", { className: "nombre", textContent: l.nombre + rol })),
+      el("div", { className: "lista-acciones" }, accion)));
   });
 }
 
@@ -2894,8 +2932,10 @@ async function abrirCompartir(l, caja) {
       abrirCompartir(l, caja);
     });
     caja.append(el("div", { className: "lista-item" },
-      el("span", { className: "nombre", textContent: m.email }),
-      el("span", { className: "etiqueta-local", textContent: m.rol === "lectura" ? "Solo lectura" : "Puede editar" }), quitar));
+      el("div", { className: "lista-info" },
+        el("span", { className: "nombre", textContent: m.email }),
+        el("div", { className: "lista-etiquetas" }, el("span", { className: "etiqueta-local", textContent: m.rol === "lectura" ? "Solo lectura" : "Puede editar" }))),
+      el("div", { className: "lista-acciones" }, quitar)));
   });
   const email = el("input", { type: "email", placeholder: "email@gmail.com", ariaLabel: "Email de la cuenta de Google" });
   const rol = el("select", { ariaLabel: "Permisos" },
@@ -2914,6 +2954,67 @@ async function abrirCompartir(l, caja) {
   });
   email.addEventListener("keydown", (ev) => { if (ev.key === "Enter") anadir.click(); });
   caja.append(email, rol, anadir, estado);
+}
+
+async function abrirEnlacePublico(l, caja) {
+  caja.hidden = false;
+  caja.innerHTML = "";
+  caja.append(el("p", { className: "nube-ayuda", textContent: "Genera un enlace para enseñar esta lista a cualquiera, sin cuenta y sin instalar nada. Solo se puede ver (título, portada, nota, estado y géneros), no editar. Puedes desactivarlo cuando quieras." }));
+  const estado = el("div", { className: "estado-txt", textContent: "Cargando…" });
+  caja.append(estado);
+  const r = await enviarMensaje({ type: "NUBE_ENLACE", id: l.id });
+  estado.textContent = "";
+  if (!r?.ok) { errorNube(r, estado); return; }
+  if (!r.enlace) {
+    const crear = el("button", { className: "btn", type: "button", textContent: "Crear enlace público" });
+    crear.addEventListener("click", async () => {
+      crear.disabled = true;
+      const c = await enviarMensaje({ type: "NUBE_ENLACE_CREAR", id: l.id });
+      if (!c?.ok) { crear.disabled = false; errorNube(c, estado); return; }
+      abrirEnlacePublico(l, caja);
+    });
+    caja.append(crear);
+    return;
+  }
+  const url = r.enlace.url;
+  const campo = el("input", { type: "text", readOnly: true, value: url, ariaLabel: "Enlace público de la lista" });
+  campo.addEventListener("focus", () => campo.select());
+  const copiar = el("button", { className: "btn-mini", type: "button", textContent: "Copiar" });
+  copiar.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(url); toast("Enlace copiado"); }
+    catch (e) { campo.focus(); campo.select(); toast("Cópialo a mano desde el cuadro"); }
+  });
+  const botones = [copiar];
+  if (typeof navigator.share === "function") {
+    const enviar = el("button", { className: "btn-mini", type: "button", textContent: "Enviar…" });
+    enviar.addEventListener("click", () => { navigator.share({ title: l.name, url }).catch(() => {}); });
+    botones.push(enviar);
+  }
+  botones.push(el("a", { className: "btn-mini", href: url, target: "_blank", rel: "noopener noreferrer", textContent: "Abrir" }));
+  const renovar = el("button", { className: "btn-mini", type: "button", textContent: "Renovar", title: "Crear un enlace nuevo; el actual deja de funcionar" });
+  renovar.addEventListener("click", async () => {
+    if (!confirm("¿Crear un enlace nuevo?\nEl enlace actual dejará de funcionar y tendrás que enviar el nuevo.")) return;
+    renovar.disabled = true;
+    const c = await enviarMensaje({ type: "NUBE_ENLACE_CREAR", id: l.id, renovar: true });
+    if (!c?.ok) { renovar.disabled = false; errorNube(c, estado); return; }
+    toast("Enlace renovado");
+    abrirEnlacePublico(l, caja);
+  });
+  const quitar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Desactivar", title: "Dejar de compartir: el enlace deja de funcionar" });
+  quitar.addEventListener("click", async () => {
+    if (!confirm("¿Desactivar el enlace público?\nQuien lo tenga ya no podrá ver la lista.")) return;
+    quitar.disabled = true;
+    const c = await enviarMensaje({ type: "NUBE_ENLACE_QUITAR", id: l.id });
+    if (!c?.ok) { quitar.disabled = false; errorNube(c, estado); return; }
+    toast("Enlace desactivado");
+    abrirEnlacePublico(l, caja);
+  });
+  botones.push(renovar, quitar);
+  const creado = r.enlace.creado ? new Date(r.enlace.creado).toLocaleDateString() : "";
+  caja.append(
+    campo,
+    el("div", { className: "lista-menu" }, ...botones),
+    creado ? el("div", { className: "estado-txt", textContent: `Enlace activo desde el ${creado}. Cualquiera que lo tenga puede ver la lista.` }) : null);
 }
 
 // --- Configuración: qué Google Sheet se usa -----------------------------------
