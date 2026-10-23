@@ -1,6 +1,6 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v49 (página pública con el diseño de la app y listas en ventanas estrechas).
-const CACHE = "animeav1-pwa-v49";
+// las cachés antiguas. Último bump: v50 (Opciones con pestañas y buscador).
+const CACHE = "animeav1-pwa-v50";
 const COVER_CACHE = "anime-covers-v2";
 const MW = /(^|\.)img\d+mw\.xyz$/i;
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];

@@ -5,6 +5,27 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.28.0
+
+### Opciones reorganizadas: pestañas y buscador [ext + PWA]
+
+- **Cuatro pestañas** en vez de una lista larga:
+  - **Apariencia:** tema, vista, columnas, tamaño y separación de las cards, logo e icono, y «Restablecer apariencia».
+  - **Series:** qué se muestra en las cards (nota, estado, género, botón «Siguiente capítulo») y, en «Capítulos y avisos»,
+    los avisos de capítulos nuevos (y, en la extensión, cuándo se registra un capítulo).
+  - **Datos:** cuenta y hoja de Google, portadas guardadas en el dispositivo y mantenimiento de la hoja
+    (buscar portadas que faltan, migrar enlaces de AnimeFLV).
+  - **Fuentes:** otras páginas fuente (beta).
+- **Buscador de ajustes** arriba: escribe, por ejemplo, «oscuro», «portadas» o «sesión» y salen los ajustes de todas las
+  pestañas que coinciden (también busca por sinónimos: «notificaciones», «zoom», «offline»…). Con la tecla Esc se borra.
+  El buscador y las pestañas se quedan fijos arriba mientras te desplazas por el panel.
+- Se recuerda la última pestaña abierta. El botón «Cambiar de hoja» abre Opciones directamente en **Datos**.
+- Los avisos de capítulos ya no están mezclados con «Qué se muestra en las cards».
+- El párrafo de ayuda de «Otras páginas fuente» tiene ahora el estilo de texto de ayuda (antes se veía como texto normal).
+- No cambia ningún ajuste ni su comportamiento: solo dónde está cada uno. Los mensajes que citaban «Opciones > Otras páginas
+  fuente» ahora dicen «Opciones > Fuentes».
+- Extensión `1.28.0`; caché de la PWA `v50`.
+
 ## 1.27.1
 
 ### Página pública con el diseño de la app y listas en ventanas estrechas [ext + PWA + Worker]

@@ -34,12 +34,12 @@ La app intenta iniciar sesión en Google en silencio (sin ventanas ni clics) cad
 - Listas locales sin Google Sheets: se guardan en el dispositivo, se pueden crear vacías o importar desde un `.json`, exportar a `.json` (mismo formato que la extensión), añadir series a mano y eliminarlas. No necesitan Client ID ni sesión de Google.
 - Cada lista tiene su propio catálogo de géneros.
 - Panel de Opciones personalizable: tema, número de columnas, tamaño y separación de las cards, y qué se muestra en ellas (nota, estado, género y el botón ⏭ «Siguiente capítulo»). Se guarda en el dispositivo.
-- Vista en lista (Opciones > Vista) y filtro «Pendientes» (series en «Viendo» con capítulos publicados que aún no has visto).
-- Logo de la cabecera personalizable (Opciones > Logo e icono) importando una imagen. El icono de la pantalla de inicio lo fija Android al instalar y no se puede cambiar desde la app.
+- Vista en lista (Opciones > Apariencia > Vista) y filtro «Pendientes» (series en «Viendo» con capítulos publicados que aún no has visto).
+- Logo de la cabecera personalizable (Opciones > Apariencia > Logo e icono) importando una imagen. El icono de la pantalla de inicio lo fija Android al instalar y no se puede cambiar desde la app.
 - Compartir desde Android: en un capítulo de animeav1.com, Compartir → AnimeAV1 Tracker lo registra (serie nueva o «Viendo» + último capítulo). Requiere la PWA instalada; si no aparece en la lista de Compartir, desinstálala y vuelve a instalarla.
-- Otras páginas fuente (beta): las recetas se crean en la extensión («Copiar páginas fuente para la PWA») y se pegan en Opciones > Otras páginas fuente. Luego Compartir o el «+» registran series de esas webs en la lista asignada. Solo webs cuyo título sale en el HTML (no las que se dibujan con JavaScript), y el Worker debe poder leerlas.
+- Otras páginas fuente (beta): las recetas se crean en la extensión («Copiar páginas fuente para la PWA») y se pegan en Opciones > Fuentes. Luego Compartir o el «+» registran series de esas webs en la lista asignada. Solo webs cuyo título sale en el HTML (no las que se dibujan con JavaScript), y el Worker debe poder leerlas.
 - Botón ⏭ «Siguiente capítulo» en las series en «Viendo»: abre el capítulo siguiente y lo guarda como último visto.
-- Avisos de capítulos nuevos (Opciones, desactivado por defecto): al abrir la app, contador de series en «Viendo» con capítulos sin ver en el icono (si Android lo admite) y sobre el botón ⏭. No avisa con la app cerrada.
+- Avisos de capítulos nuevos (Opciones > Series, desactivado por defecto): al abrir la app, contador de series en «Viendo» con capítulos sin ver en el icono (si Android lo admite) y sobre el botón ⏭. No avisa con la app cerrada.
 - Añadir anime por enlace, con aviso "¿Es la misma serie?" si parece otra temporada de una ya registrada.
 
 ## Listas en la nube (Cloudflare D1)

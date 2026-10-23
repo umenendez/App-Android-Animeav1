@@ -425,7 +425,7 @@
     #lista.sin-estado .info select.estado { display:none; }
     #lista.sin-genero .info .genero { display:none; }
     #lista.sin-siguiente .btn-siguiente { display:none !important; }
-    /* Vista en lista (Opciones > Vista): filas compactas en vez de cards */
+    /* Vista en lista (Opciones > Apariencia > Vista): filas compactas en vez de cards */
     #lista.vista-lista { grid-template-columns: 1fr; }
     #lista.vista-lista .card { width: 100%; max-width: none; justify-self: stretch; flex-direction: row; align-items: stretch; }
     #lista.vista-lista .portada { width: 56px; flex: none; aspect-ratio: auto; min-height: 80px; border-radius: 11px 0 0 11px; }
@@ -433,6 +433,19 @@
     #lista.vista-lista a.titulo { flex: 1 1 100%; min-height: 0; font-size: 12.5px; }
     #lista.vista-lista .info select.estado, #lista.vista-lista .info .genero { flex: 1 1 110px; min-width: 0; }
     .seccion-opciones { margin-top:14px; }
+    /* Opciones: buscador y pestañas */
+    .opciones-barra { position: sticky; top: -14px; z-index: 5; display: flex; flex-direction: column; gap: 8px; margin: 0 -14px; padding: 8px 14px; background: var(--surface); border-bottom: 1px solid var(--border); }
+    #opcionesBuscar { width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--field); }
+    .opciones-tabs { display: flex; gap: 5px; overflow-x: auto; scrollbar-width: none; }
+    .opciones-tabs::-webkit-scrollbar { display: none; }
+    .opciones-tab { flex: 1 1 auto; padding: 6px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: 11.5px; font-weight: 600; text-align: center; color: var(--muted); white-space: nowrap; }
+    .opciones-tab:hover { border-color: var(--muted); color: var(--text); }
+    .opciones-tab[aria-selected="true"] { background: var(--text); border-color: var(--text); color: var(--bg); }
+    .opciones-barra.buscando .opciones-tabs { display: none; }
+    .opciones-panel > .seccion-opciones:first-child { margin-top: 12px; }
+    .item-op.sin-coincidencia, .seccion-opciones.sin-coincidencia, .opciones-panel.sin-coincidencia { display: none !important; }
+    .ayuda-opciones { margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+    .opciones-vacio { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 8px; }
     .seccion-opciones-titulo {
       display:flex; align-items:center; gap:7px; margin:0 0 8px;
       font-size:11px; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.04em;
@@ -658,27 +671,29 @@
       <div><h2 class="opciones-titulo">Opciones</h2><p class="opciones-subtitulo">Personaliza la apariencia y el comportamiento de la app en este dispositivo.</p></div>
     </div>
 
-    <div class="seccion-opciones">
-      <div class="seccion-opciones-titulo">Apariencia</div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajTema">Tema</label><select id="ajTema"><option value="auto">Automático</option><option value="light">Claro</option><option value="dark">Oscuro</option></select></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajVista">Vista<small>Cuadrícula o filas compactas.</small></label><select id="ajVista"><option value="cuadricula">Cuadrícula</option><option value="lista">Lista</option></select></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajColumnas">Columnas<small>«Automático» las ajusta al ancho disponible.</small></label><select id="ajColumnas"><option value="auto">Automático</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajTamano">Tamaño de las cards<small id="ajTamanoAyuda">Ancho máximo de cada card.</small></label><input id="ajTamano" type="range" min="100" max="220" step="5"><output id="ajTamanoVal"></output></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajEspacio">Separación entre cards</label><input id="ajEspacio" type="range" min="0" max="24" step="2"><output id="ajEspacioVal"></output></div>
+    <div class="opciones-barra">
+      <input id="opcionesBuscar" type="search" placeholder="Buscar un ajuste…" aria-label="Buscar un ajuste" autocomplete="off" />
+      <div class="opciones-tabs" role="tablist" aria-label="Categorías de opciones">
+        <button class="opciones-tab" type="button" role="tab" data-pestana="apariencia" aria-selected="true">Apariencia</button>
+        <button class="opciones-tab" type="button" role="tab" data-pestana="series" aria-selected="false">Series</button>
+        <button class="opciones-tab" type="button" role="tab" data-pestana="datos" aria-selected="false">Datos</button>
+        <button class="opciones-tab" type="button" role="tab" data-pestana="fuentes" aria-selected="false">Fuentes</button>
+      </div>
     </div>
 
+    <div class="opciones-panel" data-pestana="apariencia" role="tabpanel">
     <div class="seccion-opciones">
-      <div class="seccion-opciones-titulo">Qué se muestra en las cards</div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajNota">Nota sobre la portada</label><label class="switch"><input id="ajNota" type="checkbox"><span class="switch-track"></span></label></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajEstado">Selector de estado</label><label class="switch"><input id="ajEstado" type="checkbox"><span class="switch-track"></span></label></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajGenero">Selector de género</label><label class="switch"><input id="ajGenero" type="checkbox"><span class="switch-track"></span></label></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajSiguienteCap">Botón «Siguiente capítulo»<small>Abre el capítulo siguiente en las series en «Viendo».</small></label><label class="switch"><input id="ajSiguienteCap" type="checkbox"><span class="switch-track"></span></label></div>
-      <div class="ajuste"><label class="ajuste-nombre" for="ajAvisos">Avisos de capítulos nuevos<small>Al abrir la app muestra en el icono cuántas series en «Viendo» tienen capítulos sin ver. Sin la app abierta no avisa.</small></label><label class="switch"><input id="ajAvisos" type="checkbox"><span class="switch-track"></span></label></div>
+      <div class="seccion-opciones-titulo">Diseño de la lista</div>
+      <div class="ajuste item-op" data-k="tema modo oscuro claro noche automático"><label class="ajuste-nombre" for="ajTema">Tema</label><select id="ajTema"><option value="auto">Automático</option><option value="light">Claro</option><option value="dark">Oscuro</option></select></div>
+      <div class="ajuste item-op" data-k="vista cuadrícula lista filas compactas"><label class="ajuste-nombre" for="ajVista">Vista<small>Cuadrícula o filas compactas.</small></label><select id="ajVista"><option value="cuadricula">Cuadrícula</option><option value="lista">Lista</option></select></div>
+      <div class="ajuste item-op" data-k="columnas cuadrícula ancho"><label class="ajuste-nombre" for="ajColumnas">Columnas<small>«Automático» las ajusta al ancho disponible.</small></label><select id="ajColumnas"><option value="auto">Automático</option><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option><option value="6">6</option></select></div>
+      <div class="ajuste item-op" data-k="tamaño cards tarjetas ancho zoom"><label class="ajuste-nombre" for="ajTamano">Tamaño de las cards<small id="ajTamanoAyuda">Ancho máximo de cada card.</small></label><input id="ajTamano" type="range" min="100" max="220" step="5"><output id="ajTamanoVal"></output></div>
+      <div class="ajuste item-op" data-k="separación espacio hueco entre cards tarjetas"><label class="ajuste-nombre" for="ajEspacio">Separación entre cards</label><input id="ajEspacio" type="range" min="0" max="24" step="2"><output id="ajEspacioVal"></output></div>
     </div>
 
     <div class="seccion-opciones">
       <div class="seccion-opciones-titulo">Logo e icono</div>
-      <div class="ajuste">
+      <div class="ajuste item-op" data-k="logo icono imagen personalizar cambiar">
         <label class="ajuste-nombre">Imagen<small id="ajLogoAyuda"></small></label>
         <img id="ajLogoPrev" class="logo" src="icon48.png" alt="" style="width:34px;height:34px;flex:none;">
         <button class="btn-mini" id="ajLogoElegir" type="button">Elegir…</button>
@@ -688,18 +703,38 @@
     </div>
 
     <div class="seccion-opciones">
-      <div class="seccion-opciones-titulo">Otras páginas fuente <span class="etiqueta-beta">BETA</span></div>
-      <p class="ayuda-opciones">Registra series de otras webs con «Compartir» o con el «+». Las páginas se configuran en la extensión (Opciones &gt; Otras páginas fuente &gt; «Copiar páginas fuente para la PWA») y aquí se pegan. Solo funcionan webs cuyo título se ve en el HTML (las que se dibujan con JavaScript no se pueden leer desde la app).</p>
-      <div id="fuentesLista"></div>
-      <textarea id="fuentesPegar" rows="3" placeholder="Pega aquí lo copiado en la extensión" aria-label="Páginas fuente copiadas de la extensión"></textarea>
-      <button class="btn" id="fuentesPortapapeles" type="button">Pegar del portapapeles</button>
-      <button class="btn" id="fuentesImportar" type="button">Pegar páginas fuente</button>
-      <div class="estado-txt" id="fuentesStatus"></div>
+      <div class="seccion-opciones-titulo">Valores por defecto</div>
+      <div class="item-op" data-k="restablecer apariencia reiniciar valores por defecto">
+        <p class="ayuda-opciones">Vuelve a los valores por defecto del diseño y de lo que se muestra en las cards. Los avisos de capítulos no cambian.</p>
+        <button class="btn" id="ajReset" type="button">Restablecer apariencia</button>
+      </div>
+    </div>
+    </div>
+
+    <div class="opciones-panel" data-pestana="series" role="tabpanel" hidden>
+    <div class="seccion-opciones">
+      <div class="seccion-opciones-titulo">En las cards</div>
+      <div class="ajuste item-op" data-k="nota puntuación score portada mostrar ocultar"><label class="ajuste-nombre" for="ajNota">Nota sobre la portada</label><label class="switch"><input id="ajNota" type="checkbox"><span class="switch-track"></span></label></div>
+      <div class="ajuste item-op" data-k="estado selector viendo visto mostrar ocultar"><label class="ajuste-nombre" for="ajEstado">Selector de estado</label><label class="switch"><input id="ajEstado" type="checkbox"><span class="switch-track"></span></label></div>
+      <div class="ajuste item-op" data-k="género géneros selector mostrar ocultar"><label class="ajuste-nombre" for="ajGenero">Selector de género</label><label class="switch"><input id="ajGenero" type="checkbox"><span class="switch-track"></span></label></div>
+      <div class="ajuste item-op" data-k="siguiente capítulo botón ⏭ viendo"><label class="ajuste-nombre" for="ajSiguienteCap">Botón «Siguiente capítulo»<small>Abre el capítulo siguiente en las series en «Viendo».</small></label><label class="switch"><input id="ajSiguienteCap" type="checkbox"><span class="switch-track"></span></label></div>
+    </div>
+
+    <div class="seccion-opciones">
+      <div class="seccion-opciones-titulo">Capítulos y avisos</div>
+      <div class="ajuste item-op" data-k="avisos notificaciones capítulos nuevos insignia contador icono pendientes"><label class="ajuste-nombre" for="ajAvisos">Avisos de capítulos nuevos<small>Al abrir la app muestra en el icono cuántas series en «Viendo» tienen capítulos sin ver. Sin la app abierta no avisa.</small></label><label class="switch"><input id="ajAvisos" type="checkbox"><span class="switch-track"></span></label></div>
+    </div>
+    </div>
+
+    <div class="opciones-panel" data-pestana="datos" role="tabpanel" hidden>
+    <div class="seccion-opciones">
+      <div class="seccion-opciones-titulo">Cuenta y hoja</div>
+      <div class="item-op" data-k="cuenta hoja google sheets sesión iniciar cerrar sesión client id enlace de la hoja cambiar de hoja"><div id="configTools"></div></div>
     </div>
 
     <div class="seccion-opciones">
       <div class="seccion-opciones-titulo">Portadas</div>
-    </div>
+      <div class="item-op" data-k="portadas imágenes caché guardar copia local sin conexión offline borrar precargar">
     <div class="opcion-card">
       <div class="opcion-icono" aria-hidden="true">
         <svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>
@@ -719,23 +754,37 @@
     </div>
     <div class="estado-txt opcion-estado" id="contadorPortadas"></div>
     <div class="estado-txt" id="precargarStatus"></div>
+      </div>
+    </div>
 
     <div class="seccion-opciones">
-      <div class="seccion-opciones-titulo">Herramientas</div>
+      <div class="seccion-opciones-titulo">Mantenimiento de la hoja</div>
+      <div class="item-op" data-k="portadas que faltan columna J buscar hoja rellenar">
       <button class="btn" id="fillCovers">Buscar portadas que faltan (columna J)</button>
       <div class="estado-txt" id="fillStatus"></div>
+      </div>
+      <div class="item-op" data-k="animeflv migrar enlaces animeav1 convertir">
       <button class="btn" id="migrateFlv">Migrar enlaces de AnimeFLV a AnimeAV1</button>
       <div class="estado-txt" id="migrateStatus"></div>
+      </div>
+    </div>
     </div>
 
+    <div class="opciones-panel" data-pestana="fuentes" role="tabpanel" hidden>
     <div class="seccion-opciones">
-      <div class="seccion-opciones-titulo">Cuenta y hoja</div>
-      <div id="configTools"></div>
+      <div class="seccion-opciones-titulo">Otras páginas fuente <span class="etiqueta-beta">BETA</span></div>
+      <div class="item-op" data-k="otras páginas fuente webs manhwaweb beta copiar pegar importar reparar registro automático">
+      <p class="ayuda-opciones">Registra series de otras webs con «Compartir» o con el «+». Las páginas se configuran en la extensión (Opciones &gt; Fuentes &gt; «Copiar páginas fuente para la PWA») y aquí se pegan. Solo funcionan webs cuyo título se ve en el HTML (las que se dibujan con JavaScript no se pueden leer desde la app).</p>
+      <div id="fuentesLista"></div>
+      <textarea id="fuentesPegar" rows="3" placeholder="Pega aquí lo copiado en la extensión" aria-label="Páginas fuente copiadas de la extensión"></textarea>
+      <button class="btn" id="fuentesPortapapeles" type="button">Pegar del portapapeles</button>
+      <button class="btn" id="fuentesImportar" type="button">Pegar páginas fuente</button>
+      <div class="estado-txt" id="fuentesStatus"></div>
+      </div>
+    </div>
     </div>
 
-    <div class="seccion-opciones">
-      <button class="btn" id="ajReset" type="button">Restablecer apariencia</button>
-    </div>
+    <div class="opciones-vacio" id="opcionesVacio" hidden>Ningún ajuste coincide con la búsqueda.</div>
   </section>
 
   <div id="toast" role="status"></div>

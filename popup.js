@@ -2136,8 +2136,53 @@ $("fuentesImportar").addEventListener("click", async () => {
   cargarFuentes();
 });
 
-function setHerramientas(abierto) {
+// --- Opciones: pestañas y buscador de ajustes ------------------------------------------------
+// Cada ajuste lleva la clase item-op (y palabras clave en data-k). Sin texto en el buscador se ve una sola pestaña;
+// al escribir se buscan los ajustes de todas las pestañas a la vez y las pestañas se ocultan.
+const PESTANAS_OPCIONES = ["apariencia", "series", "datos", "fuentes"];
+let pestanaOpciones = "apariencia";
+try { const g = localStorage.getItem("opcionesPestana"); if (PESTANAS_OPCIONES.includes(g)) pestanaOpciones = g; } catch (e) {}
+const normalizarBusqueda = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+function seleccionarPestanaOpciones(nombre, guardar = true) {
+  if (!PESTANAS_OPCIONES.includes(nombre)) nombre = "apariencia";
+  pestanaOpciones = nombre;
+  if (guardar) { try { localStorage.setItem("opcionesPestana", nombre); } catch (e) {} }
+  document.querySelectorAll("#herramientas .opciones-tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.pestana === nombre)));
+  document.querySelectorAll("#herramientas .opciones-panel").forEach((p) => { p.hidden = p.dataset.pestana !== nombre; });
+}
+function filtrarOpciones() {
+  const panel = $("herramientas"), q = normalizarBusqueda($("opcionesBuscar").value.trim());
+  panel.querySelector(".opciones-barra").classList.toggle("buscando", !!q);
+  panel.querySelectorAll(".sin-coincidencia").forEach((e) => e.classList.remove("sin-coincidencia"));
+  if (!q) { seleccionarPestanaOpciones(pestanaOpciones, false); $("opcionesVacio").hidden = true; return; }
+  const palabras = q.split(/\s+/);
+  let total = 0;
+  panel.querySelectorAll(".opciones-panel").forEach((p) => { p.hidden = false; });
+  panel.querySelectorAll(".seccion-opciones").forEach((sec) => {
+    const titulo = normalizarBusqueda(sec.querySelector(".seccion-opciones-titulo")?.textContent);
+    let visibles = 0;
+    sec.querySelectorAll(".item-op").forEach((it) => {
+      const ok = !it.hidden && palabras.every((w) => normalizarBusqueda(it.textContent + " " + (it.dataset.k || "")).includes(w) || titulo.includes(w));
+      it.classList.toggle("sin-coincidencia", !ok);
+      if (ok) visibles++;
+    });
+    sec.classList.toggle("sin-coincidencia", !visibles);
+    total += visibles;
+  });
+  panel.querySelectorAll(".opciones-panel").forEach((p) => p.classList.toggle("sin-coincidencia", !p.querySelector(".seccion-opciones:not(.sin-coincidencia)")));
+  $("opcionesVacio").hidden = total > 0;
+}
+document.querySelectorAll("#herramientas .opciones-tab").forEach((t) => t.addEventListener("click", () => {
+  seleccionarPestanaOpciones(t.dataset.pestana);
+  $("herramientas").scrollTop = 0;
+}));
+$("opcionesBuscar").addEventListener("input", filtrarOpciones);
+$("opcionesBuscar").addEventListener("keydown", (e) => { if (e.key === "Escape" && $("opcionesBuscar").value) { e.preventDefault(); $("opcionesBuscar").value = ""; filtrarOpciones(); } });
+seleccionarPestanaOpciones(pestanaOpciones, false);
+
+function setHerramientas(abierto, pestana) {
   if (abierto) cargarFuentes();
+  if (abierto) { if (pestana) seleccionarPestanaOpciones(pestana); if ($("opcionesBuscar").value) { $("opcionesBuscar").value = ""; filtrarOpciones(); } }
   $("herramientas").hidden = !abierto;
   $("btnHerramientas").setAttribute("aria-expanded", String(abierto));
 }
@@ -3037,7 +3082,7 @@ function mensajeError(error) {
   if (c.includes("NECESITA_INICIO_SESION")) return "Toca el botón para iniciar sesión con Google.";
   if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
   if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace de AnimeAV1 a la ficha de la serie o a uno de sus episodios (animeav1.com/media/…).";
-  if (c.includes("FUENTES_INVALIDAS")) return "Eso no parece lo copiado en la extensión (Opciones > Otras páginas fuente > «Copiar páginas fuente para la PWA»).";
+  if (c.includes("FUENTES_INVALIDAS")) return "Eso no parece lo copiado en la extensión (Opciones > Fuentes > «Copiar páginas fuente para la PWA»).";
   if (c.includes("SIN_TITULO_FUENTE")) return "No se encontró el título en esa página. Puede que la web se dibuje con JavaScript (la app solo lee el HTML) o que haya que ajustar la página fuente en la extensión.";
   if (c.includes("FUENTE_NO_ENCONTRADA")) return "Esa página fuente ya no existe.";
   if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
@@ -3342,7 +3387,7 @@ async function cargar(opciones = {}) {
     } else {
       errorEl.append("No se pudo cargar la lista: " + mensajeError(error || "error desconocido"), el("br"),
         el("button", { className: "btn", textContent: "Reintentar", onclick: cargar }), " ",
-        el("button", { className: "btn", textContent: "Cambiar de hoja", onclick: () => setHerramientas(true) }));
+        el("button", { className: "btn", textContent: "Cambiar de hoja", onclick: () => setHerramientas(true, "datos") }));
     }
     errorEl.hidden = false;
     return;
