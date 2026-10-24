@@ -599,6 +599,164 @@ function renderEstadisticas() {
 
 if (btnStats) btnStats.addEventListener("click", () => { renderEstadisticas(); dlgStatsEl.showModal(); });
 
+// --- Comparar con la lista de un amigo ----------------------------------------------------------
+// El amigo genera un enlace público (Tus listas > ⚙ > Enlace público). Aquí se lee su lista (solo lectura, en JSON)
+// y se compara con la lista que tienes abierta: series en común, diferencias de nota y recomendaciones.
+// Desde la página pública, el botón «Comparar con mi lista» abre la PWA con ?comparar=<enlace>.
+const dlgCompararEl = document.getElementById("dlgComparar");
+let enlaceCompararPendiente = null;
+try {
+  const p = new URLSearchParams(location.search).get("comparar");
+  if (p) { enlaceCompararPendiente = p; history.replaceState(null, "", location.pathname + location.hash); }
+} catch (e) {}
+function lanzarCompararPendiente() {
+  if (!enlaceCompararPendiente) return;
+  const e = enlaceCompararPendiente;
+  enlaceCompararPendiente = null;
+  compararConEnlace(e);
+}
+
+// Acepta https://<worker>/v/<código> (con o sin .json, barra final, ?… o #…) y devuelve la dirección del JSON.
+function urlDatosAmigo(texto) {
+  const m = String(texto || "").trim().match(/^(https:\/\/[^\/\s?#]+)\/v\/([A-Za-z0-9_-]{16,64})(?:\.json)?\/?(?:[?#]\S*)?$/);
+  return m ? `${m[1]}/v/${m[2]}.json` : "";
+}
+const normTextoComp = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+// Identidad de una serie: host + /media/<serie> (sin número de capítulo); si no, host + ruta.
+function claveUrlSerie(u) {
+  try {
+    const x = new URL(String(u || "").trim());
+    const seg = x.pathname.split("/").filter(Boolean);
+    if (!seg.length) return "";
+    const ruta = seg[0].toLowerCase() === "media" && seg[1] ? seg.slice(0, 2) : seg;
+    return (x.hostname.replace(/^www\./, "") + "/" + ruta.join("/")).toLowerCase();
+  } catch (e) { return ""; }
+}
+// Empareja por enlace y, si no coincide, por título. Devuelve { comunes: [{m, s}], soloMias, soloSuyas }.
+function emparejarListas(mias, suyas) {
+  const porUrl = new Map(), porTitulo = new Map();
+  suyas.forEach((s) => {
+    const k = claveUrlSerie(s.url); if (k && !porUrl.has(k)) porUrl.set(k, s);
+    const t = normTextoComp(s.titulo); if (t && !porTitulo.has(t)) porTitulo.set(t, s);
+  });
+  const usadas = new Set(), comunes = [], soloMias = [];
+  mias.forEach((m) => {
+    const s = porUrl.get(claveUrlSerie(m.url)) || porTitulo.get(normTextoComp(m.titulo));
+    if (s && !usadas.has(s)) { usadas.add(s); comunes.push({ m, s }); } else soloMias.push(m);
+  });
+  return { comunes, soloMias, soloSuyas: suyas.filter((s) => !usadas.has(s)) };
+}
+const fmtComp = (n) => String(Math.round(n * 10) / 10).replace(".", ",");
+function analizarComparacion(mias, suyas) {
+  const { comunes, soloMias, soloSuyas } = emparejarListas(mias, suyas);
+  const ambos = comunes.filter(({ m, s }) => m.nota !== null && s.nota !== null).map(({ m, s }) => ({ m, s, dif: m.nota - s.nota }));
+  const difMedia = ambos.length ? ambos.reduce((t, x) => t + Math.abs(x.dif), 0) / ambos.length : null;
+  const coinciden = ambos.filter((x) => Math.abs(x.dif) <= 1).length;
+  const filaBase = (x) => ({ titulo: x.titulo, url: x.url, portada: x.portada });
+  const gustaAmbos = ambos.filter((x) => x.m.nota >= 8 && x.s.nota >= 8)
+    .sort((a, b) => Math.min(b.m.nota, b.s.nota) - Math.min(a.m.nota, a.s.nota))
+    .map((x) => ({ ...filaBase(x.m), pills: [["mia", "Tú " + fmtComp(x.m.nota)], ["", "Amigo " + fmtComp(x.s.nota)]] }));
+  const discrepancias = ambos.filter((x) => Math.abs(x.dif) >= 1.5)
+    .sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif))
+    .map((x) => ({ ...filaBase(x.m), sub: x.dif > 0 ? "Te gusta más a ti" : "Le gusta más a tu amigo", pills: [["mia", "Tú " + fmtComp(x.m.nota)], ["", "Amigo " + fmtComp(x.s.nota)]] }));
+  // Lo que tu amigo ha visto y puntúa alto, y tú no tienes o tienes pendiente
+  const pendiente = (e) => e === "@" || e === "✖";
+  const recomienda = [
+    ...soloSuyas.filter((s) => s.estado === "✔" && s.nota !== null && s.nota >= 8).map((s) => ({ ...filaBase(s), sub: "No la tienes", nota: s.nota })),
+    ...comunes.filter(({ m, s }) => pendiente(m.estado) && s.estado === "✔" && s.nota !== null && s.nota >= 8).map(({ s }) => ({ ...filaBase(s), sub: "La tienes pendiente", nota: s.nota })),
+  ].sort((a, b) => b.nota - a.nota).map((x) => ({ ...x, pills: [["", "Amigo " + fmtComp(x.nota)]] }));
+  // Lo que tú has visto y puntúas alto, y tu amigo no tiene
+  const podriasRecomendar = soloMias.filter((m) => m.estado === "✔" && m.nota !== null && m.nota >= 8)
+    .sort((a, b) => b.nota - a.nota).map((m) => ({ ...filaBase(m), pills: [["mia", "Tú " + fmtComp(m.nota)]] }));
+  return { comunes, soloMias, soloSuyas, ambos, difMedia, coinciden, gustaAmbos, discrepancias, recomienda, podriasRecomendar };
+}
+
+function miniaturaComparacion(u) {
+  const cont = el("div", { className: "comp-mini" });
+  const src = /^https?:/i.test(u || "") ? (portadaAlternativas(u)[0] || u) : "";
+  if (src) {
+    const img = el("img", { src, alt: "", loading: "lazy", referrerPolicy: "no-referrer" });
+    img.addEventListener("error", () => img.remove());
+    cont.append(img);
+  }
+  return cont;
+}
+function filaComparacion(x) {
+  const props = { className: "comp-fila" };
+  if (/^https?:/i.test(x.url || "")) Object.assign(props, { href: x.url, target: "_blank", rel: "noopener noreferrer" });
+  return el(props.href ? "a" : "div", props,
+    miniaturaComparacion(x.portada),
+    el("div", { className: "comp-texto" },
+      el("span", { className: "comp-titulo", textContent: x.titulo || "(sin título)" }),
+      x.sub ? el("span", { className: "comp-sub", textContent: x.sub }) : null),
+    el("div", { className: "comp-notas" }, ...(x.pills || []).map(([clase, t]) => el("span", { className: "comp-pill " + clase, textContent: t }))));
+}
+function seccionComparacion(titulo, ayuda, filas, vacio, max = 6) {
+  const sec = el("div", { className: "stats-seccion" }, el("h3", { textContent: titulo + (filas.length ? ` (${filas.length})` : "") }));
+  if (ayuda) sec.append(el("p", { className: "comp-ayuda", textContent: ayuda }));
+  if (!filas.length) { sec.append(el("div", { className: "stats-vacio", textContent: vacio })); return sec; }
+  const lista = el("div", { className: "comp-lista" });
+  let todas = false;
+  const pintar = () => { lista.innerHTML = ""; (todas ? filas : filas.slice(0, max)).forEach((f) => lista.append(filaComparacion(f))); };
+  pintar();
+  sec.append(lista);
+  if (filas.length > max) {
+    const b = el("button", { className: "btn-mini", type: "button", textContent: `Ver las ${filas.length}` });
+    b.addEventListener("click", () => { todas = !todas; pintar(); b.textContent = todas ? "Ver menos" : `Ver las ${filas.length}`; });
+    sec.append(b);
+  }
+  return sec;
+}
+function renderComparacion(amigo, miNombre) {
+  const mias = todosLosAnimes.map((a) => ({ titulo: a.title, url: a.url, nota: notaNumero(a), estado: a.status, portada: a.cover }));
+  const suyas = amigo.series.map((s) => ({ titulo: s.titulo, url: s.url, nota: Number(s.nota) > 0 ? Number(s.nota) : null, estado: s.estado, portada: s.portada }));
+  const r = analizarComparacion(mias, suyas);
+  dlgCompararEl.innerHTML = "";
+  const cab = el("div", { className: "stats-cab" },
+    el("h2", { textContent: "Comparar listas" }),
+    el("button", { className: "stats-cerrar", type: "button", textContent: "×", ariaLabel: "Cerrar comparación", onclick: () => dlgCompararEl.close() }));
+  const quien = el("p", { className: "comp-ayuda", textContent: `${miNombre || "Tu lista"} (${mias.length}) frente a «${amigo.nombre || "lista de tu amigo"}» (${suyas.length})` });
+  const tarjeta = (num, label) => el("div", { className: "stats-tarjeta" }, el("span", { className: "stats-num", textContent: num }), el("span", { className: "stats-label", textContent: label }));
+  const resumen = el("div", { className: "stats-resumen" },
+    tarjeta(String(r.comunes.length), "Series en común"),
+    tarjeta(r.difMedia === null ? "–" : fmtComp(r.difMedia), "Diferencia media de nota"),
+    tarjeta(r.ambos.length ? `${r.coinciden} de ${r.ambos.length}` : "–", "Coincidís (±1 punto)"),
+    tarjeta(String(r.soloSuyas.length), "Solo en su lista"));
+  dlgCompararEl.append(cab, quien, resumen);
+  if (!r.comunes.length) dlgCompararEl.append(el("div", { className: "stats-vacio", textContent: "No tenéis ninguna serie en común todavía." }));
+  dlgCompararEl.append(
+    seccionComparacion("Os gusta a los dos", "Series con 8 o más en las dos listas.", r.gustaAmbos, "Ninguna serie con 8 o más en las dos listas."),
+    seccionComparacion("Opináis distinto", "Series en común con 1,5 puntos o más de diferencia.", r.discrepancias, "No hay diferencias grandes entre vuestras notas."),
+    seccionComparacion("Te recomienda", "Series que tu amigo ha visto con 8 o más y que no tienes o tienes pendientes.", r.recomienda, "Nada que no tengas ya."),
+    seccionComparacion("Podrías recomendarle", "Series que has visto con 8 o más y que él no tiene.", r.podriasRecomendar, "Nada que él no tenga ya."));
+}
+async function nombreListaActiva() {
+  try { const r = await enviarMensaje({ type: "GET_LISTAS" }); return r?.listas?.find((l) => l.activa)?.name || ""; } catch (e) { return ""; }
+}
+async function compararConEnlace(texto, estadoEl) {
+  const decir = (t) => { if (estadoEl) estadoEl.textContent = t; else if (t) toast(t); };
+  const dir = urlDatosAmigo(texto);
+  if (!dir) return decir("Pega el enlace público de una lista (tiene la forma https://…/v/…).");
+  if (!todosLosAnimes.length) return decir("Abre primero una lista con series: es la que se comparará.");
+  decir("Leyendo la lista de tu amigo…");
+  const ctl = new AbortController();
+  const corte = setTimeout(() => ctl.abort(), 20000);
+  try {
+    const r = await fetch(dir, { signal: ctl.signal, cache: "no-store" });
+    if (r.status === 404) return decir("Ese enlace no existe o su dueño lo ha desactivado.");
+    if (!r.ok) return decir(`No se pudo leer la lista (error ${r.status}).`);
+    const datos = await r.json();
+    if (!datos || !Array.isArray(datos.series)) return decir("La respuesta no parece una lista compartida.");
+    renderComparacion(datos, await nombreListaActiva());
+    decir("");
+    dlgCompararEl.showModal();
+  } catch (e) {
+    decir(e?.name === "AbortError" ? "Tardó demasiado en responder. Inténtalo de nuevo." : "No se pudo conectar. Revisa el enlace y tu conexión.");
+  } finally { clearTimeout(corte); }
+}
+$("compBtn").addEventListener("click", () => compararConEnlace($("compEnlace").value, $("compStatus")));
+$("compEnlace").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); compararConEnlace($("compEnlace").value, $("compStatus")); } });
+
 // --- Filtros -----------------------------------------------------------------
 
 function llenarSelect(select, primera, opciones) {
@@ -829,6 +987,114 @@ if (ES_EXTENSION) { // la fuente de verdad es el segundo plano (el popup no pued
     if (r?.ok && !!r.activo !== !!ajustes.avisosCaps) { ajustes.avisosCaps = !!r.activo; guardarAjustes(); render(); }
   }).catch(() => {});
 }
+// --- Notificaciones push con la app cerrada ---------------------------------------------------------
+// Las envía el Worker (tarea programada) cuando sale un capítulo nuevo de una serie en «Viendo». Aquí solo se activan y se
+// le pasa al Worker qué series sigues y por qué capítulo vas (no puede leer tu Google Sheet). El seguimiento queda ligado a
+// la lista que estaba activa al activarlo: al cambiar de lista no se mezclan las series (ni se vacía el seguimiento).
+function seriesParaPush() {
+  const porSlug = new Map();
+  for (const a of todosLosAnimes) {
+    if (a.status !== "-") continue;
+    const inf = infoUltimo(a.lastEpisodeUrl);
+    if (!inf || !/^[a-z0-9-]{1,80}$/.test(inf.slug)) continue;
+    const previa = porSlug.get(inf.slug);
+    if (!previa || inf.n > previa.visto) porSlug.set(inf.slug, { slug: inf.slug, titulo: String(a.title || inf.slug).slice(0, 80), visto: inf.n });
+  }
+  return [...porSlug.values()].slice(0, 200);
+}
+async function listaActivaInfo() {
+  try { const r = await enviarMensaje({ type: "GET_LISTAS" }); const l = r?.listas?.find((x) => x.activa); return l ? { id: l.id, name: l.name || "" } : null; } catch (e) { return null; }
+}
+let tmrPush = null;
+function sincronizarPush({ inmediato = false, forzar = false } = {}) {
+  const lid = localStorage.getItem("pushListaId");
+  if (!lid || !todosLosAnimes.length) return; // sin seguimiento activado o con la lista aún sin cargar (no se pisa lo ya enviado)
+  clearTimeout(tmrPush);
+  const ejecutar = async () => {
+    const act = await listaActivaInfo();
+    if (!act || act.id !== lid) return;
+    const series = seriesParaPush();
+    const hash = JSON.stringify(series);
+    const reciente = Date.now() - Number(localStorage.getItem("pushSyncTs") || 0) < 5 * 24 * 3600 * 1000;
+    if (!forzar && reciente && hash === localStorage.getItem("pushSyncHash")) return;
+    const r = await enviarMensaje({ type: "PUSH_SINCRONIZAR", series }).catch(() => null);
+    if (r?.ok && r.enviado) { localStorage.setItem("pushSyncHash", hash); localStorage.setItem("pushSyncTs", String(Date.now())); }
+  };
+  if (inmediato) ejecutar(); else tmrPush = setTimeout(ejecutar, 3000);
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") sincronizarPush({ inmediato: true }); });
+
+function mensajePush(err) {
+  const e = String(err || "");
+  if (e === "PUSH_PERMISO_DENEGADO") return "Has bloqueado las notificaciones: permítelas en los ajustes del navegador para este sitio.";
+  if (e === "PUSH_NO_SOPORTADO") return "Este navegador no admite notificaciones push.";
+  if (e === "PUSH_SIN_SUSCRIPCION") return "Este dispositivo no está suscrito: desactiva y vuelve a activar las notificaciones.";
+  if (/failed to fetch|networkerror|load failed/i.test(e)) return "No se pudo conectar con el Worker.";
+  if (/^PUSH_HTTP_404$/.test(e)) return "El Worker no tiene las notificaciones: vuelve a pegar worker-completo.js y pulsa Deploy.";
+  return e || "No se pudo completar la operación.";
+}
+async function refrescarPush() {
+  const r = await enviarMensaje({ type: "PUSH_ESTADO" }).catch(() => null);
+  const interruptor = $("ajPush"), texto = $("ajPushEstado"), acciones = $("ajPushAcciones"), lista = $("ajPushLista");
+  if (!r?.ok || !r.soportado) {
+    interruptor.checked = false; interruptor.disabled = true; acciones.hidden = true;
+    texto.textContent = "Este navegador no admite notificaciones push (en iPhone, solo con la app añadida a la pantalla de inicio).";
+    return;
+  }
+  interruptor.disabled = false;
+  interruptor.checked = !!r.activo;
+  acciones.hidden = !r.activo;
+  if (r.activo) {
+    const nombre = localStorage.getItem("pushListaNombre");
+    const act = await listaActivaInfo();
+    texto.textContent = `Activas en este dispositivo${nombre ? ` · se sigue la lista «${nombre}»` : ""}.`;
+    lista.hidden = !(act && act.id !== localStorage.getItem("pushListaId"));
+  } else {
+    texto.textContent = r.permiso === "denied" ? "Bloqueadas en el navegador: permítelas en los ajustes del sitio y vuelve a activarlas." : "Desactivadas.";
+  }
+}
+$("ajPush").addEventListener("change", async (e) => {
+  const interruptor = e.target, quiere = interruptor.checked;
+  interruptor.disabled = true;
+  try {
+    if (quiere) {
+      const act = await listaActivaInfo();
+      if (!act) throw new Error("Abre primero una lista: se avisará de sus series en «Viendo».");
+      const series = seriesParaPush();
+      const r = await enviarMensaje({ type: "PUSH_ACTIVAR", series });
+      if (!r?.ok) throw new Error(mensajePush(r?.error));
+      localStorage.setItem("pushListaId", act.id);
+      localStorage.setItem("pushListaNombre", act.name);
+      localStorage.setItem("pushSyncHash", JSON.stringify(series));
+      localStorage.setItem("pushSyncTs", String(Date.now()));
+      toast("Notificaciones activadas. Prueba a enviarte una para comprobarlo.");
+    } else {
+      await enviarMensaje({ type: "PUSH_DESACTIVAR" });
+      ["pushListaId", "pushListaNombre", "pushSyncHash", "pushSyncTs"].forEach((k) => localStorage.removeItem(k));
+      toast("Notificaciones desactivadas");
+    }
+  } catch (err) { toast(err.message || mensajePush("")); }
+  finally { interruptor.disabled = false; refrescarPush(); }
+});
+$("ajPushPrueba").addEventListener("click", async (e) => {
+  const b = e.currentTarget;
+  b.disabled = true;
+  const r = await enviarMensaje({ type: "PUSH_PRUEBA" }).catch(() => null);
+  b.disabled = false;
+  toast(r?.ok ? "Notificación enviada: debería llegar en unos segundos" : mensajePush(r?.error));
+  if (r && !r.ok) sincronizarPush({ inmediato: true, forzar: true }); // si el Worker había perdido este dispositivo, se vuelve a registrar
+});
+$("ajPushLista").addEventListener("click", async () => {
+  const act = await listaActivaInfo();
+  if (!act) return;
+  localStorage.setItem("pushListaId", act.id);
+  localStorage.setItem("pushListaNombre", act.name);
+  sincronizarPush({ inmediato: true, forzar: true });
+  toast(`Ahora se avisa de las series de «${act.name || "esta lista"}»`);
+  setTimeout(refrescarPush, 400);
+});
+refrescarPush();
+
 function actualizarBotonPendientes() {
   filtroPendientesEl.hidden = filtroEstado !== "-";
   filtroPendientesEl.setAttribute("aria-pressed", String(filtroPendientes));
@@ -3399,6 +3665,8 @@ async function cargar(opciones = {}) {
   const igual = cache && JSON.stringify(cache.lista) === JSON.stringify(res.lista);
   todosLosAnimes = res.lista;
   sincronizarCatalogo();
+  lanzarCompararPendiente();
+  sincronizarPush();
   await inicializarContadorPortadas();
   if (!igual) {
     const scroll = listaEl.scrollTop;

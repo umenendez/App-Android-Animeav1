@@ -262,12 +262,24 @@
 
 
     /* Estadísticas */
-    #dlgStats {
+    #dlgStats, #dlgComparar {
       width: min(430px, calc(100vw - 24px)); max-height: min(82vh, 620px);
       padding: 16px; border: 1px solid var(--border); border-radius: 14px;
       background: var(--surface); color: var(--text);
     }
-    #dlgStats::backdrop { background: rgba(0,0,0,.52); }
+    #dlgStats::backdrop, #dlgComparar::backdrop { background: rgba(0,0,0,.52); }
+    .comp-ayuda { margin: 0 0 8px; color: var(--muted); font-size: 10.5px; line-height: 1.4; }
+    .comp-lista { display: flex; flex-direction: column; gap: 5px; margin-bottom: 6px; }
+    .comp-fila { display: flex; align-items: center; gap: 8px; padding: 5px; border: 1px solid var(--border); border-radius: 9px; background: var(--field); color: var(--text); text-decoration: none; }
+    a.comp-fila:hover { border-color: var(--muted); }
+    .comp-mini { flex: 0 0 30px; width: 30px; aspect-ratio: 2 / 3; border-radius: 5px; overflow: hidden; background: var(--surface); }
+    .comp-mini img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .comp-texto { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .comp-titulo { font-size: 11.5px; font-weight: 650; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+    .comp-sub { color: var(--muted); font-size: 10px; }
+    .comp-notas { flex-shrink: 0; display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+    .comp-pill { padding: 1px 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font-size: 10px; font-weight: 700; white-space: nowrap; }
+    .comp-pill.mia { border-color: var(--accent); color: var(--accent); }
     .stats-cab { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
     .stats-cab h2 { margin:0; font-size:16px; flex:1; }
     .stats-cerrar { width:30px; height:30px; border:1px solid var(--border); border-radius:8px; background:var(--field); }
@@ -444,6 +456,8 @@
     .opciones-barra.buscando .opciones-tabs { display: none; }
     .opciones-panel > .seccion-opciones:first-child { margin-top: 12px; }
     .item-op.sin-coincidencia, .seccion-opciones.sin-coincidencia, .opciones-panel.sin-coincidencia { display: none !important; }
+    .aj-estado { display: block; margin-top: 3px; color: var(--text); font-weight: 600; }
+    .ajuste-extra { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 0 10px; }
     .ayuda-opciones { margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 1.4; }
     .opciones-vacio { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 8px; }
     .seccion-opciones-titulo {
@@ -604,6 +618,7 @@
   </div>
 
   <dialog id="dlgStats"></dialog>
+  <dialog id="dlgComparar"></dialog>
   <dialog id="dlgGeneros"></dialog>
   <dialog id="dlgPosicionar" tabindex="-1"></dialog>
   <dialog id="dlgSerie" tabindex="-1"></dialog>
@@ -654,6 +669,12 @@
       <div id="nubeListas"></div>
     </div>
     <div class="estado-txt" id="nubeStatus"></div>
+    <div class="config-sep"></div>
+    <h2>Comparar con un amigo</h2>
+    <p>Pega el enlace público de la lista de un amigo (lo genera él en Tus listas &gt; ⚙ &gt; 🌐 Enlace público) y compárala con la lista que tienes abierta: series en común, diferencias de nota y qué te recomienda.</p>
+    <input id="compEnlace" type="url" placeholder="https://…/v/…" aria-label="Enlace público de la lista de un amigo" autocomplete="off" />
+    <button class="btn" id="compBtn" type="button">Comparar</button>
+    <div class="estado-txt" id="compStatus"></div>
   </section>
 
   <div id="cargando" class="aviso"><div class="spinner"></div>Cargando tu lista…</div>
@@ -722,7 +743,14 @@
 
     <div class="seccion-opciones">
       <div class="seccion-opciones-titulo">Capítulos y avisos</div>
-      <div class="ajuste item-op" data-k="avisos notificaciones capítulos nuevos insignia contador icono pendientes"><label class="ajuste-nombre" for="ajAvisos">Avisos de capítulos nuevos<small>Al abrir la app muestra en el icono cuántas series en «Viendo» tienen capítulos sin ver. Sin la app abierta no avisa.</small></label><label class="switch"><input id="ajAvisos" type="checkbox"><span class="switch-track"></span></label></div>
+      <div class="ajuste item-op" data-k="avisos notificaciones capítulos nuevos insignia contador icono pendientes"><label class="ajuste-nombre" for="ajAvisos">Avisos de capítulos nuevos<small>Al abrir la app muestra en el icono cuántas series en «Viendo» tienen capítulos sin ver. Con la app cerrada no se actualiza: para eso, activa las notificaciones de abajo.</small></label><label class="switch"><input id="ajAvisos" type="checkbox"><span class="switch-track"></span></label></div>
+      <div class="item-op" data-k="notificaciones push avisos capítulos nuevos app cerrada segundo plano móvil pantalla de bloqueo prueba">
+        <div class="ajuste"><label class="ajuste-nombre" for="ajPush">Notificaciones con la app cerrada<small>Te avisa en el móvil cuando sale un capítulo nuevo de una serie en «Viendo», aunque no tengas la app abierta. Necesita la tarea programada del Worker (ver README).<span class="aj-estado" id="ajPushEstado"></span></small></label><label class="switch"><input id="ajPush" type="checkbox"><span class="switch-track"></span></label></div>
+        <div class="ajuste-extra" id="ajPushAcciones" hidden>
+          <button class="btn-mini" id="ajPushPrueba" type="button">Enviar notificación de prueba</button>
+          <button class="btn-mini" id="ajPushLista" type="button" hidden>Seguir la lista actual</button>
+        </div>
+      </div>
     </div>
     </div>
 

@@ -73,6 +73,21 @@ una página con tus series (con buscador, filtro por estado y orden). Se puede r
 `enlaces_publicos` se crea sola). Se ve título, portada, nota, estado, géneros y enlace de cada serie; nada más. Detalles en
 `CAMBIOS.md` (1.27.0).
 
+## Notificaciones con la app cerrada (capítulos nuevos)
+
+El móvil te avisa cuando sale un capítulo nuevo de una serie en «Viendo», aunque la app esté cerrada. Pasos, una sola vez:
+1) vuelve a pegar `worker-completo.js` en el Worker y pulsa Deploy; 2) añade un **Cron Trigger** `*/30 * * * *`
+(Worker > Settings > Triggers > Cron Triggers); 3) en la PWA, Opciones > Series > **Notificaciones con la app cerrada**
+y **Enviar notificación de prueba**. No requiere cambios en D1 (las tablas y las claves se crean solas). Se vigilan las series
+en «Viendo» de la lista activa al activarlo. Límites, privacidad y detalles en `CAMBIOS.md` (1.30.0).
+
+## Comparar tu lista con la de un amigo
+
+Pega el enlace público de la lista de un amigo en «Tus listas» > **Comparar con un amigo** (o pulsa **Comparar con mi lista**
+en su página pública) y verás las series en común, en qué opináis distinto y qué te recomienda. Se compara con tu lista
+activa y no se guarda nada. Requiere el `worker-completo.js` actualizado (ruta pública `/v/<código>.json`); la variable
+opcional `PWA_URL` del Worker indica la dirección de la PWA para el botón de la página pública. Detalles en `CAMBIOS.md` (1.29.0).
+
 ## Vincular una hoja de Google con una lista de la nube
 
 Una hoja y una lista de la nube se pueden **vincular**: se mantienen iguales en los dos sentidos. Así usas la lista

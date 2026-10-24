@@ -1,6 +1,6 @@
 // Proxy + backend de login mínimo para AnimeAV1 Tracker (Android/PWA).
 //
-// Hace cinco trabajos:
+// Hace seis trabajos:
 //
 // 1) PROXY CORS: un navegador normal (a diferencia de una extensión con
 //    host_permissions) no puede leer el HTML de animeav1.com/animeflv.net
@@ -27,6 +27,13 @@
 //    (https://TU-WORKER.workers.dev/v/<código>) que muestra la lista como página web, sin cuenta ni app,
 //    y revocarlo cuando quiera. Ver la sección «Enlace público» abajo. No necesita ningún paso extra:
 //    la tabla que usa se crea sola la primera vez.
+//    La misma lista se sirve también como JSON público en /v/<código>.json: así la app (PWA o extensión)
+//    de un amigo puede COMPARAR tu lista con la suya. La página pública incluye un botón que abre la PWA
+//    con ese enlace puesto. Variable opcional PWA_URL: dirección de la PWA para ese botón
+//    (por defecto https://umenendez.github.io/App-Android-Animeav1/).
+//
+// 6) AVISOS PUSH de capítulos nuevos con la app cerrada (solo PWA). Ver la sección «Notificaciones push» abajo.
+//    Necesita un Cron Trigger: Worker → Settings → Triggers → Cron Triggers → Add → «*/30 * * * *».
 //
 // ───────────────────────────── DESPLIEGUE ─────────────────────────────
 // 1. En Google Cloud Console, en el MISMO cliente OAuth "Aplicación web"
@@ -64,10 +71,15 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // Notificaciones push (alta/baja de dispositivos): mismo CORS restringido que /api, pero sin sesión de Google
+    if (url.pathname === "/push" || url.pathname.startsWith("/push/")) return manejarPush(request, env, url);
+
     // API de listas en la nube (D1): tiene su propio CORS restringido, por eso va antes
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return manejarApi(request, env, url);
 
-    // Página pública de una lista compartida con enlace (solo lectura, sin sesión)
+    // Lista pública en JSON (para comparar listas desde la app) y página pública (solo lectura, sin sesión)
+    const pubJson = url.pathname.match(/^\/v\/([A-Za-z0-9_-]{16,64})\.json$/);
+    if (pubJson && (request.method === "GET" || request.method === "HEAD")) return datosPublicos(request, env, pubJson[1]);
     const pub = url.pathname.match(/^\/v\/([A-Za-z0-9_-]{16,64})\/?$/);
     if (pub && (request.method === "GET" || request.method === "HEAD")) return paginaPublica(request, env, pub[1], url);
 
@@ -78,6 +90,11 @@ export default {
     if (url.pathname === "/auth/exchange") return manejarExchange(request, env);
     if (url.pathname === "/auth/refresh") return manejarRefresh(request, env);
     return manejarProxy(url, request);
+  },
+
+  // Tarea programada (Cron Trigger): revisa los capítulos nuevos de las series seguidas y envía los avisos push
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(revisarCapitulosNuevos(env).catch((e) => console.error("Error en la revisión de capítulos:", e && e.stack || e)));
   },
 };
 
@@ -720,6 +737,9 @@ a.titulo:hover{text-decoration:underline}
 .est{font-weight:600;color:var(--st);border-color:color-mix(in srgb,var(--st) 45%,var(--border));background:color-mix(in srgb,var(--st) 12%,var(--surface))}
 .gen{color:var(--muted);background:var(--field)}
 .aviso{text-align:center;color:var(--muted);padding:40px 12px}
+.comparar{display:flex;flex-direction:column;gap:1px;padding:8px 10px;border:1px solid var(--border);border-left:3px solid var(--accent);border-radius:10px;background:var(--surface);color:var(--text);text-decoration:none}
+.comparar b{font-size:12px}.comparar span{font-size:10.5px;color:var(--muted)}
+.comparar:hover{border-color:var(--accent)}
 footer{color:var(--muted);font-size:11px;text-align:center;padding:0 0 14px}
 `;
 
@@ -771,7 +791,7 @@ function guionPublico() {
   aplicar();
 }
 
-function htmlListaPublica(nombre, series, origen, nonce) {
+function htmlListaPublica(nombre, series, origen, nonce, enlaceComparar) {
   const cuentas = {}, todosGeneros = new Set(), coloresNota = new Map();
   const tarjetas = series.map((f, i) => {
     cuentas[f.estado || ""] = (cuentas[f.estado || ""] || 0) + 1;
@@ -815,11 +835,72 @@ function htmlListaPublica(nombre, series, origen, nonce) {
     `document.addEventListener("error",function(e){var t=e.target;if(t&&t.tagName==="IMG"&&t.className==="cover"){var p=t.parentNode,d=document.createElement("div");d.className="sin-portada";d.textContent="Sin portada";t.remove();p.insertBefore(d,p.firstChild)}},true);` +
     `</script></head><body><main>` +
     `<header class="cabecera"><img class="logo" src="${LOGO_PUBLICO}" alt=""><h1>${escHtml(nombre)}</h1><span id="contador">${n} ${n === 1 ? "serie" : "series"}</span></header>` +
+    (enlaceComparar ? `<a class="comparar" href="${escHtml(enlaceComparar)}" target="_blank" rel="noopener noreferrer"><b>Comparar con mi lista</b><span>Abre la app y mira qué tenéis en común y en qué opináis distinto</span></a>` : "") +
     `<div class="filtros"><div class="chips">${chips}</div><div class="fila"><input id="q" type="search" placeholder="Buscar por título" aria-label="Buscar por título">${selGenero}` +
     `<select id="orden" aria-label="Ordenar"><option value="">Sin ordenar</option><option value="score-desc">Nota: mayor a menor</option><option value="score-asc">Nota: menor a mayor</option></select></div></div>` +
     `<ul id="grid">${tarjetas}</ul><div id="vacio" class="aviso" hidden>Ninguna serie coincide con los filtros.</div>` +
     `<footer>Lista compartida en solo lectura${fecha ? ` · actualizada el ${escHtml(fecha)}` : ""}</footer></main>` +
     `<script nonce="${nonce}">(${guionPublico.toString()})()</script></body></html>`;
+}
+
+// Lista de un enlace público: nombre y series (sin las borradas). null si el enlace no existe o se revocó.
+async function leerListaPublica(env, token) {
+  await asegurarTablaEnlaces(env);
+  const lista = await env.DB.prepare(
+    "SELECT l.id AS id, l.nombre AS nombre FROM enlaces_publicos e JOIN listas l ON l.id = e.lista_id WHERE e.token = ?"
+  ).bind(token).first();
+  if (!lista) return null;
+  const { results } = await env.DB.prepare(
+    "SELECT titulo, url, nota, estado, genero, portada, servidor FROM series WHERE lista_id = ? AND borrada = 0 ORDER BY titulo COLLATE NOCASE"
+  ).bind(lista.id).all();
+  return { nombre: lista.nombre, series: results };
+}
+
+// GET /v/<código>.json — los mismos datos que la página pública, para que la app los compare con otra lista.
+// Es público y de solo lectura (como la página), por eso admite cualquier origen (CORS *).
+async function datosPublicos(request, env, token) {
+  const cabeceras = {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex, nofollow",
+    "X-Content-Type-Options": "nosniff",
+    "Access-Control-Allow-Origin": "*",
+  };
+  const salida = (obj, status) => new Response(request.method === "HEAD" ? null : JSON.stringify(obj), { status, headers: cabeceras });
+  if (!env.DB) return salida({ error: "SIN_BASE_DE_DATOS" }, 500);
+  try {
+    const datos = await leerListaPublica(env, token);
+    if (!datos) return salida({ error: "ENLACE_NO_DISPONIBLE" }, 404);
+    const ultimo = datos.series.reduce((m, f) => Math.max(m, Number(f.servidor) || 0), 0);
+    return salida({
+      nombre: datos.nombre,
+      actualizado: ultimo || null,
+      series: datos.series.map((f) => {
+        const nota = f.nota === null || f.nota === undefined ? NaN : Number(f.nota);
+        const portada = enlaceHttp(f.portada);
+        return {
+          titulo: String(f.titulo || ""),
+          url: enlaceHttp(f.url),
+          nota: Number.isFinite(nota) && nota > 0 ? nota : null, // 0 = sin valorar
+          estado: String(f.estado || ""),
+          generos: String(f.genero || ""),
+          portada: portada.startsWith("https:") ? portada : "",
+        };
+      }),
+    }, 200);
+  } catch (e) {
+    console.error("Error en la lista pública (JSON):", e && e.stack || e);
+    return salida({ error: "ERROR_INTERNO" }, 500);
+  }
+}
+
+// Enlace para abrir la PWA y comparar: <PWA>?comparar=<enlace público>. "" si la dirección de la PWA no es https.
+const PWA_URL_POR_DEFECTO = "https://umenendez.github.io/App-Android-Animeav1/";
+function urlComparar(env, enlace) {
+  let base = String(env.PWA_URL || PWA_URL_POR_DEFECTO).trim();
+  if (!/^https:\/\//i.test(base)) return "";
+  if (!base.includes("?") && !base.endsWith("/")) base += "/";
+  return base + (base.includes("?") ? "&" : "?") + "comparar=" + encodeURIComponent(enlace);
 }
 
 async function paginaPublica(request, env, token, url) {
@@ -836,17 +917,337 @@ async function paginaPublica(request, env, token, url) {
   const aviso = (titulo, texto, status) => new Response(cuerpo(htmlAviso(titulo, texto, nonce)), { status, headers: cabeceras });
   if (!env.DB) return aviso("Servicio no disponible", "Este Worker no tiene configurada la base de datos.", 500);
   try {
-    await asegurarTablaEnlaces(env);
-    const lista = await env.DB.prepare(
-      "SELECT l.id AS id, l.nombre AS nombre FROM enlaces_publicos e JOIN listas l ON l.id = e.lista_id WHERE e.token = ?"
-    ).bind(token).first();
-    if (!lista) return aviso("Enlace no disponible", "Este enlace no existe o su dueño lo ha desactivado.", 404);
-    const { results } = await env.DB.prepare(
-      "SELECT titulo, url, nota, estado, genero, portada, servidor FROM series WHERE lista_id = ? AND borrada = 0 ORDER BY titulo COLLATE NOCASE"
-    ).bind(lista.id).all();
-    return new Response(cuerpo(htmlListaPublica(lista.nombre, results, url.origin, nonce)), { headers: cabeceras });
+    const datos = await leerListaPublica(env, token);
+    if (!datos) return aviso("Enlace no disponible", "Este enlace no existe o su dueño lo ha desactivado.", 404);
+    return new Response(cuerpo(htmlListaPublica(datos.nombre, datos.series, url.origin, nonce, urlComparar(env, `${url.origin}/v/${token}`))), { headers: cabeceras });
   } catch (e) {
     console.error("Error en la página pública:", e && e.stack || e);
     return aviso("Error", "No se pudo cargar la lista. Inténtalo de nuevo dentro de un rato.", 500);
   }
+}
+
+// --- Notificaciones push: avisos de capítulos nuevos con la app cerrada ------------------------
+// La PWA se suscribe (Opciones > Series > «Notificaciones con la app cerrada») y le pasa al Worker qué series
+// tienes en «Viendo» y por qué capítulo vas (el Worker no puede leer tu Google Sheet). Una tarea programada
+// (Cron Trigger) mira cada cierto tiempo la ficha de esas series en animeav1.com y, si hay un capítulo nuevo
+// que aún no has visto, envía una notificación push al móvil aunque la app esté cerrada.
+//   · Las tablas push_* y las claves VAPID (la «identidad» del Worker ante Google/Apple/Mozilla) se crean solas.
+//   · Hay que añadir el Cron Trigger a mano: Worker → Settings → Triggers → Cron Triggers → Add → «*/30 * * * *».
+//   · Se avisa una sola vez por capítulo. Lo que ya estaba publicado al activar las notificaciones no genera aviso.
+//   · Cada pasada comprueba como mucho PUSH_MAX_COMPROBACIONES series (por defecto 30; el plan gratuito de
+//     Cloudflare permite 50 peticiones externas por ejecución), empezando por las que hace más que no se miran.
+//   · Variables opcionales: VAPID_SUBJECT (contacto, «mailto:tu@correo»), PUSH_MAX_SUSCRIPCIONES (por defecto 50).
+//   · Solo se aceptan suscripciones de los servicios de Chrome/Edge (FCM, WNS), Firefox y Safari, y solo desde
+//     los orígenes permitidos (la PWA y la extensión, como en /api).
+
+const PUSH_HOSTS = ["fcm.googleapis.com", "push.services.mozilla.com", "push.apple.com", "notify.windows.com"];
+const PUSH_MAX_SERIES = 200;
+const PUSH_SLUG = /^[a-z0-9-]{1,80}$/;
+const PUSH_REVISAR_CADA = 20 * 60 * 1000; // una ficha no se vuelve a mirar hasta pasados 20 minutos
+
+let _tablasPush = false;
+async function asegurarTablasPush(env) {
+  if (_tablasPush) return;
+  await env.DB.batch([
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS push_config (k TEXT PRIMARY KEY, v TEXT NOT NULL)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, p256dh TEXT NOT NULL, auth TEXT NOT NULL, series TEXT NOT NULL DEFAULT '[]', creado INTEGER NOT NULL, sincronizado INTEGER NOT NULL, ultimo_aviso INTEGER, fallos INTEGER NOT NULL DEFAULT 0)"),
+    env.DB.prepare("CREATE TABLE IF NOT EXISTS push_caps (slug TEXT PRIMARY KEY, maximo INTEGER, comprobado INTEGER NOT NULL)"),
+  ]);
+  _tablasPush = true;
+}
+
+const unirBytes = (...partes) => {
+  const out = new Uint8Array(partes.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of partes) { out.set(p, o); o += p.length; }
+  return out;
+};
+
+// Claves VAPID (ECDSA P-256) y dirección del Worker (para el «sub» del token). Se generan la primera vez.
+async function configPush(env) {
+  const leer = async () => {
+    const { results } = await env.DB.prepare("SELECT k, v FROM push_config").all();
+    const m = new Map(results.map((f) => [f.k, f.v]));
+    return { vapid: m.has("vapid") ? JSON.parse(m.get("vapid")) : null, origen: m.get("origen") || "" };
+  };
+  let c = await leer();
+  if (!c.vapid) {
+    const par = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const pub = b64uDeBytes(await crypto.subtle.exportKey("raw", par.publicKey));
+    const priv = await crypto.subtle.exportKey("jwk", par.privateKey);
+    await env.DB.prepare("INSERT OR IGNORE INTO push_config (k, v) VALUES ('vapid', ?)").bind(JSON.stringify({ pub, priv })).run();
+    c = await leer(); // si otra petición se adelantó, se usan sus claves
+  }
+  c.asunto = String(env.VAPID_SUBJECT || c.origen || "mailto:avisos@example.com");
+  return c;
+}
+
+// Token VAPID (RFC 8292): JWT ES256 firmado con la clave del Worker, válido 12 h, para el servidor push del endpoint
+async function firmaVapid(vapid, endpoint, asunto) {
+  const cab = b64uDeJson({ typ: "JWT", alg: "ES256" });
+  const cuerpo = b64uDeJson({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: asunto });
+  const clave = await crypto.subtle.importKey("jwk", vapid.priv, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const firma = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, clave, enc.encode(`${cab}.${cuerpo}`));
+  return `${cab}.${cuerpo}.${b64uDeBytes(firma)}`;
+}
+
+// Cifrado del mensaje (RFC 8291, «aes128gcm»): clave efímera ECDH + secreto de autenticación de la suscripción.
+// `prueba` (par de claves y sal fijos) solo se usa en las pruebas automáticas.
+async function cifrarPush(texto, p256dh, auth, prueba) {
+  const uaPublica = bytesDeB64u(p256dh);
+  const secretoAuth = bytesDeB64u(auth);
+  const par = prueba?.par || await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const asPublica = new Uint8Array(await crypto.subtle.exportKey("raw", par.publicKey));
+  const uaClave = await crypto.subtle.importKey("raw", uaPublica, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const ecdh = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: uaClave }, par.privateKey, 256));
+  const sal = prueba?.sal || crypto.getRandomValues(new Uint8Array(16));
+  const hkdf = async (salB, ikm, info, bits) => {
+    const k = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+    return new Uint8Array(await crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: salB, info }, k, bits));
+  };
+  const ikm = await hkdf(secretoAuth, ecdh, unirBytes(enc.encode("WebPush: info\0"), uaPublica, asPublica), 256);
+  const cek = await hkdf(sal, ikm, enc.encode("Content-Encoding: aes128gcm\0"), 128);
+  const nonce = await hkdf(sal, ikm, enc.encode("Content-Encoding: nonce\0"), 96);
+  const aes = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
+  const cifrado = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce }, aes, unirBytes(enc.encode(texto), new Uint8Array([2]))));
+  // cabecera: sal (16) + tamaño de bloque (4096) + longitud de la clave (65) + clave pública del servidor
+  return unirBytes(sal, new Uint8Array([0, 0, 0x10, 0]), new Uint8Array([asPublica.length]), asPublica, cifrado);
+}
+
+// Envía una notificación a una suscripción. Devuelve el estado HTTP del servicio push (0 si no hubo conexión).
+async function enviarPush(cfg, sub, objeto) {
+  try {
+    const jwt = await firmaVapid(cfg.vapid, sub.endpoint, cfg.asunto);
+    const r = await fetch(sub.endpoint, {
+      method: "POST",
+      headers: {
+        "Authorization": `vapid t=${jwt}, k=${cfg.vapid.pub}`,
+        "Content-Encoding": "aes128gcm",
+        "Content-Type": "application/octet-stream",
+        "TTL": "86400",
+        "Urgency": "normal",
+      },
+      body: await cifrarPush(JSON.stringify(objeto), sub.p256dh, sub.auth),
+    });
+    try { await r.arrayBuffer(); } catch (_) {}
+    return r.status;
+  } catch (e) {
+    console.error("No se pudo enviar el push:", e && e.message || e);
+    return 0;
+  }
+}
+
+// ---- Rutas /push/... (las usa la PWA; solo con origen permitido) ----
+async function manejarPush(request, env, url) {
+  if (origenBloqueado(request, env)) return new Response("Origen no permitido", { status: 403 });
+  if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsApi(request, env) });
+  if (!env.DB) return resp(request, env, { error: "Falta el binding D1 llamado DB en el Worker." }, 500);
+  try {
+    await asegurarTablasPush(env);
+    const ruta = url.pathname.replace(/^\/push\/?/, "").replace(/\/$/, "");
+    const metodo = request.method;
+    if (ruta === "clave" && metodo === "GET") return resp(request, env, { clave: (await configPush(env)).vapid.pub });
+    if (ruta === "suscribir" && metodo === "POST") return await pushSuscribir(request, env, url);
+    if (ruta === "baja" && metodo === "POST") return await pushBaja(request, env);
+    if (ruta === "prueba" && metodo === "POST") return await pushPrueba(request, env);
+    return resp(request, env, { error: "Ruta no encontrada" }, 404);
+  } catch (e) {
+    if (e instanceof ErrorApi) return resp(request, env, { error: e.message }, e.status);
+    console.error("Error en /push:", e && e.stack || e);
+    return resp(request, env, { error: "Error interno" }, 500);
+  }
+}
+
+function validarSuscripcion(s) {
+  const endpoint = String(s?.endpoint || "");
+  let u;
+  try { u = new URL(endpoint); } catch (_) { throw new ErrorApi(400, "Suscripción no válida"); }
+  if (u.protocol !== "https:" || endpoint.length > 700 || !PUSH_HOSTS.some((h) => u.hostname === h || u.hostname.endsWith("." + h))) {
+    throw new ErrorApi(400, "Servicio de notificaciones no admitido");
+  }
+  const p256dh = String(s?.keys?.p256dh || ""), auth = String(s?.keys?.auth || "");
+  let pk, au;
+  try { pk = bytesDeB64u(p256dh); au = bytesDeB64u(auth); } catch (_) { throw new ErrorApi(400, "Claves de la suscripción no válidas"); }
+  if (pk.length !== 65 || pk[0] !== 4 || au.length !== 16) throw new ErrorApi(400, "Claves de la suscripción no válidas");
+  return { endpoint, p256dh, auth };
+}
+const leerSeriesPush = (texto) => {
+  try { const j = JSON.parse(texto); return Array.isArray(j) ? j.filter((x) => x && PUSH_SLUG.test(x.s)) : []; } catch (_) { return []; }
+};
+
+// POST /push/suscribir { subscription, series: [{ slug, titulo, visto }] }: alta o actualización (idempotente).
+// La lista de series sustituye a la anterior; lo ya avisado de cada serie se conserva.
+async function pushSuscribir(request, env, url) {
+  const cuerpo = await leerJson(request);
+  const sub = validarSuscripcion(cuerpo.subscription);
+  if (!Array.isArray(cuerpo.series)) throw new ErrorApi(400, "Falta la lista de series");
+  const vistas = new Set(), series = [];
+  for (const s of cuerpo.series) {
+    const slug = String(s?.slug || "").toLowerCase();
+    if (!PUSH_SLUG.test(slug) || vistas.has(slug)) continue;
+    vistas.add(slug);
+    series.push({ slug, titulo: texto(s.titulo, 80) || slug, visto: Math.min(99999, Math.max(0, parseInt(s.visto, 10) || 0)) });
+    if (series.length >= PUSH_MAX_SERIES) break;
+  }
+  const ahora = Date.now();
+  const previa = await env.DB.prepare("SELECT series FROM push_subs WHERE endpoint = ?").bind(sub.endpoint).first();
+  if (!previa) {
+    const tope = Number(env.PUSH_MAX_SUSCRIPCIONES) > 0 ? Number(env.PUSH_MAX_SUSCRIPCIONES) : 50;
+    const { n } = await env.DB.prepare("SELECT COUNT(*) AS n FROM push_subs").first();
+    if (n >= tope) throw new ErrorApi(429, "Hay demasiados dispositivos con notificaciones en este Worker");
+  }
+  const antes = new Map(previa ? leerSeriesPush(previa.series).map((x) => [x.s, x]) : []);
+  // Las series nuevas parten del último capítulo que ya conocemos (si lo conocemos): no se avisa de lo ya publicado
+  let caps = new Map();
+  if (series.some((s) => !antes.has(s.slug))) {
+    const { results } = await env.DB.prepare("SELECT slug, maximo FROM push_caps").all();
+    caps = new Map(results.map((f) => [f.slug, f.maximo]));
+  }
+  const lista = series.map((s) => ({ s: s.slug, t: s.titulo, v: s.visto, a: antes.has(s.slug) ? antes.get(s.slug).a ?? null : caps.get(s.slug) ?? null }));
+  await env.DB.batch([
+    env.DB.prepare(
+      "INSERT INTO push_subs (endpoint, p256dh, auth, series, creado, sincronizado, fallos) VALUES (?, ?, ?, ?, ?, ?, 0) " +
+      "ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, series = excluded.series, sincronizado = excluded.sincronizado, fallos = 0"
+    ).bind(sub.endpoint, sub.p256dh, sub.auth, JSON.stringify(lista), ahora, ahora),
+    env.DB.prepare("INSERT OR IGNORE INTO push_config (k, v) VALUES ('origen', ?)").bind(url.origin),
+  ]);
+  return resp(request, env, { ok: true, series: lista.length });
+}
+
+async function pushBaja(request, env) {
+  const cuerpo = await leerJson(request);
+  const endpoint = String(cuerpo.endpoint || "");
+  if (!endpoint || endpoint.length > 700) throw new ErrorApi(400, "Falta el endpoint");
+  await env.DB.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(endpoint).run();
+  return resp(request, env, { ok: true });
+}
+
+// POST /push/prueba { endpoint }: manda una notificación de prueba a esa suscripción (para comprobar que todo funciona)
+async function pushPrueba(request, env) {
+  const cuerpo = await leerJson(request);
+  const endpoint = String(cuerpo.endpoint || "");
+  const sub = endpoint ? await env.DB.prepare("SELECT endpoint, p256dh, auth FROM push_subs WHERE endpoint = ?").bind(endpoint).first() : null;
+  if (!sub) throw new ErrorApi(404, "Este dispositivo no está registrado: vuelve a activar las notificaciones");
+  const estado = await enviarPush(await configPush(env), sub, {
+    titulo: "Notificaciones activadas",
+    cuerpo: "Así te avisaré cuando salga un capítulo nuevo de una serie en «Viendo».",
+    tag: "prueba", url: "./",
+  });
+  if (estado === 404 || estado === 410) {
+    await env.DB.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(endpoint).run();
+    throw new ErrorApi(410, "El navegador ya no acepta notificaciones de este dispositivo: vuelve a activarlas");
+  }
+  if (estado < 200 || estado >= 300) throw new ErrorApi(502, estado ? `El servicio de notificaciones respondió ${estado}` : "No se pudo conectar con el servicio de notificaciones");
+  return resp(request, env, { ok: true });
+}
+
+// ---- Tarea programada: busca capítulos nuevos y avisa ----
+// Último capítulo publicado de una serie: el mayor /media/<serie>/<n> que aparece en su ficha (como hace la app).
+async function capituloMaximoPublicado(slug) {
+  try {
+    const r = await fetch(`https://animeav1.com/media/${slug}`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+        "Referer": "https://animeav1.com/",
+      },
+      redirect: "follow",
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!r.ok) return null;
+    const html = await r.text();
+    let max = 0;
+    for (const m of html.matchAll(new RegExp(`/media/${slug}/(\\d+)(?!\\d)`, "gi"))) max = Math.max(max, parseInt(m[1], 10));
+    return max > 0 ? max : null;
+  } catch (_) { return null; }
+}
+
+function textoAviso(items, pendientes) {
+  const corto = (t) => (t.length > 60 ? t.slice(0, 57) + "…" : t);
+  if (items.length === 1) {
+    const i = items[0];
+    return {
+      titulo: corto(i.x.t),
+      cuerpo: i.desde >= i.hasta ? `Ya está disponible el capítulo ${i.hasta}` : `Ya están disponibles los capítulos ${i.desde} a ${i.hasta}`,
+      tag: "capitulos-nuevos", url: "./", pendientes,
+    };
+  }
+  const lista = items.slice(0, 4).map((i) => `${corto(i.x.t)} (cap. ${i.hasta})`).join(", ") + (items.length > 4 ? ` y ${items.length - 4} más` : "");
+  return { titulo: `${items.length} series con capítulos nuevos`, cuerpo: lista, tag: "capitulos-nuevos", url: "./", pendientes };
+}
+
+async function revisarCapitulosNuevos(env) {
+  if (!env.DB) return { error: "SIN_DB" };
+  await asegurarTablasPush(env);
+  const ahora = Date.now();
+  const maxComprobar = Number(env.PUSH_MAX_COMPROBACIONES) > 0 ? Number(env.PUSH_MAX_COMPROBACIONES) : 30;
+  await env.DB.prepare("DELETE FROM push_subs WHERE sincronizado < ?").bind(ahora - 90 * 86400000).run(); // dispositivos que ya no abren la app
+  const { results: filas } = await env.DB.prepare("SELECT endpoint, p256dh, auth, series, fallos FROM push_subs").all();
+  const subs = filas.map((f) => ({ ...f, lista: leerSeriesPush(f.series) })).filter((s) => s.lista.length);
+  if (!subs.length) return { suscripciones: 0, revisadas: 0, avisos: 0 };
+
+  // 1) Qué fichas toca mirar: las de todas las series seguidas, empezando por las más antiguas
+  const { results: capsFilas } = await env.DB.prepare("SELECT slug, maximo, comprobado FROM push_caps").all();
+  const caps = new Map(capsFilas.map((f) => [f.slug, { maximo: f.maximo, comprobado: f.comprobado }]));
+  const slugs = new Set();
+  subs.forEach((s) => s.lista.forEach((x) => slugs.add(x.s)));
+  const tocan = [...slugs]
+    .filter((sl) => !caps.has(sl) || ahora - caps.get(sl).comprobado >= PUSH_REVISAR_CADA)
+    .sort((a, b) => (caps.get(a)?.comprobado ?? 0) - (caps.get(b)?.comprobado ?? 0))
+    .slice(0, maxComprobar);
+  const guardar = [];
+  for (let i = 0; i < tocan.length; i += 5) {
+    const tanda = tocan.slice(i, i + 5);
+    const maximos = await Promise.all(tanda.map(capituloMaximoPublicado));
+    tanda.forEach((sl, k) => {
+      const maximo = maximos[k] ?? caps.get(sl)?.maximo ?? null; // si la ficha no responde, se conserva lo último conocido
+      caps.set(sl, { maximo, comprobado: ahora });
+      guardar.push(env.DB.prepare(
+        "INSERT INTO push_caps (slug, maximo, comprobado) VALUES (?, ?, ?) ON CONFLICT(slug) DO UPDATE SET maximo = excluded.maximo, comprobado = excluded.comprobado"
+      ).bind(sl, maximo, ahora));
+    });
+  }
+  if (guardar.length) await env.DB.batch(guardar);
+
+  // 2) Avisos: capítulo publicado > último visto y > último avisado
+  const cfg = await configPush(env);
+  const cambios = [];
+  let avisos = 0;
+  for (const s of subs) {
+    const items = [];
+    let pendientes = 0, cambio = false;
+    for (const x of s.lista) {
+      const m = caps.get(x.s)?.maximo;
+      if (!Number.isFinite(m)) continue;
+      if (m > x.v) pendientes++;
+      if (x.a === null || x.a === undefined) { x.a = m; cambio = true; continue; } // primera lectura: es la base, no se avisa
+      if (m > x.a) {
+        if (m > x.v) items.push({ x, desde: Math.max(x.a, x.v) + 1, hasta: m });
+        else { x.a = m; cambio = true; } // ya lo habías visto
+      }
+    }
+    let ultimoAviso = null, fallos = s.fallos || 0, borrar = false;
+    if (items.length) {
+      const estado = await enviarPush(cfg, s, textoAviso(items, pendientes));
+      if (estado >= 200 && estado < 300) {
+        items.forEach((i) => { i.x.a = i.hasta; });
+        ultimoAviso = ahora; fallos = 0; cambio = true; avisos++;
+      } else if (estado === 404 || estado === 410) {
+        borrar = true; // el navegador ya no acepta notificaciones de este dispositivo
+      } else {
+        fallos++; cambio = true; // se reintenta en la próxima pasada
+        if (fallos >= 10) borrar = true;
+      }
+    }
+    if (borrar) cambios.push(env.DB.prepare("DELETE FROM push_subs WHERE endpoint = ?").bind(s.endpoint));
+    else if (cambio) {
+      cambios.push(env.DB.prepare("UPDATE push_subs SET series = ?, fallos = ?, ultimo_aviso = COALESCE(?, ultimo_aviso) WHERE endpoint = ?")
+        .bind(JSON.stringify(s.lista), fallos, ultimoAviso, s.endpoint));
+    }
+  }
+  if (cambios.length) await env.DB.batch(cambios);
+  const resumen = { suscripciones: subs.length, revisadas: tocan.length, avisos };
+  console.log("Revisión de capítulos nuevos:", JSON.stringify(resumen));
+  return resumen;
 }

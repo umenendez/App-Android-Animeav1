@@ -1,6 +1,6 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v50 (Opciones con pestañas y buscador).
-const CACHE = "animeav1-pwa-v50";
+// las cachés antiguas. Último bump: v52 (avisos push de capítulos nuevos).
+const CACHE = "animeav1-pwa-v52";
 const COVER_CACHE = "anime-covers-v2";
 const MW = /(^|\.)img\d+mw\.xyz$/i;
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
@@ -60,4 +60,36 @@ self.addEventListener("fetch", event => {
       }).catch(() => caches.match(request, { ignoreSearch: true }))
     );
   }
+});
+
+// --- Avisos push: capítulos nuevos con la app cerrada ---------------------------------------------
+// El Worker (tarea programada) manda un mensaje cifrado { titulo, cuerpo, tag, url, pendientes }. Chrome exige mostrar
+// siempre una notificación al recibir un push.
+self.addEventListener("push", (event) => {
+  let d = {};
+  try { d = event.data ? event.data.json() : {}; } catch (e) { d = { cuerpo: event.data ? event.data.text() : "" }; }
+  const tareas = [self.registration.showNotification(String(d.titulo || "AnimeAV1 Tracker"), {
+    body: String(d.cuerpo || ""),
+    icon: "./icon192.png",
+    tag: String(d.tag || "capitulos-nuevos"),
+    renotify: true,
+    data: { url: String(d.url || "./") },
+  })];
+  // Contador del icono de la app: series en «Viendo» con capítulos sin ver
+  if (typeof d.pendientes === "number" && self.navigator && "setAppBadge" in self.navigator) {
+    tareas.push((d.pendientes > 0 ? self.navigator.setAppBadge(d.pendientes) : self.navigator.clearAppBadge()).catch(() => {}));
+  }
+  event.waitUntil(Promise.all(tareas));
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const destino = new URL((event.notification.data && event.notification.data.url) || "./", self.registration.scope).href;
+  event.waitUntil((async () => {
+    const abiertas = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    for (const c of abiertas) {
+      if (c.url.startsWith(self.registration.scope) && "focus" in c) { await c.focus(); return; }
+    }
+    await self.clients.openWindow(destino);
+  })());
 });

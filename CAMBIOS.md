@@ -5,6 +5,67 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.30.0
+
+### Notificaciones con la app cerrada: capítulos nuevos [PWA + Worker]
+
+- **Qué hace:** el móvil recibe una notificación cuando sale un capítulo nuevo de una serie que tienes en «Viendo», aunque la
+  app esté cerrada (antes el contador del icono solo se actualizaba al abrirla). Si salen varias a la vez llega una sola
+  notificación; al pulsarla se abre la app. El contador del icono también se actualiza con cada aviso.
+- **Cómo activarlo (una vez):**
+  1. Vuelve a pegar `worker-completo.js` en el Worker y pulsa **Deploy**. No hace falta tocar D1: las tablas y las claves
+     de las notificaciones (VAPID) se crean solas.
+  2. **Añade la tarea programada:** en el Worker, Settings > Triggers > **Cron Triggers** > Add > `*/30 * * * *` (cada 30 minutos).
+     Sin ella no se envía nada.
+  3. En la PWA: Opciones > Series > **Notificaciones con la app cerrada**, acepta el permiso y pulsa
+     **Enviar notificación de prueba** para comprobar que llega.
+- **Qué series se vigilan:** las que tengas en «Viendo» de la lista que estaba activa al activarlo (el Worker no puede leer tu
+  Google Sheet, así que la app le pasa esa lista y por qué capítulo vas). Si cambias de lista, no se mezcla: aparece
+  **«Seguir la lista actual»** para cambiar el seguimiento. La lista se actualiza sola al abrir la app, al salir de ella y
+  cuando hay cambios.
+- **Cuándo avisa:** una vez por capítulo, cuando el último publicado es mayor que el que has visto y que el último avisado.
+  Lo que ya estaba publicado al activarlo no genera aviso. Si ves un capítulo desde otro dispositivo (p. ej. con la extensión
+  en el ordenador), la app no se entera hasta que la abras, y podría avisarte de un capítulo que ya has visto.
+- **Límites:** hasta 200 series por dispositivo y 50 dispositivos por Worker (`PUSH_MAX_SUSCRIPCIONES`). Cada pasada
+  comprueba como mucho 30 fichas (`PUSH_MAX_COMPROBACIONES`; el plan gratuito de Cloudflare permite 50 peticiones externas
+  por ejecución) y reparte el resto entre las siguientes, así que con muchas series el retraso máximo crece. Una misma
+  ficha no se vuelve a mirar hasta pasados 20 minutos. Los dispositivos que no abren la app en 90 días se eliminan.
+- **Seguridad:** solo se aceptan suscripciones de los servicios de Chrome/Edge, Firefox y Safari, y solo desde los orígenes
+  permitidos (la PWA y la extensión). Los mensajes van cifrados de extremo a extremo (RFC 8291) y firmados con la clave VAPID
+  del Worker. El Worker guarda la dirección de notificación del dispositivo y la lista de series seguidas (título, enlace
+  y capítulo visto); «Desactivar» lo borra.
+- **Rutas nuevas del Worker:** `GET /push/clave`, `POST /push/suscribir`, `POST /push/baja` y `POST /push/prueba`, más la
+  tarea programada (`scheduled`). En «Logs» del Worker se ve cada pasada: «Revisión de capítulos nuevos: {…}».
+- **Notas:** funciona en Chrome para Android con la PWA instalada (en iPhone solo con la PWA añadida a la pantalla de inicio
+  y iOS 16.4 o superior). El ahorro de batería de algunos móviles puede retrasar las notificaciones. La extensión de Chrome no
+  cambia: ya tenía sus propios avisos cada 3 horas.
+- Extensión `1.30.0` (solo cambia el Worker incluido); caché de la PWA `v52`.
+
+## 1.29.0
+
+### Comparar tu lista con la de un amigo [ext + PWA + Worker]
+
+- **Qué hace:** pega el enlace público de la lista de un amigo y la app la compara con la lista que tienes abierta.
+  Sale un diálogo con: series en común, diferencia media de nota, en cuántas coincidís (±1 punto) y cuatro listas:
+  **Os gusta a los dos** (8 o más en ambas), **Opináis distinto** (1,5 puntos o más de diferencia),
+  **Te recomienda** (series que tu amigo ha visto con 8 o más y que no tienes o tienes pendientes) y
+  **Podrías recomendarle** (las tuyas con 8 o más que él no tiene). Cada lista enseña las 6 primeras y un botón
+  «Ver las N» para el resto; cada serie abre su ficha.
+- **Cómo se usa:**
+  - Desde la app: «Tus listas» > **Comparar con un amigo** > pegar el enlace > **Comparar**. Se compara con la lista activa.
+  - Desde la página pública: el botón **Comparar con mi lista** abre la PWA con el enlace ya puesto y lanza la comparación
+    en cuanto carga tu lista. (Si tienes la PWA instalada, Android puede abrirla en el navegador en vez de en la app:
+    en ese caso, copia el enlace y pégalo en la app.)
+- **Cómo se emparejan las series:** por la dirección de la ficha (`/media/<serie>`, sin contar el capítulo) y, si no
+  coincide, por el título sin tildes ni mayúsculas.
+- **Privacidad:** tu amigo no ve nada de tu lista. La comparación se hace en tu dispositivo con lo que su enlace
+  público ya muestra (título, portada, nota, estado, géneros y enlace). No se guarda nada.
+- **Worker:** hay que volver a pegar `worker-completo.js` y pulsar Deploy. Ruta nueva y pública: `GET /v/<código>.json`
+  (los mismos datos que la página, con CORS abierto; si el enlace se revoca, también deja de funcionar).
+  Variable opcional **`PWA_URL`**: dirección de la PWA para el botón de la página pública (por defecto
+  `https://umenendez.github.io/App-Android-Animeav1/`).
+- Extensión `1.29.0`; caché de la PWA `v51`.
+
 ## 1.28.0
 
 ### Opciones reorganizadas: pestañas y buscador [ext + PWA]

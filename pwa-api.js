@@ -1586,6 +1586,66 @@
   }
   async function nubeEnlaceQuitar(id) { await nubeFetch(`/api/listas/${encodeURIComponent(id)}/enlace`, { method: "DELETE" }); }
 
+  // --- Avisos push de capítulos nuevos con la app cerrada --------------------------------------------------
+  // La suscripción vive en el navegador (service worker); el Worker guarda qué series sigues y, con una tarea
+  // programada, envía la notificación. Ver «Notificaciones push» en worker-completo.js.
+  const PUSH_DISPONIBLE = () => typeof navigator !== "undefined" && "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const pushBytes = (b64u) => {
+    const bin = atob(b64u.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(b64u.length / 4) * 4, "="));
+    const o = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) o[i] = bin.charCodeAt(i);
+    return o;
+  };
+  async function pushPeticion(ruta, cuerpo, keepalive) {
+    const r = await fetch(WORKER_URL + ruta, cuerpo === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cuerpo), keepalive: !!keepalive });
+    let datos = null;
+    try { datos = await r.json(); } catch (e) {}
+    if (!r.ok) throw new Error(datos?.error || `PUSH_HTTP_${r.status}`);
+    return datos || {};
+  }
+  async function pushSuscripcion() {
+    if (!PUSH_DISPONIBLE()) return null;
+    try { return await (await navigator.serviceWorker.ready).pushManager.getSubscription(); } catch (e) { return null; }
+  }
+  async function pushEstado() {
+    if (!PUSH_DISPONIBLE()) return { soportado: false };
+    const sub = await pushSuscripcion();
+    return { soportado: true, permiso: Notification.permission, activo: !!sub && Notification.permission === "granted" };
+  }
+  async function pushActivar(series) {
+    if (!PUSH_DISPONIBLE()) throw new Error("PUSH_NO_SOPORTADO");
+    const permiso = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (permiso !== "granted") throw new Error("PUSH_PERMISO_DENEGADO");
+    const reg = await navigator.serviceWorker.ready;
+    const { clave } = await pushPeticion("/push/clave");
+    const claveBytes = pushBytes(clave);
+    let sub = await reg.pushManager.getSubscription();
+    if (sub) { // si el Worker cambió de claves (p. ej. base de datos nueva), la suscripción antigua ya no sirve
+      const vieja = sub.options && sub.options.applicationServerKey ? new Uint8Array(sub.options.applicationServerKey) : null;
+      if (!vieja || vieja.length !== claveBytes.length || vieja.some((v, i) => v !== claveBytes[i])) { await sub.unsubscribe(); sub = null; }
+    }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: claveBytes });
+    await pushPeticion("/push/suscribir", { subscription: sub.toJSON(), series: series || [] });
+  }
+  async function pushDesactivar() {
+    const sub = await pushSuscripcion();
+    if (!sub) return;
+    const endpoint = sub.endpoint;
+    await sub.unsubscribe().catch(() => {});
+    await pushPeticion("/push/baja", { endpoint }).catch(() => {}); // sin conexión: el Worker lo descartará solo cuando el servicio push responda 410
+  }
+  async function pushSincronizar(series) {
+    const sub = await pushSuscripcion();
+    if (!sub || Notification.permission !== "granted") return { enviado: false };
+    await pushPeticion("/push/suscribir", { subscription: sub.toJSON(), series: series || [] }, true);
+    return { enviado: true };
+  }
+  async function pushPrueba() {
+    const sub = await pushSuscripcion();
+    if (!sub) throw new Error("PUSH_SIN_SUSCRIPCION");
+    await pushPeticion("/push/prueba", { endpoint: sub.endpoint });
+  }
+
   // --- Vínculo hoja de Google ↔ lista de la nube -------------------------------------------------
   // Dos listas vinculadas se mantienen iguales en los dos sentidos. Cada serie se identifica por su enlace
   // (o por su título si no tiene). Para saber QUÉ lado cambió se guarda, por serie, cómo era la última vez que se
@@ -1904,6 +1964,11 @@
       case "NUBE_ENLACE": return {ok:true,enlace:await nubeEnlace(msg.id)};
       case "NUBE_ENLACE_CREAR": return {ok:true,enlace:await nubeEnlaceCrear(msg.id,msg.renovar)};
       case "NUBE_ENLACE_QUITAR": await nubeEnlaceQuitar(msg.id); return {ok:true};
+      case "PUSH_ESTADO": return {ok:true,...(await pushEstado())};
+      case "PUSH_ACTIVAR": await pushActivar(msg.series); return {ok:true};
+      case "PUSH_DESACTIVAR": await pushDesactivar(); return {ok:true};
+      case "PUSH_SINCRONIZAR": return {ok:true,...(await pushSincronizar(msg.series))};
+      case "PUSH_PRUEBA": await pushPrueba(); return {ok:true};
       case "NUBE_SINCRONIZAR": return {ok:true,...await sincronizarNube(msg.id)};
       case "NUBE_ESPERAR_SYNC": { // resultado de la sincronización que se lanzó al abrir la lista
         let r = syncAlAbrir[msg.id] ? await syncAlAbrir[msg.id] : resultadoAlAbrir[msg.id];
