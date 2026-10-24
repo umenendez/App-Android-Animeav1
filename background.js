@@ -1184,7 +1184,7 @@ async function rellenarPortadasLocal() {
 async function migrarAnimeFlvLocal() {
   const d = await leerDatosLocal();
   const cambios = [];
-  let migradas = 0, portadasFlv = 0, sinCambios = 0;
+  let migradas = 0, portadasFlv = 0, sinCambios = 0, portadasAV1 = 0;
   for (const it of d.items) {
     if (!it.url.includes("animeflv")) continue;
     const encontrado = await buscarEnAnimeAV1(it.title, it.url);
@@ -1192,7 +1192,7 @@ async function migrarAnimeFlvLocal() {
       const c = { row: it.row, url: encontrado.url };
       // La portada pasa a ser la de AnimeAV1 (sustituye a la de AnimeFLV)
       const imagenUrl = extraerPortadaDesdeHtml(encontrado.html);
-      if (imagenUrl) { c.cover = imagenUrl; precachearImagen(imagenUrl); }
+      if (imagenUrl) { c.cover = imagenUrl; precachearImagen(imagenUrl); portadasAV1++; }
       cambios.push(c);
       migradas++;
     } else if (!it.cover) {
@@ -1218,7 +1218,7 @@ async function migrarAnimeFlvLocal() {
     });
     reindexarViendo();
   }
-  return { migradas, portadasFlv, sinCambios };
+  return { migradas, portadasFlv, sinCambios, portadasAV1 };
 }
 
 // --- Listas en la nube (Cloudflare D1) ----------------------------------------------
@@ -2358,7 +2358,12 @@ async function actualizarTituloUrl(row, title, url) {
 // --- Rellenar portadas que faltan (columna J) ------------------------------
 
 function extraerPortadaDesdeHtml(html) {
-  const match = html.match(/cdn\.animeav1\.com\/covers\/\d+\.jpg/i);
+  html = String(html || "");
+  // La ficha también lista series relacionadas (/covers/<otro id>.jpg): se prefiere la portada cuyo id coincide
+  // con el del fondo (/backdrops/<id>.jpg) o el de las capturas (/screenshots/<id>/…) de la propia serie.
+  const id = (html.match(/cdn\.animeav1\.com\/backdrops\/(\d+)\./i) || html.match(/cdn\.animeav1\.com\/screenshots\/(\d+)\//i) || [])[1];
+  if (id && new RegExp(`cdn\\.animeav1\\.com/covers/${id}\\.(?:jpg|jpeg|png|webp)`, "i").test(html)) return `https://cdn.animeav1.com/covers/${id}.jpg`;
+  const match = html.match(/cdn\.animeav1\.com\/covers\/\d+\.(?:jpg|jpeg|png|webp)/i);
   return match ? `https://${match[0]}` : null;
 }
 
@@ -3035,6 +3040,7 @@ async function migrarAnimeFlv() {
   let migradas = 0;
   let portadasFlv = 0;
   let sinCambios = 0;
+  let portadasAV1 = 0;
 
   for (let i = 0; i < filas.length; i++) {
     const values = filas[i].values || [];
@@ -3077,6 +3083,7 @@ async function migrarAnimeFlv() {
             },
           });
           precachearImagen(imagenUrl);
+          portadasAV1++;
         }
       }
     } else if (!yaTienePortada) {
@@ -3109,5 +3116,5 @@ async function migrarAnimeFlv() {
     await sheetsFetch(":batchUpdate", token, { method: "POST", body: JSON.stringify({ requests }) });
   }
 
-  return { migradas, portadasFlv, sinCambios };
+  return { migradas, portadasFlv, sinCambios, portadasAV1 };
 }

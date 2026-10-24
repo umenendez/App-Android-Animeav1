@@ -104,8 +104,12 @@ let refrescandoLista = false;
 
 function enviarMensaje(msg) {
   if (refrescandoLista && /^UPDATE_/.test(msg?.type || "")) return Promise.resolve({ ok: false, error: "SINCRONIZANDO" });
-  if (typeof window.enviarMensajePWA === "function") return window.enviarMensajePWA(msg);
-  return Promise.resolve({ ok: false, error: "SIN_RESPUESTA" });
+  return new Promise((resolve) =>
+    chrome.runtime.sendMessage(msg, (res) => {
+      const fallo = chrome.runtime.lastError;
+      resolve(fallo || res === undefined ? { ok: false, error: "SIN_RESPUESTA" } : res);
+    })
+  );
 }
 
 function el(tag, props = {}, ...hijos) {
@@ -227,6 +231,24 @@ $("ajReset").addEventListener("click", () => { ajustes = { ...AJUSTES_BASE, avis
 aplicarAjustes();
 sincronizarControlesAjustes();
 
+// Cuándo se registra un capítulo (solo extensión): al abrirlo (como siempre) o al terminar de verlo.
+// Lo leen los scripts de contenido (visto.js), por eso va en chrome.storage.local y no en localStorage.
+(function () {
+  const sel = $("ajRegistro");
+  if (!sel || !window.chrome || !chrome.storage) return;
+  const ayuda = $("ajRegistroAyuda");
+  const textos = {
+    abrir: "El capítulo se guarda como último visto en cuanto lo abres.",
+    terminar: "Se guarda al ver el 80 % del capítulo; si el reproductor no deja medirlo, tras 15 min con la pestaña visible.",
+  };
+  const pintar = (v) => { sel.value = v; ayuda.textContent = textos[v]; };
+  chrome.storage.local.get("registroCapitulo").then(({ registroCapitulo }) => pintar(registroCapitulo === "terminar" ? "terminar" : "abrir")).catch(() => pintar("abrir"));
+  sel.addEventListener("change", () => {
+    pintar(sel.value);
+    chrome.storage.local.set({ registroCapitulo: sel.value }).then(() => toast(sel.value === "terminar" ? "Se registrará al terminar de ver el capítulo" : "Se registrará al abrir el capítulo")).catch(() => {});
+  });
+})();
+
 // --- Logo e icono personalizados (se importan desde una imagen) -----------------------
 // El logo de la cabecera se guarda en este dispositivo. En la extensión, además, se cambia el icono de la
 // barra de herramientas de Chrome (background.js). En la PWA el icono de la pantalla de inicio lo fija
@@ -300,6 +322,196 @@ $("ajLogoArchivo").addEventListener("change", (e) => {
 $("ajLogoQuitar").addEventListener("click", quitarLogo);
 aplicarLogo();
 
+// --- Otras páginas fuente (BETA) ----------------------------------------------------------
+// El permiso de la web se pide aquí (necesita un clic del usuario); el asistente corre dentro de esa web (fuente.js).
+const fuenteUrlEl = $("fuenteUrl");
+const fuenteStatusEl = $("fuenteStatus");
+
+// Servidores de portadas (distintos de la propia web) que usan las series registradas desde una fuente
+function hostsImagenDe(f) {
+  const hosts = new Set(f.hostsImg || []);
+  let propio = "";
+  try { propio = new URL(f.origen).hostname; } catch (e) {}
+  for (const a of todosLosAnimes) {
+    try {
+      if (!a.cover || ![a.url, a.lastEpisodeUrl].some((u) => u && String(u).startsWith(f.origen + "/"))) continue;
+      const h = new URL(a.cover).hostname;
+      if (h && h !== propio && !/(^|\.)animeav1\.com$/i.test(h)) hosts.add(h.toLowerCase());
+    } catch (e) {}
+  }
+  return [...hosts];
+}
+
+async function cargarFuentes() {
+  const r = await enviarMensaje({ type: "GET_FUENTES" });
+  const nuevas = r?.fuentes || [];
+  const cambio = JSON.stringify(nuevas.map((x) => [x.origen, x.patron, x.activa, x.capitulo])) !== JSON.stringify(fuentesCache.map((x) => [x.origen, x.patron, x.activa, x.capitulo]));
+  fuentesCache = nuevas;
+  if (cambio && todosLosAnimes.length) render(); // el botón ⏭ de las series de otras webs depende de estas fuentes
+  const listas = (await enviarMensaje({ type: "GET_LISTAS" }))?.listas || [];
+  const cont = $("fuentesLista");
+  cont.innerHTML = "";
+  for (const f of r?.fuentes || []) {
+    // Lista donde se registran las series de esta web ("" = la que esté abierta en cada momento)
+    const selLista = el("select", { ariaLabel: `Lista para ${f.nombre}`, title: "Lista donde se registran las series de esta web" });
+    selLista.append(el("option", { value: "", textContent: "Lista abierta" }));
+    for (const l of listas) selLista.append(el("option", { value: l.id, textContent: l.name }));
+    if (f.listaId && !listas.some((l) => l.id === f.listaId)) selLista.append(el("option", { value: f.listaId, textContent: "(lista borrada)" }));
+    selLista.value = f.listaId || "";
+    selLista.addEventListener("change", async () => {
+      const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, lista: selLista.value });
+      if (!x?.ok) { selLista.value = f.listaId || ""; toast(mensajeError(x?.error || "error desconocido")); } else { f.listaId = selLista.value; toast("Lista asignada"); }
+    });
+    const sw = el("input", { type: "checkbox", id: `fuente_${f.id}` });
+    sw.checked = f.activa !== false;
+    sw.addEventListener("change", async () => {
+      const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, activa: sw.checked });
+      if (!x?.ok) { sw.checked = !sw.checked; toast(mensajeError(x?.error || "error desconocido")); }
+    });
+    const borrar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Borrar" });
+    borrar.addEventListener("click", async () => {
+      if (!confirm(`¿Quitar la página fuente «${f.nombre}»? Las series ya registradas se quedan en tu lista.`)) return;
+      const x = await enviarMensaje({ type: "BORRAR_FUENTE", id: f.id });
+      if (!x?.ok) { toast(mensajeError(x?.error || "error desconocido")); return; }
+      cargarFuentes();
+    });
+    // Portadas: el servidor de imágenes necesita permiso (y el Referer de la web) para que se vean
+    const hostsImg = hostsImagenDe(f);
+    const sinPermiso = [];
+    for (const h of hostsImg) {
+      let tiene = false;
+      try { tiene = await chrome.permissions.contains({ origins: [`https://${h}/*`] }); } catch (e) {}
+      const regla = (f.hostsImg || []).includes(h);
+      if (!tiene || !regla) sinPermiso.push(h);
+    }
+    // Número del capítulo en la dirección: se ve y se cambia con un ejemplo real (el último capítulo de una serie de esta web)
+    const itemEj = todosLosAnimes.find((a) => a.lastEpisodeUrl && String(a.lastEpisodeUrl).startsWith(f.origen + "/"));
+    const ejemploUrl = itemEj ? itemEj.lastEpisodeUrl : (f.ejemplo?.ruta ? f.origen + f.ejemplo.ruta : "");
+    const panelCap = el("div", { className: "fuente-cap" });
+    panelCap.hidden = true;
+    const btnCap = el("button", { className: "btn-mini", type: "button", textContent: "Número del capítulo", title: "Indica qué número de la dirección es el del capítulo (para el botón ⏭)" });
+    btnCap.addEventListener("click", () => {
+      panelCap.hidden = !panelCap.hidden;
+      if (panelCap.hidden) return;
+      panelCap.textContent = "";
+      let elegido = f.capitulo || refCapituloPorDefecto(ejemploUrl);
+      const caja = el("div", { className: "fuente-url" });
+      const prev = el("div", { className: "fuente-prev" });
+      const verPrev = () => { const s = urlCapituloSiguiente(ejemploUrl, elegido); prev.textContent = elegido ? (s ? "Siguiente capítulo: " + s : "Con ese número no se puede calcular el siguiente.") : "La dirección no tiene números: el botón ⏭ no estará disponible."; };
+      const guardarCap = el("button", { className: "btn-mini", type: "button", textContent: "Guardar" });
+      panelCap.append(el("p", { className: "ayuda-opciones", textContent: ejemploUrl ? "Pulsa el número que cambia de un capítulo al siguiente. Ejemplo con un capítulo real de esta web:" : "Aún no hay ningún capítulo registrado de esta web para usar de ejemplo." }), caja, prev, guardarCap);
+      if (ejemploUrl) pintarUrlConNumeros(caja, ejemploUrl, elegido, (r) => { elegido = r; verPrev(); }, "chip-num");
+      verPrev();
+      guardarCap.addEventListener("click", async () => {
+        const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, capitulo: elegido });
+        if (!x?.ok) { toast(mensajeError(x?.error || "error desconocido")); return; }
+        toast("Número del capítulo guardado");
+        cargarFuentes();
+      });
+    });
+    const permitir = sinPermiso.length ? el("button", { className: "btn-mini", type: "button", textContent: `Permitir imágenes (${sinPermiso.join(", ")})`, title: "Las portadas de esta web se sirven desde otro servidor y necesitan este permiso para verse" }) : null;
+    if (permitir) permitir.addEventListener("click", async () => {
+      // Primer await del clic: el permiso solo se puede pedir directamente desde un gesto del usuario
+      let ok = false;
+      try { ok = await chrome.permissions.request({ origins: sinPermiso.map((h) => `https://${h}/*`) }); } catch (e) {}
+      if (!ok) { toast("Sin ese permiso las portadas de esta web no se verán"); return; }
+      const x = await enviarMensaje({ type: "ACTIVAR_REFERER", id: f.id, hosts: sinPermiso });
+      if (!x?.ok) { toast(mensajeError(x?.error || "error desconocido")); return; }
+      toast("Imágenes permitidas: recargando portadas…");
+      portadaMem.clear?.();
+      cargar();
+      cargarFuentes();
+    });
+    // Editar nombre, patrón y selectores sin repetir el asistente
+    const panelEd = el("div", { className: "fuente-cap" });
+    panelEd.hidden = true;
+    const btnEd = el("button", { className: "btn-mini", type: "button", textContent: "Editar", title: "Cambiar nombre, patrón y selectores sin repetir el asistente" });
+    btnEd.addEventListener("click", () => {
+      panelEd.hidden = !panelEd.hidden;
+      if (panelEd.hidden) return;
+      panelEd.textContent = "";
+      const campo = (txt, val, ph) => { const i = el("input", { type: "text", value: val || "", placeholder: ph || "", ariaLabel: txt }); return { i, l: el("label", { className: "campo-ed" }, el("span", { textContent: txt }), i) }; };
+      const cNombre = campo("Nombre", f.nombre);
+      const cPatron = campo("Patrón de capítulo (expresión regular sobre la ruta)", f.patron);
+      const cTitulo = campo("Selector CSS del título", f.selectores?.titulo);
+      const cSerie = campo("Selector CSS del enlace a la serie", f.selectores?.serie, "opcional");
+      const cPortada = campo("Selector CSS de la portada (en la página del capítulo)", f.selectores?.portada, "opcional");
+      const cPortadaS = campo("Selector CSS de la portada (en la página de la serie)", f.selectores?.portadaSerie, "opcional");
+      const msg = el("div", { className: "estado-txt" });
+      const guardarEd = el("button", { className: "btn-mini", type: "button", textContent: "Guardar cambios" });
+      guardarEd.addEventListener("click", async () => {
+        const sels = { titulo: cTitulo.i.value.trim(), serie: cSerie.i.value.trim(), portada: cPortada.i.value.trim(), portadaSerie: cPortadaS.i.value.trim() };
+        if (!sels.titulo) { msg.textContent = "El selector del título es obligatorio."; return; }
+        try { new RegExp(cPatron.i.value); } catch (e) { msg.textContent = "El patrón no es una expresión regular válida."; return; }
+        for (const [k, v] of Object.entries(sels)) {
+          if (!v) continue;
+          try { document.createDocumentFragment().querySelector(v); } catch (e) { msg.textContent = `El selector «${v}» no es válido.`; return; }
+        }
+        const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, receta: { nombre: cNombre.i.value, patron: cPatron.i.value, selectores: sels } });
+        if (!x?.ok) { msg.textContent = mensajeError(x?.error || "error desconocido"); return; }
+        toast("Página fuente actualizada");
+        cargarFuentes();
+      });
+      panelEd.append(el("p", { className: "ayuda-opciones", textContent: "Ajusta solo lo que falle; los cambios valen desde el siguiente capítulo que abras." }), cNombre.l, cPatron.l, cTitulo.l, cSerie.l, cPortada.l, cPortadaS.l, guardarEd, msg);
+    });
+    cont.append(el("div", { className: "ajuste ajuste-fuente" },
+      el("label", { className: "ajuste-nombre", htmlFor: `fuente_${f.id}` }, f.nombre, el("small", { textContent: f.origen })),
+      el("label", { className: "switch" }, sw, el("span", { className: "switch-track" })),
+      selLista,
+      borrar,
+      btnCap,
+      btnEd,
+      ...(permitir ? [permitir] : []),
+      panelCap,
+      panelEd));
+  }
+}
+
+async function anadirFuente() {
+  const entrada = fuenteUrlEl.value.trim();
+  let u;
+  try { u = new URL(entrada); } catch (e) { u = null; }
+  if (!u || !/^https?:$/.test(u.protocol)) { fuenteStatusEl.textContent = "Pega la dirección completa de un capítulo (https://…)."; return; }
+  if (/(^|\.)animeav1\.com$/i.test(u.hostname)) { fuenteStatusEl.textContent = "animeav1.com ya funciona sin añadirla."; return; }
+  // Primer await de la función: el permiso solo se puede pedir directamente desde un clic
+  let concedido = false;
+  try { concedido = await chrome.permissions.request({ origins: [u.origin + "/*"] }); } catch (e) { concedido = false; }
+  if (!concedido) { fuenteStatusEl.textContent = "Sin permiso para esa web no se puede leer. Inténtalo de nuevo y acepta el aviso de Chrome."; return; }
+  const r = await enviarMensaje({ type: "INICIAR_ASISTENTE_FUENTE", url: entrada });
+  if (!r?.ok) { fuenteStatusEl.textContent = mensajeError(r?.error || "error desconocido"); return; }
+  fuenteUrlEl.value = "";
+  fuenteStatusEl.textContent = "Se ha abierto la web: sigue los pasos del panel que aparece abajo. Al terminar, vuelve a abrir esta ventana.";
+}
+
+$("fuenteAnadir").addEventListener("click", anadirFuente);
+// Vuelve a registrar el script de cada web y lo inyecta en las pestañas abiertas (sin tener que recargarlas)
+$("fuentesReparar").addEventListener("click", async () => {
+  const b = $("fuentesReparar");
+  b.disabled = true;
+  const r = await enviarMensaje({ type: "REPARAR_FUENTES" });
+  b.disabled = false;
+  if (!r?.ok) { fuenteStatusEl.textContent = mensajeError(r?.error || "error desconocido"); return; }
+  fuenteStatusEl.textContent = !r.fuentes ? "Aún no hay ninguna página fuente."
+    : `Hecho: ${r.fuentes} página${r.fuentes === 1 ? "" : "s"} fuente comprobada${r.fuentes === 1 ? "" : "s"}` + (r.reparadas ? `, ${r.reparadas} registrada${r.reparadas === 1 ? "" : "s"} de nuevo` : ", el registro estaba bien") + `, ${r.pestanas} pestaña${r.pestanas === 1 ? "" : "s"} abierta${r.pestanas === 1 ? "" : "s"} activada${r.pestanas === 1 ? "" : "s"}.`;
+});
+
+// Exporta las recetas como texto para pegarlas en la PWA (la lista asignada viaja por nombre: los ids no coinciden entre dispositivos)
+$("fuentesCopiar").addEventListener("click", async () => {
+  const r = await enviarMensaje({ type: "GET_FUENTES" });
+  const fuentes = r?.fuentes || [];
+  if (!fuentes.length) { fuenteStatusEl.textContent = "Aún no hay ninguna página fuente que copiar."; return; }
+  const listas = (await enviarMensaje({ type: "GET_LISTAS" }))?.listas || [];
+  const datos = { app: "AnimeAV1 Tracker", tipo: "fuentes", formato: 1, fuentes: fuentes.map((f) => ({
+    nombre: f.nombre, origen: f.origen, patron: f.patron, capitulo: f.capitulo || null, selectores: f.selectores, ejemplo: f.ejemplo || {},
+    listaNombre: listas.find((l) => l.id === f.listaId)?.name || "",
+  })) };
+  const texto = JSON.stringify(datos);
+  try { await navigator.clipboard.writeText(texto); fuenteStatusEl.textContent = `Copiadas ${fuentes.length} página(s) fuente. En la app: Opciones > Fuentes > Pegar.`; }
+  catch (e) { prompt("Copia este texto y pégalo en la app (Opciones > Fuentes):", texto); }
+});
+fuenteUrlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") anadirFuente(); });
+cargarFuentes();
+
 // --- Preferencias de filtros (se recuerdan entre aperturas) -------------------
 
 function guardarFiltros() {
@@ -323,7 +535,7 @@ function cargarFiltros() {
 // La primera vez se descarga y se guarda en la Cache Storage de la extensión
 // (compartida con background.js). Las siguientes veces se lee de ahí, sin red.
 
-const COVER_CACHE = "anime-covers-v2";
+const COVER_CACHE = "anime-covers-v1";
 const portadasEnCache = new Set();
 
 function actualizarContadorPortadas() {
@@ -358,14 +570,30 @@ function aplicarPreferenciaPortadas() {
   actualizarContadorPortadas();
 }
 
-// --- Portadas rápidas (lista principal y posicionador) ---------------------------
-// En la PWA el Service Worker sirve de la caché local cualquier <img> cuya URL esté
-// guardada. Por eso aquí se descarga UNA sola vez (con límite de descargas
-// simultáneas), se guarda en caché y se predecodifica para que, al pintarla, aparezca
-// al instante. Mientras llega se muestra un esqueleto animado.
-const portadaMem = new Set();    // urls ya descargadas y listas para pintar
-const portadaPend = new Map();   // url -> Promise en curso (evita descargas duplicadas)
-const portadaImgs = new Map();   // referencias a imágenes predecodificadas (máx. 80)
+// --- Portadas rápidas (lista principal y posicionador) -------------------------------------------
+// Antes cada portada se pedía a la red dos veces (el <img> y la copia a caché) y
+// la caché solo servía de marcador. Ahora: caché → blob en memoria → <img>, con
+// esqueleto animado mientras llega, y se precargan las siguientes comparaciones.
+const portadaMem = new Map();   // url -> objectURL (ya lista para pintar)
+const portadaPend = new Map();  // url -> Promise en curso (evita descargas duplicadas)
+// Cada entrada de portadaMem es un objectURL: si no se revoca, el blob sigue
+// retenido. Además una sesión larga (posicionador) llega a acumular cientos de
+// portadas, así que el mapa se acota y se van revocando las más antiguas.
+const PORTADAS_MEM_MAX = 200;
+function liberarPortadasMem() {
+  portadaMem.forEach((obj) => URL.revokeObjectURL(obj));
+  portadaMem.clear();
+}
+function recordarPortada(url, obj) {
+  portadaMem.set(url, obj);
+  // La más antigua es la que ya está pintada: revocar su objectURL no la rompe,
+  // pero si vuelve a hacer falta se volverá a descargar.
+  while (portadaMem.size > PORTADAS_MEM_MAX) {
+    const [vieja] = portadaMem.keys();
+    URL.revokeObjectURL(portadaMem.get(vieja));
+    portadaMem.delete(vieja);
+  }
+}
 let portadaSlots = 6;
 const portadaCola = [];
 function portadaSlot() {
@@ -373,82 +601,43 @@ function portadaSlot() {
 }
 function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else portadaSlots++; }
 
-// Las portadas de Manwhaweb (img1mw.xyz, img2mw.xyz, …) bloquean la carga desde otros
-// dominios según el Referer. Por eso: 1) se piden sin Referer, 2) si falla se prueban
-// proxies de imágenes y 3) no se guardan en la caché local (la respuesta opaca podría ser
-// un error 403 y quedaría guardada para siempre). El resto de URLs no cambia.
-function esMW(url) {
-  try { return /(^|\.)img\d+mw\.xyz$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
-}
-function portadaAlternativas(url) {
-  try {
-    const u = new URL(url, location.href);
-    if (!esMW(url)) return [];
-    const sinProtocolo = encodeURIComponent(u.host + u.pathname + u.search);
-    const propio = String(window.PWA_CONFIG?.mwProxy || "").trim().replace(/\/+$/, "");
-    if (propio) return [propio + "/?url=" + encodeURIComponent(u.href)];
-    return [
-      "https://images.weserv.nl/?url=" + sinProtocolo,
-      "https://wsrv.nl/?url=" + sinProtocolo,
-      "https://wsrv.nl/?url=" + encodeURIComponent(u.href),
-    ];
-  } catch (_) { return []; }
-}
-// Siguiente intento tras un error de carga; devuelve false si ya no quedan.
-function reintentarPortada(img, original) {
-  const alts = portadaAlternativas(original);
-  const n = Number(img.dataset.intentoPortada || 0);
-  if (n >= alts.length) return false;
-  img.dataset.intentoPortada = String(n + 1);
-  img.referrerPolicy = "no-referrer";
-  img.src = alts[n];
-  return true;
-}
-
-function predecodificar(url) {
-  return new Promise((resolve) => {
-    const img = new Image();
-    const t = setTimeout(resolve, 8000);
-    const fin = () => { clearTimeout(t); resolve(); };
-    img.onload = fin; img.onerror = fin;
-    img.src = url;
-    portadaImgs.set(url, img);
-    if (portadaImgs.size > 80) portadaImgs.delete(portadaImgs.keys().next().value);
-    if (img.decode) img.decode().then(fin, fin);
-  });
-}
-
-// Guarda la portada en la caché local (respuesta opaca, que el Service Worker sabe servir).
-async function guardarEnCache(url) {
-  if (esMW(url)) return; // ver nota sobre Manwhaweb más arriba
-  const cache = await caches.open(COVER_CACHE);
-  if (!(await cache.match(url))) {
-    await portadaSlot();
-    try {
-      const ctl = new AbortController();
-      const t = setTimeout(() => ctl.abort(), 12000);
-      let res;
-      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: "strict-origin-when-cross-origin", signal: ctl.signal }); } finally { clearTimeout(t); }
-      if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
-      await cache.put(url, res.clone());
-    } finally { portadaLiberar(); }
-  }
-  portadasEnCache.add(url);
-  actualizarContadorPortadas();
-}
-
 function obtenerPortada(url) {
   if (!url) return Promise.resolve("");
-  if (portadaMem.has(url)) return Promise.resolve(url);
+  if (portadaMem.has(url)) return Promise.resolve(portadaMem.get(url));
   if (portadaPend.has(url)) return portadaPend.get(url);
-  // Con proxy propio, las de Manwhaweb van directas por él (la URL original siempre da 403).
-  if (esMW(url) && window.PWA_CONFIG?.mwProxy) return Promise.resolve(portadaAlternativas(url)[0]);
   const p = (async () => {
-    // Se muestra ya (el navegador la descarga); la caché local y el predecodificado se hacen en segundo plano
-    if (guardarPortadasActivado()) guardarEnCache(url).catch((e) => console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e));
-    predecodificar(url).then(() => portadaMem.add(url));
-    return url;
-  })().finally(() => portadaPend.delete(url));
+    try {
+      let res = null, cache = null;
+      if (guardarPortadasActivado()) {
+        try { cache = await caches.open(COVER_CACHE); res = await cache.match(url); } catch (e) { cache = null; }
+        if (res && res.type === "opaque") res = null; // las opacas no se pueden leer: se vuelven a bajar
+      }
+      // Servidores de otras webs: no se espera a descargarla antes de mostrarla (con CORS/Referer en contra la
+      // descarga tardaba hasta 12 s). Se muestra directamente y la caché se rellena en segundo plano.
+      let otraWeb = false;
+      try { otraWeb = !/(^|\.)animeav1\.com$/i.test(new URL(url).hostname); } catch (e) {}
+      if (!res && otraWeb) { if (cache) asegurarEnCache(url); return url; }
+      if (!res) {
+        await portadaSlot();
+        try {
+          const ctl = new AbortController();
+          const t = setTimeout(() => ctl.abort(), 12000);
+          try { res = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer", signal: ctl.signal }); } finally { clearTimeout(t); }
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          if (cache) cache.put(url, res.clone()).then(() => { portadasEnCache.add(url); actualizarContadorPortadas(); }).catch(() => {});
+        } finally { portadaLiberar(); }
+      }
+      const blob = await res.blob();
+      if (!blob.size) throw new Error("portada vacía");
+      const obj = URL.createObjectURL(blob);
+      recordarPortada(url, obj);
+      return obj;
+    } catch (e) {
+      return url; // sin permiso/CORS o sin red: que el <img> lo intente directamente
+    } finally {
+      portadaPend.delete(url);
+    }
+  })();
   portadaPend.set(url, p);
   return p;
 }
@@ -463,36 +652,100 @@ function observadorPortadas(raiz) {
   }, { root: raiz, rootMargin: "240px" });
 }
 
+// Portadas de otras webs que no cargan: normalmente el servidor de imágenes exige el Referer de la web.
+// Se avisa arriba con un botón (el permiso solo se puede pedir desde un clic).
+const avisoImgEl = $("avisoImagenes");
+const imgFallidas = new Map(); // idFuente|host -> { f, host }
+function avisoPortadaFallida(url) {
+  let host;
+  try { host = new URL(url).hostname.toLowerCase(); } catch (e) { return; }
+  const f = fuentesCache.find((x) => todosLosAnimes.some((a) => a.cover === url && [a.url, a.lastEpisodeUrl].some((u) => u && String(u).startsWith(x.origen + "/"))));
+  if (!f || (f.hostsImg || []).includes(host)) return;
+  imgFallidas.set(f.id + "|" + host, { f, host });
+  clearTimeout(avisoPortadaFallida.t);
+  avisoPortadaFallida.t = setTimeout(pintarAvisoImagenes, 600);
+}
+function pintarAvisoImagenes() {
+  avisoImgEl.textContent = "";
+  if (!imgFallidas.size) { avisoImgEl.hidden = true; return; }
+  const nombres = [...new Set([...imgFallidas.values()].map((x) => x.f.nombre))].join(", ");
+  const b = el("button", { className: "btn-mini", type: "button", textContent: "Permitir imágenes" });
+  b.addEventListener("click", async () => {
+    const pares = [...imgFallidas.values()];
+    const hosts = [...new Set(pares.map((x) => x.host))];
+    let ok = false;
+    try { ok = await chrome.permissions.request({ origins: hosts.map((h) => `https://${h}/*`) }); } catch (e) {} // primer await del clic
+    if (!ok) { toast("Sin ese permiso estas portadas no se verán"); return; }
+    for (const f of new Set(pares.map((x) => x.f))) {
+      const x = await enviarMensaje({ type: "ACTIVAR_REFERER", id: f.id, hosts: pares.filter((y) => y.f === f).map((y) => y.host) });
+      if (!x?.ok) { toast(mensajeError(x?.error || "error desconocido")); return; }
+    }
+    imgFallidas.clear();
+    avisoImgEl.hidden = true;
+    toast("Imágenes permitidas: recargando portadas…");
+    liberarPortadasMem();
+    await cargarFuentes();
+    render();
+  });
+  avisoImgEl.append(el("span", { textContent: `Algunas portadas de ${nombres} no cargan.` }), b);
+  avisoImgEl.hidden = false;
+}
+
 // Caja con esqueleto → portada con fundido; "Sin portada" si no hay o falla.
 function crearPortada(anime, clase, observador) {
-  const img = el("img", { alt: anime?.title || "", draggable: false, referrerPolicy: "strict-origin-when-cross-origin" });
+  const img = el("img", { alt: anime?.title || "", draggable: false, referrerPolicy: "no-referrer" });
   const caja = el("div", { className: clase }, img);
-  const url = anime?.cover ? String(anime.cover).replace(/^http:\/\//i, "https://") : "";
+  const url = anime?.cover;
   if (!url) { caja.classList.add("sin"); img.hidden = true; return caja; }
   caja.classList.add("cargando");
   const asignar = (src) => {
-    const original = src || url;
-    img.dataset.intentoPortada = "0";
-    img.onload = () => { caja.classList.remove("cargando"); caja.classList.remove("sin"); img.hidden = false; img.classList.add("cargada"); };
-    img.onerror = () => {
-      if (reintentarPortada(img, original)) return;
-      caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true;
-    };
-    if (esMW(original)) img.referrerPolicy = "no-referrer";
-    img.src = original;
+    img.onload = () => { caja.classList.remove("cargando"); img.classList.add("cargada"); };
+    img.onerror = () => { caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true; avisoPortadaFallida(url); };
+    img.src = src || url;
   };
-  const cargar = () => { if (portadaMem.has(url)) asignar(url); else obtenerPortada(url).then(asignar); };
+  const cargar = () => {
+    const lista = portadaMem.get(url);
+    if (lista) asignar(lista); else obtenerPortada(url).then(asignar);
+  };
   if (observador) { caja._cargar = cargar; observador.observe(caja); } else cargar();
   return caja;
 }
+function posicionTitulo(a) { return a?.title || "(sin título)"; }
 
-// Con soloCache=true solo asegura que la portada esté guardada (precarga).
+// Solo asegura que la portada esté en la caché del disco (precarga), sin crear blob.
+async function asegurarEnCache(url) {
+  if (!url || portadasEnCache.has(url)) return;
+  try {
+    const cache = await caches.open(COVER_CACHE);
+    const previa = await cache.match(url);
+    if (previa && previa.type !== "opaque") { portadasEnCache.add(url); actualizarContadorPortadas(); return; }
+    await portadaSlot();
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 12000);
+      let res;
+      try {
+        res = await fetch(url, { credentials: "omit", referrerPolicy: "no-referrer", signal: ctl.signal });
+      } catch (e) {
+        // Dominio sin permiso CORS: se guarda como respuesta opaca (solo sirve de marcador)
+        res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: "no-referrer", signal: ctl.signal });
+      } finally { clearTimeout(t); }
+      if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
+      await cache.put(url, res.clone());
+    } finally { portadaLiberar(); }
+    portadasEnCache.add(url);
+    actualizarContadorPortadas();
+  } catch (e) {
+    console.error("[AnimeAV1 Tracker] No se pudo cachear la portada:", url, e);
+  }
+}
+
+// Devuelve una URL usable en <img> (normalmente un blob ya descargado).
+// Con soloCache=true solo asegura que esté guardada en disco (para la precarga).
 async function cargarPortada(url, soloCache = false) {
   if (!url) return url;
   if (soloCache) {
-    if (guardarPortadasActivado() && !portadasEnCache.has(url)) {
-      try { await guardarEnCache(url); } catch (e) { console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e); }
-    }
+    if (guardarPortadasActivado()) await asegurarEnCache(url);
     return url;
   }
   return obtenerPortada(url);
@@ -505,7 +758,8 @@ const observador = new IntersectionObserver(
       if (!e.isIntersecting) return;
       const img = e.target;
       observador.unobserve(img);
-      if (portadaMem.has(img.dataset.src)) img.src = img.dataset.src; else cargarPortada(img.dataset.src).then((src) => { img.src = src; });
+      const lista = portadaMem.get(img.dataset.src);
+      if (lista) img.src = lista; else cargarPortada(img.dataset.src).then((src) => { img.src = src; });
     });
   },
   { root: listaEl, rootMargin: "300px" }
@@ -987,114 +1241,6 @@ if (ES_EXTENSION) { // la fuente de verdad es el segundo plano (el popup no pued
     if (r?.ok && !!r.activo !== !!ajustes.avisosCaps) { ajustes.avisosCaps = !!r.activo; guardarAjustes(); render(); }
   }).catch(() => {});
 }
-// --- Notificaciones push con la app cerrada ---------------------------------------------------------
-// Las envía el Worker (tarea programada) cuando sale un capítulo nuevo de una serie en «Viendo». Aquí solo se activan y se
-// le pasa al Worker qué series sigues y por qué capítulo vas (no puede leer tu Google Sheet). El seguimiento queda ligado a
-// la lista que estaba activa al activarlo: al cambiar de lista no se mezclan las series (ni se vacía el seguimiento).
-function seriesParaPush() {
-  const porSlug = new Map();
-  for (const a of todosLosAnimes) {
-    if (a.status !== "-") continue;
-    const inf = infoUltimo(a.lastEpisodeUrl);
-    if (!inf || !/^[a-z0-9-]{1,80}$/.test(inf.slug)) continue;
-    const previa = porSlug.get(inf.slug);
-    if (!previa || inf.n > previa.visto) porSlug.set(inf.slug, { slug: inf.slug, titulo: String(a.title || inf.slug).slice(0, 80), visto: inf.n });
-  }
-  return [...porSlug.values()].slice(0, 200);
-}
-async function listaActivaInfo() {
-  try { const r = await enviarMensaje({ type: "GET_LISTAS" }); const l = r?.listas?.find((x) => x.activa); return l ? { id: l.id, name: l.name || "" } : null; } catch (e) { return null; }
-}
-let tmrPush = null;
-function sincronizarPush({ inmediato = false, forzar = false } = {}) {
-  const lid = localStorage.getItem("pushListaId");
-  if (!lid || !todosLosAnimes.length) return; // sin seguimiento activado o con la lista aún sin cargar (no se pisa lo ya enviado)
-  clearTimeout(tmrPush);
-  const ejecutar = async () => {
-    const act = await listaActivaInfo();
-    if (!act || act.id !== lid) return;
-    const series = seriesParaPush();
-    const hash = JSON.stringify(series);
-    const reciente = Date.now() - Number(localStorage.getItem("pushSyncTs") || 0) < 5 * 24 * 3600 * 1000;
-    if (!forzar && reciente && hash === localStorage.getItem("pushSyncHash")) return;
-    const r = await enviarMensaje({ type: "PUSH_SINCRONIZAR", series }).catch(() => null);
-    if (r?.ok && r.enviado) { localStorage.setItem("pushSyncHash", hash); localStorage.setItem("pushSyncTs", String(Date.now())); }
-  };
-  if (inmediato) ejecutar(); else tmrPush = setTimeout(ejecutar, 3000);
-}
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") sincronizarPush({ inmediato: true }); });
-
-function mensajePush(err) {
-  const e = String(err || "");
-  if (e === "PUSH_PERMISO_DENEGADO") return "Has bloqueado las notificaciones: permítelas en los ajustes del navegador para este sitio.";
-  if (e === "PUSH_NO_SOPORTADO") return "Este navegador no admite notificaciones push.";
-  if (e === "PUSH_SIN_SUSCRIPCION") return "Este dispositivo no está suscrito: desactiva y vuelve a activar las notificaciones.";
-  if (/failed to fetch|networkerror|load failed/i.test(e)) return "No se pudo conectar con el Worker.";
-  if (/^PUSH_HTTP_404$/.test(e)) return "El Worker no tiene las notificaciones: vuelve a pegar worker-completo.js y pulsa Deploy.";
-  return e || "No se pudo completar la operación.";
-}
-async function refrescarPush() {
-  const r = await enviarMensaje({ type: "PUSH_ESTADO" }).catch(() => null);
-  const interruptor = $("ajPush"), texto = $("ajPushEstado"), acciones = $("ajPushAcciones"), lista = $("ajPushLista");
-  if (!r?.ok || !r.soportado) {
-    interruptor.checked = false; interruptor.disabled = true; acciones.hidden = true;
-    texto.textContent = "Este navegador no admite notificaciones push (en iPhone, solo con la app añadida a la pantalla de inicio).";
-    return;
-  }
-  interruptor.disabled = false;
-  interruptor.checked = !!r.activo;
-  acciones.hidden = !r.activo;
-  if (r.activo) {
-    const nombre = localStorage.getItem("pushListaNombre");
-    const act = await listaActivaInfo();
-    texto.textContent = `Activas en este dispositivo${nombre ? ` · se sigue la lista «${nombre}»` : ""}.`;
-    lista.hidden = !(act && act.id !== localStorage.getItem("pushListaId"));
-  } else {
-    texto.textContent = r.permiso === "denied" ? "Bloqueadas en el navegador: permítelas en los ajustes del sitio y vuelve a activarlas." : "Desactivadas.";
-  }
-}
-$("ajPush").addEventListener("change", async (e) => {
-  const interruptor = e.target, quiere = interruptor.checked;
-  interruptor.disabled = true;
-  try {
-    if (quiere) {
-      const act = await listaActivaInfo();
-      if (!act) throw new Error("Abre primero una lista: se avisará de sus series en «Viendo».");
-      const series = seriesParaPush();
-      const r = await enviarMensaje({ type: "PUSH_ACTIVAR", series });
-      if (!r?.ok) throw new Error(mensajePush(r?.error));
-      localStorage.setItem("pushListaId", act.id);
-      localStorage.setItem("pushListaNombre", act.name);
-      localStorage.setItem("pushSyncHash", JSON.stringify(series));
-      localStorage.setItem("pushSyncTs", String(Date.now()));
-      toast("Notificaciones activadas. Prueba a enviarte una para comprobarlo.");
-    } else {
-      await enviarMensaje({ type: "PUSH_DESACTIVAR" });
-      ["pushListaId", "pushListaNombre", "pushSyncHash", "pushSyncTs"].forEach((k) => localStorage.removeItem(k));
-      toast("Notificaciones desactivadas");
-    }
-  } catch (err) { toast(err.message || mensajePush("")); }
-  finally { interruptor.disabled = false; refrescarPush(); }
-});
-$("ajPushPrueba").addEventListener("click", async (e) => {
-  const b = e.currentTarget;
-  b.disabled = true;
-  const r = await enviarMensaje({ type: "PUSH_PRUEBA" }).catch(() => null);
-  b.disabled = false;
-  toast(r?.ok ? "Notificación enviada: debería llegar en unos segundos" : mensajePush(r?.error));
-  if (r && !r.ok) sincronizarPush({ inmediato: true, forzar: true }); // si el Worker había perdido este dispositivo, se vuelve a registrar
-});
-$("ajPushLista").addEventListener("click", async () => {
-  const act = await listaActivaInfo();
-  if (!act) return;
-  localStorage.setItem("pushListaId", act.id);
-  localStorage.setItem("pushListaNombre", act.name);
-  sincronizarPush({ inmediato: true, forzar: true });
-  toast(`Ahora se avisa de las series de «${act.name || "esta lista"}»`);
-  setTimeout(refrescarPush, 400);
-});
-refrescarPush();
-
 function actualizarBotonPendientes() {
   filtroPendientesEl.hidden = filtroEstado !== "-";
   filtroPendientesEl.setAttribute("aria-pressed", String(filtroPendientes));
@@ -1144,6 +1290,34 @@ function urlCapituloSiguiente(urlStr, ref) {
     return u.href;
   } catch (e) { return ""; }
 }
+// Dibuja la dirección con cada número como botón; el elegido queda marcado
+function pintarUrlConNumeros(cont, urlStr, ref, alElegir, claseBoton) {
+  cont.textContent = "";
+  let u;
+  try { u = new URL(urlStr); } catch (e) { cont.textContent = "(no hay una dirección de ejemplo)"; return; }
+  const mismo = (a, b) => !!a && !!b && a.seg === b.seg && a.q === b.q && a.num === b.num;
+  const trozos = (texto, hacerRef) => {
+    const total = (texto.match(/\d+/g) || []).length;
+    let ultimo = 0, j = 0, m;
+    const re = /\d+/g;
+    while ((m = re.exec(texto))) {
+      if (m.index > ultimo) cont.append(texto.slice(ultimo, m.index));
+      const r = hacerRef(j - total);
+      const b = document.createElement("button");
+      b.type = "button"; b.textContent = m[0]; b.className = claseBoton;
+      b.setAttribute("aria-pressed", String(mismo(r, ref)));
+      b.addEventListener("click", () => { alElegir(r); pintarUrlConNumeros(cont, urlStr, r, alElegir, claseBoton); });
+      cont.append(b);
+      ultimo = m.index + m[0].length; j++;
+    }
+    if (ultimo < texto.length) cont.append(texto.slice(ultimo));
+  };
+  cont.append(u.origin);
+  u.pathname.split("/").forEach((seg, i) => { if (i > 0) cont.append("/"); trozos(seg, (num) => ({ seg: i, num })); });
+  let primero = true;
+  for (const [k, v] of u.searchParams) { cont.append(primero ? "?" : "&", k + "="); primero = false; trozos(v, (num) => ({ q: k, num })); }
+}
+
 // Otras webs (páginas fuente): se suma 1 al último número de la dirección del capítulo y se comprueba con el
 // patrón de la fuente (así /serie/1/ -> /serie/2/ y /leer/x-12 -> /leer/x-13, pero no se inventa nada raro)
 let fuentesCache = [];
@@ -1303,14 +1477,13 @@ function renderItem(anime) {
   const portada = el("div", { className: "portada" });
   let img = null;
   if (anime.cover) {
-    img = el("img", { className: "cover", alt: "", draggable: false, referrerPolicy: "strict-origin-when-cross-origin" });
-    const portadaSrc = String(anime.cover).replace(/^http:\/\//i, "https://");
-    img.dataset.src = portadaSrc;
+    img = el("img", { className: "cover", alt: "", draggable: false, referrerPolicy: "no-referrer" });
+    img.dataset.src = anime.cover;
     img.addEventListener("load", () => img.classList.add("lista"));
-    img.addEventListener("error", () => { reintentarPortada(img, portadaSrc); });
-    if (esMW(portadaSrc)) img.referrerPolicy = "no-referrer";
+    img.addEventListener("error", () => avisoPortadaFallida(anime.cover));
     portada.append(img);
-    if (portadaMem.has(portadaSrc)) img.src = portadaSrc; else observador.observe(img);
+    const enMemoria = portadaMem.get(anime.cover);
+    if (enMemoria) img.src = enMemoria; else observador.observe(img);
   } else {
     portada.append(el("div", { className: "sin-portada", textContent: "Sin portada" }));
   }
@@ -1357,13 +1530,13 @@ function renderItem(anime) {
     let sig = anime.status === "-" ? siguienteCapitulo(anime.lastEpisodeUrl) : "";
     const fuenteWeb = sig ? fuenteDe(anime.lastEpisodeUrl) : null;
     const inf = sig && !fuenteWeb ? slugYNumero(sig) : null;
-    if (fuenteWeb) { // otra web: solo se muestra si está confirmado que existe el capítulo siguiente
+    if (fuenteWeb) { // otra web: solo se muestra si existe el capítulo siguiente
       const clave = sig;
       const { existe, fresco } = sigFuenteInfo(clave);
       if (!botonesSiguiente.has(clave)) botonesSiguiente.set(clave, new Set());
       botonesSiguiente.get(clave).add(actualizarBotonUltimoCap);
       if (!fresco) solicitarSigFuente(clave, anime.url, fuenteWeb.patron);
-      if (existe !== true) sig = "";
+      if (existe !== true) sig = ""; // en otras webs solo se muestra si está confirmado que existe
     } else if (inf) {
       const { max, fresco } = capsInfo(inf.slug, inf.n);
       if (Number.isFinite(max) && inf.n > max) sig = ""; // la ficha no lista ese capítulo: no hay siguiente
@@ -1565,6 +1738,8 @@ function notaNumero(a) {
   const n = parseFloat(String(a?.score ?? "").replace(",", "."));
   return Number.isFinite(n) ? (n <= 0 ? null : Math.min(10, Math.max(0, n))) : null;
 }
+// La escala real es 0.1-10 (el 0 es "sin valorar"), así que el suelo también
+// es 0.1. Con Math.max(0, ...) una nota de 0.04 se redondeaba a un 0 imposible.
 function notaRedondeada(n) { return Math.round(Math.min(10, Math.max(0.1, n)) * 10) / 10; }
 function mediana(nums) {
   const a = nums.slice().sort((x,y) => x-y);
@@ -1572,8 +1747,6 @@ function mediana(nums) {
   const m = Math.floor(a.length / 2);
   return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2;
 }
-function posicionTitulo(a) { return a?.title || "(sin título)"; }
-
 let posObservadores = [];
 function limpiarObservadoresPos() { posObservadores.forEach((o) => o.disconnect()); posObservadores = []; }
 function nuevoObservadorPos(raiz) { const o = observadorPortadas(raiz); posObservadores.push(o); return o; }
@@ -1741,6 +1914,17 @@ function elegirRivalPara(s, lo, hi, saltados = s.saltados) {
   return null;
 }
 
+function precalentarSiguientes(s) {
+  const r = s.rivalIdx;
+  if (r == null || !s.rival) return;
+  const sig = [
+    elegirRivalPara(s, s.lo, r - 1),                               // si el candidato gusta más
+    elegirRivalPara(s, r + 1, s.hi),                               // si gusta menos
+    elegirRivalPara(s, s.lo, s.hi, [...s.saltados, s.rival.row])   // si se salta este rival
+  ];
+  precalentarPortadas(sig.filter(Boolean).map(x => x.item));
+}
+
 // Nota estimada con lo que ya se sabe: el candidato está por debajo de grupos[lo-1]
 // y por encima de grupos[hi+1]. El valor se calcula con la misma función que decide
 // la nota final, para que lo que se muestra en vivo y lo que se guarda coincidan
@@ -1751,17 +1935,6 @@ function estimacionActual(s) {
   const sup = s.lo > 0 ? s.grupos[s.lo - 1].score : 10;
   const inf = s.hi + 1 < s.grupos.length ? s.grupos[s.hi + 1].score : 0.1;
   return { sup, inf, nota: calcularNotaPosicion(s) };
-}
-
-function precalentarSiguientes(s) {
-  const r = s.rivalIdx;
-  if (r == null || !s.rival) return;
-  const sig = [
-    elegirRivalPara(s, s.lo, r - 1),                               // si el candidato gusta más
-    elegirRivalPara(s, r + 1, s.hi),                               // si gusta menos
-    elegirRivalPara(s, s.lo, s.hi, [...s.saltados, s.rival.row])   // si se salta este rival
-  ];
-  precalentarPortadas(sig.filter(Boolean).map(x => x.item));
 }
 
 function calcularNotaPosicion(s) {
@@ -1808,18 +1981,8 @@ function posicionTerminada(s) {
   return s.lo > s.hi;
 }
 
-// Foto del estado de la búsqueda antes de cada respuesta, para poder deshacer.
-function instantaneaPos(s) {
-  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, saltados: s.saltados.slice(), comparaciones: s.comparaciones };
-}
-
-function deshacerPosicionamiento() {
-  const s = posicionState;
-  if (!s?.historial?.length) return;
-  Object.assign(s, s.historial.pop(), { rival: null });
-  mostrarComparacion();
-}
-
+// Pantalla de comparación común al posicionador y al separador de empates.
+// Las portadas son clicables, hay atajos de teclado y se puede deshacer.
 function pantallaComparacion(o) {
   pantallaNueva();
   const tit = (d) => posicionTitulo(d.anime);
@@ -1872,14 +2035,6 @@ function pantallaComparacion(o) {
   dlgPosicionarEl.focus({ preventScroll: true });
 }
 
-function saltarRivalPosicion() {
-  const s = posicionState; if (!s?.rival) return;
-  s.historial.push(instantaneaPos(s));
-  if (!s.saltados.includes(s.rival.row)) s.saltados.push(s.rival.row);  // no repetir el mismo rival
-  s.rival = null;
-  mostrarComparacion();
-}
-
 function mostrarComparacion() {
   const s = posicionState;
   const r = s.igualGrupo != null ? null : elegirRivalPara(s, s.lo, s.hi);
@@ -1921,6 +2076,10 @@ function mostrarComparacion() {
   });
 }
 
+function instantaneaPos(s) {
+  return { lo: s.lo, hi: s.hi, igualGrupo: s.igualGrupo, saltados: s.saltados.slice(), comparaciones: s.comparaciones };
+}
+
 async function responderPosicionamiento(tipo) {
   const s = posicionState; if (!s?.rival) return;
   const grupoIdx = s.rivalIdx;
@@ -1940,6 +2099,20 @@ async function responderPosicionamiento(tipo) {
   s.rival = null;
   if (posicionTerminada(s)) await finalizarPosicionamiento();
   else mostrarComparacion();
+}
+
+function saltarRivalPosicion() {
+  const s = posicionState; if (!s?.rival) return;
+  s.historial.push(instantaneaPos(s));
+  if (!s.saltados.includes(s.rival.row)) s.saltados.push(s.rival.row);  // no repetir el mismo rival
+  s.rival = null;
+  mostrarComparacion();
+}
+
+function deshacerPosicionamiento() {
+  const s = posicionState; if (!s?.historial?.length) return;
+  Object.assign(s, s.historial.pop(), { rival: null });
+  mostrarComparacion();
 }
 
 function sFinalizarPosicionamientoSinComparar() {
@@ -2021,10 +2194,11 @@ async function finalizarPosicionamiento() {
   dlgPosicionarEl.focus({ preventScroll: true });
 }
 
+
 // --- Separador de empates ------------------------------------------------------
 // Ordena únicamente las series que comparten una misma décima. La nota sigue
 // siendo una nota decimal real: al terminar, las series se reparten entre las
-// décimas libres que hay entre las notas vecinas, sin cruzar a otras series.
+// décimas libres del hueco que dejan sus vecinas, sin cruzar a otras series.
 let empateState = null;
 
 // Series que participan en "Separar notas iguales": se excluyen las marcadas como
@@ -2080,7 +2254,10 @@ function mostrarSelectorEmpate(grupos) {
 
 function iniciarSeparacionEmpate(score) {
   const validas = seriesParaSeparar();
-  const grupo = validas.filter(a => { const n = notaNumero(a); return n != null && notaRedondeada(n) === score; });
+  const grupo = validas.filter(a => {
+    const n = notaNumero(a);
+    return n != null && notaRedondeada(n) === score;
+  });
   if (grupo.length < 2) return;
   empateState = {
     score,
@@ -2095,6 +2272,9 @@ function iniciarSeparacionEmpate(score) {
   prepararMergeEmpate();
 }
 
+// Union-find con compresión de caminos: sirve para agrupar las series que el
+// usuario ha marcado como "me gustan igual", de forma que acaben con la misma
+// nota sin importar cuántas comparaciones intermedias se hayan hecho.
 function empateRaiz(s, row) {
   while (s.padre.get(row) !== row) {
     s.padre.set(row, s.padre.get(s.padre.get(row)));
@@ -2155,26 +2335,19 @@ function siguienteMergeEmpate() {
   mostrarComparacionEmpate(a, b);
 }
 
-// Foto del estado del merge antes de cada respuesta, para poder deshacer.
 function instantaneaEmpate(s) {
   const c = (x) => (x ? x.slice() : x);
   return {
     runs: s.runs.map(c), nextRuns: s.nextRuns.map(c), runIndex: s.runIndex,
-    currentLeft: c(s.currentLeft),
-    currentRight: c(s.currentRight),
-    merged: c(s.merged),
-    leftIndex: s.leftIndex, rightIndex: s.rightIndex,
-    comparaciones: s.comparaciones, padre: new Map(s.padre)
+    currentLeft: c(s.currentLeft), currentRight: c(s.currentRight), merged: c(s.merged),
+    leftIndex: s.leftIndex, rightIndex: s.rightIndex, comparaciones: s.comparaciones,
+    padre: new Map(s.padre)
   };
 }
 
 function deshacerEmpate() {
-  const s = empateState;
-  if (!s?.historial?.length) return;
+  const s = empateState; if (!s?.historial?.length) return;
   Object.assign(s, s.historial.pop());
-  // siguienteMergeEmpate() en vez de mostrarComparacionEmpate() directamente: la
-  // primera vuelve a interpretar el estado restaurado y cierra el reparto si ya no
-  // quedan comparaciones; la segunda da por hecho que currentLeft/Right existen.
   siguienteMergeEmpate();
 }
 
@@ -2232,11 +2405,17 @@ function agruparEscalonesEmpate(s) {
   return escalones;
 }
 
-// Reparte las décimas para N escalones SIN salir del hueco que dejan las
-// series vecinas: la nota inmediatamente inferior y la inmediatamente superior
-// al empate (de otras series) son un muro que no se cruza. Si caben, se elige
-// el bloque consecutivo más centrado en la nota original; si no caben, se
-// reparten por todo el hueco y algunos escalones seguirán empatados.
+// Reparte las décimas para N escalones SIN cruzar a las series vecinas: la nota
+// inmediatamente inferior y la inmediatamente superior al empate son el orden
+// que ya respeta el resto de la lista. Lo que sí se permite es COMPARTIR su nota
+// (repetir puntuación), porque repetir no contradice ese orden; solo lo
+// contradica pasarse. Por eso el hueco va de la vecina inferior a la vecina
+// superior, ambas incluidas, en vez de dejar fuera la décima pegada a cada una.
+// Así el hueco siempre contiene la nota original, y con 2+ escalones siempre hay
+// algún cambio: "Sin cambios de nota" solo puede significar "todas iguales".
+// Si caben, se elige el bloque consecutivo más centrado en la nota original; si
+// no caben, se reparten por todo el hueco y algunos escalones seguirán empatados
+// (repetir nota es normal: también lo hace el separador de empates).
 // Devuelve las notas en décimas, del mejor escalón al peor.
 function calcularRepartoEmpate(s, nEscalones) {
   const filasGrupo = new Set(s.items.map(a => a.row));
@@ -2345,63 +2524,6 @@ $("btnEdicion").addEventListener("click", (e) => {
   render();
 });
 
-// --- Otras páginas fuente (BETA): las recetas se crean en la extensión y se pegan aquí ------------
-const fuentesStatusEl = $("fuentesStatus");
-async function cargarFuentes() {
-  const r = await enviarMensaje({ type: "GET_FUENTES" });
-  const nuevas = r?.fuentes || [];
-  const clave = (a) => JSON.stringify(a.map((x) => [x.origen, x.patron, x.activa, x.capitulo]));
-  const cambio = clave(nuevas) !== clave(fuentesCache);
-  fuentesCache = nuevas;
-  if (cambio && todosLosAnimes.length) render(); // el botón ⏭ de las series de otras webs depende de estas fuentes
-  const listas = (await enviarMensaje({ type: "GET_LISTAS" }))?.listas || [];
-  const cont = $("fuentesLista");
-  cont.innerHTML = "";
-  if (!nuevas.length) cont.append(el("p", { className: "ayuda-opciones", textContent: "Aún no hay ninguna página fuente en esta app." }));
-  for (const f of nuevas) {
-    const selLista = el("select", { ariaLabel: `Lista para ${f.nombre}`, title: "Lista donde se registran las series de esta web" });
-    selLista.append(el("option", { value: "", textContent: "Lista abierta" }));
-    for (const l of listas) selLista.append(el("option", { value: l.id, textContent: l.name }));
-    if (f.listaId && !listas.some((l) => l.id === f.listaId)) selLista.append(el("option", { value: f.listaId, textContent: "(lista borrada)" }));
-    selLista.value = f.listaId || "";
-    selLista.addEventListener("change", async () => {
-      const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, lista: selLista.value });
-      if (!x?.ok) { selLista.value = f.listaId || ""; toast(mensajeError(x?.error || "error desconocido")); } else { f.listaId = selLista.value; toast("Lista asignada"); }
-    });
-    const sw = el("input", { type: "checkbox", id: `fuente_${f.id}` });
-    sw.checked = f.activa !== false;
-    sw.addEventListener("change", async () => {
-      const x = await enviarMensaje({ type: "ACTUALIZAR_FUENTE", id: f.id, activa: sw.checked });
-      if (!x?.ok) { sw.checked = !sw.checked; toast(mensajeError(x?.error || "error desconocido")); } else cargarFuentes();
-    });
-    const borrar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Borrar" });
-    borrar.addEventListener("click", async () => {
-      if (!confirm(`¿Quitar la página fuente «${f.nombre}»? Las series ya registradas se quedan en tu lista.`)) return;
-      const x = await enviarMensaje({ type: "BORRAR_FUENTE", id: f.id });
-      if (!x?.ok) { toast(mensajeError(x?.error || "error desconocido")); return; }
-      cargarFuentes();
-    });
-    cont.append(el("div", { className: "ajuste ajuste-fuente" },
-      el("label", { className: "ajuste-nombre", htmlFor: `fuente_${f.id}` }, f.nombre, el("small", { textContent: f.origen })),
-      el("label", { className: "switch" }, sw, el("span", { className: "switch-track" })),
-      selLista, borrar));
-  }
-}
-$("fuentesPortapapeles").addEventListener("click", async () => {
-  try { $("fuentesPegar").value = await navigator.clipboard.readText(); } catch (e) { fuentesStatusEl.textContent = "No se pudo leer el portapapeles: pega el texto a mano en el cuadro."; return; }
-  $("fuentesImportar").click();
-});
-$("fuentesImportar").addEventListener("click", async () => {
-  const texto = $("fuentesPegar").value.trim();
-  if (!texto) { fuentesStatusEl.textContent = "Pega primero lo copiado en la extensión."; return; }
-  const r = await enviarMensaje({ type: "IMPORTAR_FUENTES", texto });
-  if (!r?.ok) { fuentesStatusEl.textContent = mensajeError(r?.error || "error desconocido"); return; }
-  $("fuentesPegar").value = "";
-  fuentesStatusEl.textContent = `Importada${r.total === 1 ? "" : "s"} ${r.total} página${r.total === 1 ? "" : "s"} fuente. Si alguna debe ir a otra lista, elígela abajo.`;
-  toast("Páginas fuente importadas");
-  cargarFuentes();
-});
-
 // --- Opciones: pestañas y buscador de ajustes ------------------------------------------------
 // Cada ajuste lleva la clase item-op (y palabras clave en data-k). Sin texto en el buscador se ve una sola pestaña;
 // al escribir se buscan los ajustes de todas las pestañas a la vez y las pestañas se ocultan.
@@ -2447,7 +2569,7 @@ $("opcionesBuscar").addEventListener("keydown", (e) => { if (e.key === "Escape" 
 seleccionarPestanaOpciones(pestanaOpciones, false);
 
 function setHerramientas(abierto, pestana) {
-  if (abierto) cargarFuentes();
+  if (abierto) cargarFuentes(); // las portadas de las series pueden haber cambiado desde la última vez
   if (abierto) { if (pestana) seleccionarPestanaOpciones(pestana); if ($("opcionesBuscar").value) { $("opcionesBuscar").value = ""; filtrarOpciones(); } }
   $("herramientas").hidden = !abierto;
   $("btnHerramientas").setAttribute("aria-expanded", String(abierto));
@@ -2526,12 +2648,100 @@ function preguntarMismaSerie({ nuevaFila, candidatos }) {
   });
 }
 
+// --- «+» con enlaces de otras webs (páginas fuente) -----------------------------------------
+// Se descarga la página (el popup tiene permiso para esa web), se lee con los selectores de la receta y se registra
+// igual que si se abriera el capítulo. Si la web se dibuja con JavaScript no hay nada que leer en el HTML: se abre
+// la página y fuente.js la registra sola (con la portada ya dibujada).
+const slugTitulo = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+function leerPaginaFuente(f, url, html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const sel = f.selectores || {};
+  const q = (s) => { try { return s ? doc.querySelector(s) : null; } catch (e) { return null; } };
+  const abs = (u, base) => { try { return new URL(u, base).href; } catch (e) { return ""; } };
+  const imagen = (el, base) => {
+    if (!el) return "";
+    const im = el.tagName === "IMG" ? el : (el.querySelector && el.querySelector("img"));
+    if (!im) return "";
+    let s = im.getAttribute("src") || im.getAttribute("data-src") || im.getAttribute("data-lazy-src") || "";
+    if (!s || s.startsWith("data:")) s = (im.getAttribute("srcset") || "").split(",")[0].trim().split(" ")[0];
+    return s ? abs(s, base) : "";
+  };
+  const titulo = (q(sel.titulo)?.textContent || "").replace(/\s+/g, " ").trim();
+  const enlace = q(sel.serie)?.closest?.("a");
+  let serieUrl = enlace && enlace.getAttribute("href") ? abs(enlace.getAttribute("href"), url) : "";
+  if (!serieUrl) {
+    const segs = new URL(url).pathname.split("/").filter(Boolean);
+    serieUrl = segs.length >= 2 && /^\d+$/.test(segs[segs.length - 1]) ? `${new URL(url).origin}/${segs.slice(0, -1).join("/")}/` : url;
+  }
+  const og = doc.querySelector('meta[property="og:image"]')?.content || "";
+  return { titulo, serieUrl: serieUrl.split("#")[0], cover: imagen(q(sel.portada), url), og: og ? abs(og, url) : "", doc };
+}
+async function agregarDesdeFuente(f, url) {
+  let u;
+  try { u = new URL(url); } catch (e) { agregarStatusEl.textContent = "Esa dirección no es válida."; return; }
+  let esCap = false;
+  try { esCap = new RegExp(f.patron).test(u.pathname); } catch (e) {}
+  agregarBtnEl.disabled = true;
+  agregarStatusEl.textContent = "Leyendo la página…";
+  let datos = null;
+  try {
+    const r = await fetch(url, { credentials: "include" });
+    if (r.ok) datos = leerPaginaFuente(f, url, await r.text());
+  } catch (e) {}
+  if (!datos || !datos.titulo) {
+    agregarBtnEl.disabled = false;
+    if (esCap) {
+      window.open(url, "_blank");
+      agregarStatusEl.textContent = `«${f.nombre}» se dibuja con JavaScript y no se puede leer desde aquí. Se ha abierto la página: el capítulo se registrará solo al cargarse.`;
+    } else {
+      agregarStatusEl.textContent = `No se encontró el título en esa página. Pega la dirección de un capítulo de «${f.nombre}».`;
+    }
+    return;
+  }
+  // Portada: la de esta página; si no, la de la página de la serie (selector guardado) y, por último, og:image
+  let cover = datos.cover;
+  if (!cover && datos.serieUrl && datos.serieUrl !== url) {
+    agregarStatusEl.textContent = "Buscando la portada…";
+    try {
+      const r = await fetch(datos.serieUrl, { credentials: "include" });
+      if (r.ok) {
+        const d2 = leerPaginaFuente({ ...f, selectores: { ...f.selectores, portada: f.selectores?.portadaSerie || "" } }, datos.serieUrl, await r.text());
+        cover = d2.cover || d2.og;
+      }
+    } catch (e) {}
+  }
+  if (!cover) cover = datos.og;
+  const base = { type: "EPISODIO_DETECTADO", slug: slugTitulo(datos.titulo), episodeUrl: esCap ? url.split("#")[0] : "", title: datos.titulo, url: datos.serieUrl, score: "", description: "", cover, listaId: f.listaId || undefined };
+  agregarStatusEl.textContent = "Añadiendo…";
+  let res = await enviarMensaje(base);
+  let vinculada = false, titulo = datos.titulo;
+  if (res?.ok && res.pregunta) {
+    agregarStatusEl.textContent = "Esperando tu respuesta…";
+    const r = await preguntarMismaSerie(res.pregunta);
+    if (!r) { agregarBtnEl.disabled = false; agregarStatusEl.textContent = "No se ha añadido nada. Vuelve a pegar el enlace cuando quieras decidir."; return; }
+    res = await enviarMensaje({ type: "RESOLVER_SECUELA", decision: r.decision, slug: res.pregunta.slug, existingUrl: r.candidato?.url || "", existingTitle: r.candidato?.title || "", nuevaFila: res.pregunta.nuevaFila, listaId: f.listaId || undefined });
+    vinculada = r.decision === "misma";
+    titulo = (vinculada ? r.candidato?.title : res.pregunta?.nuevaFila?.title) || titulo;
+  }
+  agregarBtnEl.disabled = false;
+  if (!res || !res.ok) { agregarStatusEl.textContent = mensajeError(res?.error || "error desconocido"); return; }
+  const destino = f.listaId ? (listasCache.find((l) => l.id === f.listaId)?.name || "") : "";
+  agregarStatusEl.textContent = (vinculada ? `Marcada como viendo: ${titulo}` : `Añadido: ${titulo}`) + (destino ? ` (en «${destino}»)` : "");
+  agregarUrlEl.value = "";
+  toast(vinculada ? "Serie actualizada" : "Serie añadida");
+  cargar();
+}
+
 async function agregarAnime() {
   const url = agregarUrlEl.value.trim();
   if (!url) { agregarStatusEl.textContent = "Pega primero el enlace."; return; }
+  const fuente = fuenteDe(url); // enlace de una página fuente añadida en Opciones
+  if (fuente) { await agregarDesdeFuente(fuente, url); return; }
   agregarBtnEl.disabled = true;
   agregarStatusEl.textContent = "Buscando título y portada…";
   let res = await enviarMensaje({ type: "REGISTER_ANIME", url });
+  let titulo = res?.title || "";
+  let vinculada = !!res?.actualizada;
 
   if (res?.ok && res.pregunta) {
     agregarStatusEl.textContent = "Esperando tu respuesta…";
@@ -2547,42 +2757,19 @@ async function agregarAnime() {
       slug: res.pregunta.slug,
       existingUrl: r.candidato?.url || "",
       existingTitle: r.candidato?.title || "",
-      nuevaFila: res.pregunta.nuevaFila,
-      listaId: res.pregunta.listaId || undefined
+      nuevaFila: res.pregunta.nuevaFila
     });
+    vinculada = r.decision === "misma";
+    titulo = (vinculada ? r.candidato?.title : res.pregunta?.nuevaFila?.title) || titulo;
   }
 
   agregarBtnEl.disabled = false;
   if (!res || !res.ok) { agregarStatusEl.textContent = mensajeError(res?.error || "error desconocido"); return; }
-  agregarStatusEl.textContent = (res.vinculada ? `Marcada como viendo: ${res.title}` : `Añadido: ${res.title}`) + (res.listaNombre ? ` (en «${res.listaNombre}»)` : "");
+  agregarStatusEl.textContent = vinculada ? `Marcada como viendo: ${titulo}` : `Añadido: ${titulo}`;
   agregarUrlEl.value = "";
-  toast(res.vinculada ? "Serie actualizada" : "Anime añadido");
+  toast(vinculada ? "Serie actualizada" : "Anime añadido");
   cargar();
 }
-// --- Compartir desde Android: «Compartir → AnimeAV1 Tracker» en un capítulo de animeav1.com ---------
-// El manifest registra la app como destino de «Compartir» (share_target) y Android la abre con
-// ?title=...&text=...&url=...; el enlace puede venir en cualquiera de los tres. Se registra igual que
-// al pegarlo en «Añadir»: serie nueva, o «viendo» + último capítulo si ya estaba (con la pregunta
-// «¿Es la misma serie?» si parece otra temporada).
-async function procesarCompartido() {
-  let p;
-  try { p = new URL(location.href).searchParams; } catch (e) { return; }
-  const textos = ["url", "text", "title"].map((k) => p.get(k) || "");
-  if (!textos.some(Boolean)) return;
-  try { history.replaceState(null, "", location.pathname); } catch (e) {} // recargar no debe volver a registrarlo
-  const todo = textos.join(" ");
-  let enlace = todo.match(/https?:\/\/(?:www\.)?animeav1\.com\/media\/[^\s"'<>]+/i)?.[0];
-  if (!enlace) { // enlace de una página fuente añadida en Opciones (beta)
-    const fuentes = (await enviarMensaje({ type: "GET_FUENTES" }))?.fuentes || [];
-    enlace = (todo.match(/https?:\/\/[^\s"'<>]+/gi) || []).find((u) => fuentes.some((f) => f.activa !== false && u.startsWith(f.origen + "/")));
-  }
-  if (!enlace) { toast("Ese enlace no es de animeav1.com ni de una página fuente añadida"); return; }
-  if (!configActual) { toast("Primero conecta una hoja o crea una lista local"); return; }
-  setAgregarPanel(true);
-  agregarUrlEl.value = enlace;
-  await agregarAnime();
-}
-
 agregarBtnEl.addEventListener("click", agregarAnime);
 agregarUrlEl.addEventListener("keydown", (e) => { if (e.key === "Enter") agregarAnime(); });
 
@@ -2996,6 +3183,8 @@ const nubeNombreEl = $("nubeNombre");
 const nubeStatusEl = $("nubeStatus");
 const nubeListasEl = $("nubeListas");
 
+const LOGO_GOOGLE = '<svg viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4.1 7.1-10.1 7.1-17.5z"/><path fill="#FBBC05" d="M10.5 28.7A14.5 14.5 0 0 1 9.5 24c0-1.6.3-3.2.8-4.7l-7.9-6.1A24 24 0 0 0 0 24c0 3.9.9 7.5 2.6 10.8l7.9-6.1z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z"/></svg>';
+
 // Aviso sobre la última sincronización al abrir una lista de la nube (la lista se muestra igualmente)
 // Resultado de la sincronización que se lanzó al abrir la lista (la lista ya se ha enseñado con lo guardado):
 // si llegaron cambios de otros dispositivos se repinta, y si falló se avisa.
@@ -3052,13 +3241,23 @@ async function cargarNubePanel() {
   const est = await enviarMensaje({ type: "NUBE_ESTADO" });
   if (!est?.sesion) {
     nubeAccionesEl.hidden = true;
-    const cont = el("div", { className: "nube-boton-google" });
-    nubeSesionEl.append(el("p", { className: "nube-ayuda", textContent: "Inicia sesión con Google para usar las listas en la nube." }), cont);
-    window.PWA_NUBE.renderBoton(
-      cont,
-      () => { toast("Sesión iniciada"); cargarNubePanel(); cargarListasPanel(); },
-      (e) => { nubeStatusEl.textContent = mensajeError(e?.message || e); }
-    );
+    const btn = el("button", { className: "btn-google", type: "button" });
+    btn.innerHTML = LOGO_GOOGLE + "<span>Continuar con Google</span>";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true;
+      nubeStatusEl.textContent = "Abriendo Google…";
+      const r = await enviarMensaje({ type: "NUBE_LOGIN" });
+      btn.disabled = false;
+      if (!r?.ok) { nubeStatusEl.textContent = mensajeError(r?.error || "error desconocido"); return; }
+      nubeStatusEl.textContent = "";
+      toast("Sesión iniciada");
+      cargarNubePanel(); cargarListasPanel();
+    });
+    const detalles = el("details", { className: "nube-ayuda" },
+      el("summary", { textContent: "¿Google da un error al iniciar sesión?" }),
+      el("p", { textContent: "En Google Cloud Console → Credenciales → tu cliente OAuth de tipo «Aplicación web», añade esta dirección en «URI de redireccionamiento autorizados» (solo hace falta una vez):" }),
+      el("code", { className: "nube-uri", textContent: est?.redirectUri || "" }));
+    nubeSesionEl.append(el("p", { className: "nube-ayuda", textContent: "Inicia sesión con Google para usar las listas en la nube." }), btn, detalles);
     return;
   }
   const salir = el("button", { className: "btn-mini", type: "button", textContent: "Cerrar sesión" });
@@ -3185,7 +3384,7 @@ async function subirListaANube(l, btn) {
   if (!confirm(`¿Subir una copia de «${l.name}» a la nube? La lista original no se modifica. Después podrás usarla desde otros dispositivos y compartirla.`)) return;
   btn.disabled = true;
   toast("Subiendo…");
-  const r = await enviarMensaje({ type: "NUBE_SUBIR", id: l.id });
+  const r = await enviarMensaje({ type: "NUBE_SUBIR", id: l.id, listaId: l.id });
   btn.disabled = false;
   if (!r?.ok) { errorNube(r); return; }
   toast(r.error
@@ -3331,32 +3530,14 @@ async function abrirEnlacePublico(l, caja) {
 // --- Configuración: qué Google Sheet se usa -----------------------------------
 
 let configActual = null; // { url, titulo, hoja } o null si aún no se ha elegido hoja
+
 // Listas que no usan Google Sheets (locales y de la nube): las series se guardan en el dispositivo
 const esListaSinSheet = () => configActual?.tipo === "local" || configActual?.tipo === "nube";
-let clientIdActual = ""; // Client ID de OAuth ya guardado en este dispositivo (si lo hay)
 
 function mensajeError(error) {
   const c = String(error);
-  if (c.includes("SIN_RESPUESTA")) return "No se pudo comunicar con la aplicación.";
-  if (c.includes("CONFIGURA_CLIENT_ID_WEB")) return "Falta configurar el Client ID OAuth de tipo Aplicación web en config.js.";
-  if (c.includes("GOOGLE_GIS_NO_CARGA")) return "No se pudo cargar el inicio de sesión de Google. Comprueba tu conexión.";
-  if (c.includes("origin_mismatch") || c.includes("redirect_uri_mismatch")) return "Google ha rechazado este dominio. Añade la URL de esta PWA en los orígenes autorizados del cliente OAuth.";
-  if (c.includes("ENLACE_INVALIDO")) return "Ese enlace no parece de Google Sheets (debe contener «/spreadsheets/d/…»).";
-  if (c.includes("HOJA_NO_ENCONTRADA")) return "No se encuentra esa hoja. Revisa el enlace.";
-  if (c.includes("SIN_PERMISO")) return "Tu cuenta de Google no tiene acceso a esa hoja. Comprueba que está compartida contigo con permiso de edición.";
-  if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
-  if (c.includes("NECESITA_INICIO_SESION")) return "Toca el botón para iniciar sesión con Google.";
-  if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
-  if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace de AnimeAV1 a la ficha de la serie o a uno de sus episodios (animeav1.com/media/…).";
-  if (c.includes("FUENTES_INVALIDAS")) return "Eso no parece lo copiado en la extensión (Opciones > Fuentes > «Copiar páginas fuente para la PWA»).";
-  if (c.includes("SIN_TITULO_FUENTE")) return "No se encontró el título en esa página. Puede que la web se dibuje con JavaScript (la app solo lee el HTML) o que haya que ajustar la página fuente en la extensión.";
-  if (c.includes("FUENTE_NO_ENCONTRADA")) return "Esa página fuente ya no existe.";
-  if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
-  if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
-  if (c.includes("FILA_NO_ENCONTRADA")) return "No se encontró la serie registrada. Puede que se haya movido o borrado en la hoja.";
-  if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
-  if (c.includes("FILA_CAMBIADA")) return "La fila de la hoja ya no es esa serie (se editó fuera). Recarga la lista y vuelve a intentarlo.";
-  if (c.includes("FALTA_NOMBRE")) return "Ponle un nombre a la lista.";
+  if (c.includes("SIN_RESPUESTA")) return "No se pudo comunicar con la extensión.";
+  if (c.includes("Authorization page could not be loaded") || c.includes("redirect_uri_mismatch")) return "Google ha rechazado el inicio de sesión. Añade la dirección de redireccionamiento que aparece en «¿Google da un error…?» al cliente OAuth web.";
   if (c.includes("YA_VINCULADA")) return "Una de las dos listas ya está vinculada con otra. Desvincúlala primero.";
   if (c.includes("VINCULO_INVALIDO")) return "Solo se puede vincular una hoja de Google con una lista de la nube.";
   if (c.includes("NUBE_LISTA_NO_EXISTE")) return "Esa lista ya no existe en la nube (la borraron o dejó de estar compartida contigo). Puedes quitarla de este dispositivo.";
@@ -3365,7 +3546,25 @@ function mensajeError(error) {
   if (c.includes("SOLO_LECTURA")) return "Esta lista está compartida contigo como solo lectura.";
   if (c.includes("LISTA_YA_EN_DISPOSITIVO")) return "Esa lista ya está en este dispositivo.";
   if (c.includes("YA_ESTA_EN_LA_NUBE")) return "Esa lista ya está en la nube.";
+  if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
+  if (c.includes("ENLACE_INVALIDO")) return "Ese enlace no parece de Google Sheets (debe contener «/spreadsheets/d/…»).";
+  if (c.includes("HOJA_NO_ENCONTRADA")) return "No se encuentra esa hoja. Revisa el enlace.";
+  if (c.includes("SIN_PERMISO")) return "Tu cuenta de Google no tiene acceso a esa hoja. Comprueba que está compartida contigo con permiso de edición.";
+  if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
+  if (c.includes("No se obtuvo token") || c.includes("The user did not approve")) return "No se pudo iniciar sesión con Google.";
+  if (c.includes("ENLACE_ANIME_INVALIDO")) return "Pega un enlace de AnimeAV1 a la ficha de la serie o a uno de sus episodios (animeav1.com/media/…).";
+  if (c.includes("NO_SE_PUDO_LEER_LA_PAGINA")) return "No se pudo abrir esa página. Comprueba el enlace o tu conexión.";
+  if (c.includes("SIN_TITULO")) return "No se encontró el título en esa página. ¿Es el enlace correcto?";
+  if (c.includes("FILA_NO_ENCONTRADA")) return "No se encontró la serie registrada. Puede que se haya movido o borrado en la hoja.";
+  if (c.includes("YA_EXISTE")) return "Ese anime ya está en tu lista.";
+  if (c.includes("FILA_CAMBIADA")) return "La fila de la hoja ya no es esa serie (se editó fuera). Recarga la lista y vuelve a intentarlo.";
+  if (c.includes("FALTA_NOMBRE")) return "Ponle un nombre a la lista.";
   if (c.includes("LISTA_NO_ENCONTRADA")) return "Esa lista ya no existe.";
+  if (c.includes("SIN_PERMISO")) return "Falta el permiso de Chrome para esa web.";
+  if (c.includes("PATRON_INVALIDO")) return "El patrón no es una expresión regular válida.";
+  if (c.includes("FALTA_TITULO_FUENTE")) return "El selector del título es obligatorio.";
+  if (c.includes("YA_SOPORTADA")) return "animeav1.com ya funciona sin añadirla.";
+  if (c.includes("URL_INVALIDA")) return "Esa dirección no es válida.";
   if (c.includes("FALTA_TITULO")) return "Escribe el título de la serie.";
   if (c.includes("NO_ES_LISTA_LOCAL")) return "Esto solo está disponible en listas locales.";
   if (c.includes("JSON_INVALIDO")) return "Ese archivo no parece una lista exportada de AnimeAV1 Tracker (.json).";
@@ -3374,7 +3573,6 @@ function mensajeError(error) {
 
 function crearFormConfigBase({ bienvenida }) {
   const input = el("input", { type: "url", placeholder: "https://docs.google.com/spreadsheets/d/…", value: esListaSinSheet() ? "" : (configActual?.url || ""), ariaLabel: "Enlace de tu Google Sheet" });
-  const clientIdInput = el("input", { type: "text", placeholder: "Client ID de OAuth (…apps.googleusercontent.com)", value: clientIdActual || "", ariaLabel: "Client ID de OAuth de Google" });
   const estado = el("div", { className: "estado-txt" });
   const btn = el("button", { className: "btn", type: "button", textContent: bienvenida ? "Conectar y empezar" : "Guardar hoja" });
   if (esListaSinSheet()) estado.textContent = `${configActual.tipo === "nube" ? "Lista en la nube" : "Lista local"} en uso: ${configActual.titulo} (sin Google Sheets). Pega un enlace aquí si prefieres conectar una hoja.`;
@@ -3382,30 +3580,27 @@ function crearFormConfigBase({ bienvenida }) {
 
   async function guardarConfig() {
     const url = input.value.trim();
-    const clientId = clientIdInput.value.trim();
-    if (!clientId) { estado.textContent = "Pega el Client ID de OAuth (tipo Aplicación web)."; return; }
     if (!url) { estado.textContent = "Pega primero el enlace de tu Google Sheet."; return; }
     btn.disabled = true;
     estado.textContent = "Comprobando acceso…";
-    const res = await enviarMensaje({ type: "SAVE_CONFIG", url, clientId });
+    const res = await enviarMensaje({ type: "SAVE_CONFIG", url });
     btn.disabled = false;
     if (!res?.ok) { estado.textContent = mensajeError(res?.error || "Error desconocido"); return; }
     configActual = { url, titulo: res.titulo, hoja: res.hoja };
-    clientIdActual = clientId;
     estado.textContent = `Conectada: ${res.titulo} (pestaña «${res.hoja}»)` + (res.encabezadosCreados ? " · encabezados creados" : "");
     toast("Hoja conectada");
     if (!bienvenida) setHerramientas(false);
     cargar();
   }
   btn.addEventListener("click", guardarConfig);
-  [input, clientIdInput].forEach((i) => i.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarConfig(); }));
+  input.addEventListener("keydown", (e) => { if (e.key === "Enter") guardarConfig(); });
 
   return el("div", { className: "config" },
     el("h2", { textContent: bienvenida ? "Conecta tu Google Sheet" : "Hoja de Google Sheets" }),
     el("p", { textContent: bienvenida
-      ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace, junto con el Client ID de OAuth (Aplicación web) de tu proyecto de Google Cloud."
-      : "Cambia aquí la hoja o el Client ID de OAuth. Se guardan solo en este dispositivo." }),
-    clientIdInput, input, btn, estado);
+      ? "Usa una hoja tuya (vacía o una copia de la plantilla), comprueba que tu cuenta de Google puede editarla y pega aquí su enlace."
+      : "Cambia aquí la hoja. Se guarda en la extensión." }),
+    input, btn, estado);
 }
 
 // Primera vez: además de conectar una hoja, se puede empezar con una lista local (sin Google)
@@ -3434,7 +3629,7 @@ function crearBotonCuenta() {
   const btn = el("button", { className: "btn", type: "button", textContent: "Cambiar de cuenta de Google" });
   btn.addEventListener("click", async () => {
     btn.disabled = true;
-    estado.textContent = "";
+    estado.textContent = "Cambiando cuenta…";
     const r = await enviarMensaje({ type: "CAMBIAR_CUENTA" });
     btn.disabled = false;
     if (!r?.ok) { estado.textContent = mensajeError(r?.error || "error desconocido"); return; }
@@ -3454,6 +3649,7 @@ if (guardarPortadasEl) {
   guardarPortadasEl.addEventListener("change", async () => {
     const activado = guardarPortadasEl.checked;
     try { localStorage.setItem("guardarPortadas", String(activado)); } catch (e) {}
+    enviarMensaje({ type: "SET_COVER_STORAGE", enabled: activado });
     aplicarPreferenciaPortadas();
     toast(activado ? "Guardado de portadas activado" : "Guardado de portadas desactivado");
   });
@@ -3466,8 +3662,7 @@ if (borrarPortadasBtn) {
       const cache = await caches.open(COVER_CACHE);
       await cache.keys().then(keys => Promise.all(keys.map(k => cache.delete(k))));
       portadasEnCache.clear();
-      portadaMem.clear();
-      portadaImgs.clear();
+      liberarPortadasMem();
       actualizarContadorPortadas();
       precargarStatusEl.textContent = "Se han borrado las copias locales de las portadas.";
       toast("Portadas locales borradas");
@@ -3533,7 +3728,7 @@ migrateFlvBtn.addEventListener("click", async () => {
     return;
   }
   migrateStatusEl.textContent =
-    `Migrados a AnimeAV1: ${res.migradas}. ` +
+    `Migrados a AnimeAV1: ${res.migradas} (portadas de AnimeAV1 aplicadas: ${res.portadasAV1 ?? 0}). ` +
     `Portada de AnimeFLV usada (sin equivalente en AnimeAV1): ${res.portadasFlv}. ` +
     `Sin cambios: ${res.sinCambios}.`;
   cargar();
@@ -3541,19 +3736,14 @@ migrateFlvBtn.addEventListener("click", async () => {
 
 // --- Carga inicial -----------------------------------------------------------
 
-// --- Caché de la lista: la app se abre al instante y se actualiza después ---------
+// --- Caché de la lista: el popup se abre al instante y se actualiza después ------
 const syncEl = $("sync");
-// La clave identifica la hoja activa: si cambia (otra hoja u otra hoja de cálculo),
-// la lista cacheada deja de servir y se vuelve a pedir a Google Sheets.
-// Mismo criterio que en la extensión. Ojo: configActual solo tiene {url, titulo, hoja}.
-function claveListaActual() {
-  return configActual ? `${configActual.url}|${configActual.hoja || ""}` : "";
-}
+function claveListaActual() { return configActual ? `${configActual.url}|${configActual.hoja || ""}` : ""; }
 
-function leerListaCache() {
+async function leerListaCache() {
   try {
-    const c = JSON.parse(localStorage.getItem("listaCache") || "null");
-    if (c && c.clave === claveListaActual() && Array.isArray(c.lista) && c.lista.length) return c;
+    const { listaCache } = await chrome.storage.local.get("listaCache");
+    if (listaCache && listaCache.clave === claveListaActual() && Array.isArray(listaCache.lista) && listaCache.lista.length) return listaCache;
   } catch (e) {}
   return null;
 }
@@ -3563,17 +3753,19 @@ function guardarListaCache() {
   clearTimeout(guardarCacheTimer);
   guardarCacheTimer = setTimeout(() => {
     if (!configActual || !todosLosAnimes.length) return;
-    try { localStorage.setItem("listaCache", JSON.stringify({ clave: claveListaActual(), ts: Date.now(), lista: todosLosAnimes })); } catch (e) {}
+    chrome.storage.local.set({ listaCache: { clave: claveListaActual(), ts: Date.now(), lista: todosLosAnimes } }).catch(() => {});
   }, 400);
 }
 
+// `boton`: true = «Reintentar»; { texto, accion } = botón propio; vacío = indicador de carga
 function mostrarSync(texto, boton) {
   if (!syncEl) return;
   syncEl.innerHTML = "";
   if (!texto) { syncEl.hidden = true; return; }
-  if (!boton) syncEl.append(el("div", { className: "spinner mini" }));
+  const b = boton === true ? { texto: "Reintentar", accion: cargar } : (boton && typeof boton === "object" ? boton : null);
+  if (!b) syncEl.append(el("div", { className: "spinner mini" }));
   syncEl.append(el("span", { textContent: texto }));
-  if (boton) syncEl.append(el("button", { className: "btn-mini", type: "button", textContent: boton.texto, onclick: boton.accion }));
+  if (b) syncEl.append(el("button", { className: "btn-mini", type: "button", textContent: b.texto, onclick: b.accion }));
   syncEl.hidden = false;
 }
 
@@ -3589,7 +3781,7 @@ async function cargar(opciones = {}) {
   refrescarCabeceraListas();
   cargarCatalogo(configActual?.listaId);
   filtrosEl.hidden = !configActual;
-  const cache = configActual ? leerListaCache() : null;
+  const cache = configActual ? await leerListaCache() : null;
   if (cache) {
     // Se pinta ya la última lista conocida; mientras tanto se pide la de la hoja.
     cargandoEl.hidden = true;
@@ -3620,17 +3812,7 @@ async function cargar(opciones = {}) {
     // Sin conexión o sesión caducada: se sigue mostrando la lista guardada.
     const error = String(res?.error || "");
     const sesion = /NECESITA_INICIO_SESION|TOKEN_INVALIDO|NO_SE_OBTUVO_TOKEN|access_denied|interaction_required/.test(error);
-    if (sesion) {
-      mostrarSync("Sesión de Google caducada: mostrando la última lista guardada.", {
-        texto: "Iniciar sesión",
-        accion: async () => {
-          const r = await enviarMensaje({ type: "LOGIN" });
-          if (r?.ok) cargar(); else toast(mensajeError(r?.error || "error desconocido"));
-        }
-      });
-    } else {
-      mostrarSync("No se pudo actualizar: mostrando la última lista guardada.", { texto: "Reintentar", accion: cargar });
-    }
+    mostrarSync(sesion ? "Sesión de Google caducada: mostrando la última lista guardada." : "No se pudo actualizar: mostrando la última lista guardada.", true);
     return;
   }
 
@@ -3665,8 +3847,6 @@ async function cargar(opciones = {}) {
   const igual = cache && JSON.stringify(cache.lista) === JSON.stringify(res.lista);
   todosLosAnimes = res.lista;
   sincronizarCatalogo();
-  lanzarCompararPendiente();
-  sincronizarPush();
   await inicializarContadorPortadas();
   if (!igual) {
     const scroll = listaEl.scrollTop;
@@ -3676,14 +3856,47 @@ async function cargar(opciones = {}) {
   guardarListaCache();
 }
 
+// Si el último intento de registrar un capítulo falló, se explica aquí el motivo (el icono lleva un «!» rojo)
+const avisoFalloEl = $("avisoFallo");
+async function revisarFallo() {
+  const r = await enviarMensaje({ type: "GET_FALLO" });
+  const f = r?.ok ? r.fallo : null;
+  avisoFalloEl.textContent = "";
+  if (!f) { avisoFalloEl.hidden = true; return; }
+  const e = String(f.error || "");
+  const sesion = /NECESITA_INICIO_SESION|TOKEN_INVALIDO|No se obtuvo token|did not approve|access_denied|interaction_required/.test(e);
+  let motivo;
+  if (sesion) motivo = "la sesión de Google ha caducado";
+  else if (e.includes("SIN_CONFIG")) motivo = "no hay ninguna lista elegida";
+  else if (e.includes("LISTA_NO_ENCONTRADA")) motivo = "la lista asignada a esa web ya no existe (cámbiala en Opciones > Fuentes)";
+  else motivo = mensajeError(e);
+  const min = Math.max(0, Math.round((Date.now() - f.ts) / 60000));
+  const hace = min < 1 ? "hace un momento" : min < 60 ? `hace ${min} min` : min < 1440 ? `hace ${Math.round(min / 60)} h` : `hace ${Math.round(min / 1440)} d`;
+  avisoFalloEl.append(el("span", { textContent: `No se pudo registrar${f.titulo ? ` «${f.titulo}»` : " un capítulo"} (${hace}): ${motivo}.` }));
+  if (sesion) {
+    const login = el("button", { className: "btn-mini", type: "button", textContent: "Iniciar sesión" });
+    login.addEventListener("click", async () => {
+      login.disabled = true;
+      const x = await enviarMensaje({ type: "LOGIN" });
+      login.disabled = false;
+      if (x?.ok) { await enviarMensaje({ type: "CLEAR_FALLO" }); avisoFalloEl.hidden = true; toast("Sesión iniciada: abre el capítulo otra vez para registrarlo"); cargar(); }
+      else toast(mensajeError(x?.error || "error desconocido"));
+    });
+    avisoFalloEl.append(login);
+  }
+  const descartar = el("button", { className: "btn-mini", type: "button", textContent: "Descartar" });
+  descartar.addEventListener("click", async () => { await enviarMensaje({ type: "CLEAR_FALLO" }); avisoFalloEl.hidden = true; });
+  avisoFalloEl.append(descartar);
+  avisoFalloEl.hidden = false;
+}
+
 inicializarToolbar();
+revisarFallo();
 (async () => {
   // El formulario de "Herramientas" necesita conocer la hoja actual antes de crearse
   configActual = (await enviarMensaje({ type: "GET_CONFIG" }))?.config || null;
-  clientIdActual = (await enviarMensaje({ type: "GET_CLIENT_ID" }))?.clientId || "";
   $("configTools").append(crearFormConfig({ bienvenida: false }), crearBotonCuenta());
-  cargarFuentes();
-  cargar().then(procesarCompartido);
+  cargar();
 })();
 
 // Salvaguarda: en algunas ventanas recién creadas Chrome no recalcula bien
