@@ -1225,6 +1225,67 @@
   // Slug de una ficha de AnimeFLV (cualquier subdominio: www.animeflv.net, www3., www4., …): /anime/<slug>
   function slugDeAnimeFlv(enlace){try{const u=new URL(enlace);if(!/(^|\.)animeflv\.net$/i.test(u.hostname))return "";const m=u.pathname.match(/\/anime\/([^/]+)/i);return m?m[1].toLowerCase():"";}catch(e){return "";}}
   const compactoTitulo=(t)=>normalizarTitulo(t).replace(/ /g,"");
+  // --- Búsqueda en el catálogo de AnimeAV1 (cuando el slug del enlace/título no existe) --------------------------
+  // AnimeAV1 nombra las series en romaji (p. ej. «Neon Genesis Evangelion» es /media/shinseiki-evangelion), así que
+  // el slug adivinado falla con muchas. Se buscan en su catálogo el título, el título sin subtítulo y los títulos
+  // alternativos de la ficha de AnimeFLV, y se elige el resultado que contiene todas las palabras con menos añadidos.
+  const PALABRAS_EXTRA_AV1 = /\b(movie|pelicula|ova|ovas|ona|special|specials|especial|recap|pv|cm)\b/;
+
+  function nombresParaBuscar(titulo, htmlFlv) {
+    const nombres = [titulo, String(titulo || "").split(/[:：]/)[0]];
+    if (htmlFlv) {
+      for (const m of String(htmlFlv).matchAll(/class=["'][^"']*TxtAlt[^"']*["'][^>]*>([^<]{2,120})</gi)) nombres.push(m[1]);
+      const og = String(htmlFlv).match(/<h1[^>]*>([^<]{2,120})<\/h1>/i);
+      if (og) nombres.push(og[1]);
+    }
+    const vistos = new Set();
+    return nombres.map((n) => String(n || "").trim()).filter((n) => {
+      const k = normalizarTitulo(n);
+      if (!k || k.length < 3 || vistos.has(k)) return false;
+      vistos.add(k);
+      return true;
+    }).slice(0, 4);
+  }
+
+  function elegirResultadoAV1(nombre, slugs) {
+    const q = new Set(normalizarTitulo(nombre).split(" ").filter(Boolean));
+    if (!q.size) return null;
+    const quiereExtra = PALABRAS_EXTRA_AV1.test(normalizarTitulo(nombre));
+    let mejor = null;
+    for (const slug of slugs) {
+      const palabras = slug.replace(/-/g, " ").split(" ").filter(Boolean);
+      if (!quiereExtra && PALABRAS_EXTRA_AV1.test(palabras.join(" "))) continue;
+      const c = new Set(palabras);
+      let comunes = 0;
+      for (const w of q) if (c.has(w)) comunes++;
+      if (comunes / q.size < 1) continue; // deben estar todas las palabras buscadas
+      const extra = c.size - q.size;
+      if (!mejor || extra < mejor.extra) mejor = { slug, extra };
+    }
+    return mejor ? mejor.slug : null;
+  }
+
+  // leerHtml(url) -> texto HTML (lanza si no se puede leer)
+  async function buscarPorCatalogoAV1(titulo, enlaceFlv, leerHtml, notas) {
+    let htmlFlv = "";
+    if (enlaceFlv) { try { htmlFlv = await leerHtml(enlaceFlv); } catch (e) { notas.push("no se pudo leer la ficha de AnimeFLV"); } }
+    for (const nombre of nombresParaBuscar(titulo, htmlFlv)) {
+      for (const param of ["search", "q"]) {
+        let html;
+        try { html = await leerHtml(`https://animeav1.com/catalogo?${param}=${encodeURIComponent(nombre)}`); }
+        catch (e) { notas.push(`catálogo (${param}=${nombre}): ${e && e.message || "error"}`); continue; }
+        const slugs = [...new Set([...html.matchAll(/href=["']\/media\/([a-z0-9-]+)["']/gi)].map((m) => m[1].toLowerCase()))];
+        const slug = elegirResultadoAV1(nombre, slugs);
+        if (!slug) { notas.push(`catálogo (${param}=${nombre}): ${slugs.length} resultado(s), ninguno encaja`); continue; }
+        try {
+          const ficha = await leerHtml(`https://animeav1.com/media/${slug}`);
+          return { url: `https://animeav1.com/media/${slug}`, html: ficha };
+        } catch (e) { notas.push(`${slug}: no se pudo abrir`); }
+      }
+    }
+    return null;
+  }
+
   function parecidoTitulos(a,b){const A=new Set(normalizarTitulo(a).split(" ").filter(Boolean)),B=new Set(normalizarTitulo(b).split(" ").filter(Boolean));if(!A.size||!B.size)return 0;let c=0;for(const w of A)if(B.has(w))c++;return c/Math.max(A.size,B.size);}
   // `motivos` (opcional): array donde se anota por qué no se encontró cada candidato (diagnóstico)
   async function buscarEnAnimeAV1(titulo,enlaceFlv,motivos){
@@ -1247,6 +1308,9 @@
         notas.push(`${slug}: la ficha se llama «${h}»`);
       }catch(e){notas.push(`${slug}: ${e&&e.message||"error de red"}`);}
     }
+    // Último recurso: buscar en el catálogo de AnimeAV1 (siempre por el Worker: la PWA no puede leer esas webs directamente)
+    const porCatalogo=await buscarPorCatalogoAV1(titulo,enlaceFlv,leerPaginaWorker,notas);
+    if(porCatalogo)return porCatalogo;
     if(Array.isArray(motivos))motivos.push({titulo,motivo:notas.join(" · ")||"sin candidatos"});
     return null;
   }
