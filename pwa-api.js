@@ -878,14 +878,14 @@
     const cambios = []; let migradas = 0, portadasFlv = 0, sinCambios = 0;
     for (const it of leerDatosLocal().items) {
       if (!it.url.includes("animeflv")) continue;
-      const encontrado = await buscarEnAnimeAV1(it.title);
+      const encontrado = await buscarEnAnimeAV1(it.title,it.url);
       if (encontrado) {
         const c = { row: it.row, url: encontrado.url };
         if (!it.cover) { const img = extraerPortadaDesdeHtml(encontrado.html); if (img) { c.cover = img; precachearImagen(img); } }
         cambios.push(c); migradas++;
       } else if (!it.cover) {
         try {
-          const img = extraerPortadaAnimeFlv(await (await fetch(it.url)).text());
+          const img = extraerPortadaAnimeFlv(await leerPaginaWorker(it.url));
           if (img) { cambios.push({ row: it.row, cover: img }); precachearImagen(img); portadasFlv++; } else sinCambios++;
         } catch (e) { sinCambios++; }
       } else sinCambios++;
@@ -1216,14 +1216,34 @@
 
   function normalizarTitulo(t){return (t||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();}
   function slugify(t){return normalizarTitulo(t).replace(/\s+/g,"-");}
-  async function buscarEnAnimeAV1(titulo){const slug=slugify(titulo);if(!slug)return null;const url=`https://animeav1.com/media/${slug}`;try{const r=await fetch(url);if(!r.ok)return null;const html=await r.text();const m=html.match(/<h1[^>]*>([^<]+)<\/h1>/i);const h=m?m[1].trim():"";return h&&normalizarTitulo(h)===normalizarTitulo(titulo)?{url,html}:null;}catch(e){return null;}}
+  // Slug de una ficha de AnimeFLV (cualquier subdominio: www.animeflv.net, www3., www4., …): /anime/<slug>
+  function slugDeAnimeFlv(enlace){try{const u=new URL(enlace);if(!/(^|\.)animeflv\.net$/i.test(u.hostname))return "";const m=u.pathname.match(/\/anime\/([^/]+)/i);return m?m[1].toLowerCase():"";}catch(e){return "";}}
+  const compactoTitulo=(t)=>normalizarTitulo(t).replace(/ /g,"");
+  async function buscarEnAnimeAV1(titulo,enlaceFlv){
+    const slugFlv=slugDeAnimeFlv(enlaceFlv);
+    const candidatos=[...new Set([slugify(titulo),slugFlv,slugFlv.replace(/-?(tv|season-?\d+)$/,"")].filter(Boolean))];
+    for(const slug of candidatos){
+      const url=`https://animeav1.com/media/${slug}`;
+      try{
+        const r=await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(url)}`);
+        const up=Number(r.headers.get("X-Proxy-Upstream-Status")||0);
+        if(!r.ok||(up&&up>=400))continue;
+        const html=await r.text();
+        const m=html.match(/<h1[^>]*>([^<]+)<\/h1>/i);const h=m?m[1].trim():"";
+        if(!h)continue;
+        const ch=compactoTitulo(h);
+        if(ch===compactoTitulo(titulo)||(slugFlv&&ch===slugFlv.replace(/-/g,"")))return {url,html};
+      }catch(e){}
+    }
+    return null;
+  }
   function extraerPortadaAnimeFlv(html){const a=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);if(a)return a[1];const b=html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);return b?b[1]:null;}
   async function migrarAnimeFlv(){
     if (await esListaLocal()) return migrarAnimeFlvLocal();
     const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0;
-    for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!enlace.includes("animeflv"))continue;const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo);
+    for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!enlace.includes("animeflv"))continue;const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo,enlace);
       if(encontrado){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:3,endColumnIndex:4},rows:[{values:[{userEnteredValue:{stringValue:titulo},textFormatRuns:[{startIndex:0,format:{link:{uri:encontrado.url}}}]}]}],fields:"userEnteredValue,textFormatRuns"}});migradas++;if(!ya){const img=extraerPortadaDesdeHtml(encontrado.html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);}}}
-      else if(!ya){try{const r=await fetch(enlace);const html=await r.text();const img=extraerPortadaAnimeFlv(html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasFlv++;}else sinCambios++;}catch(e){sinCambios++;}}
+      else if(!ya){try{const html=await leerPaginaWorker(enlace);const img=extraerPortadaAnimeFlv(html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasFlv++;}else sinCambios++;}catch(e){sinCambios++;}}
       else sinCambios++;
     }
     if(requests.length)await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});return{migradas,portadasFlv,sinCambios};
