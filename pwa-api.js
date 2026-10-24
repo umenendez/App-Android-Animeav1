@@ -877,6 +877,7 @@
   // --- Progreso de «Migrar enlaces»: el popup escucha este evento y lo muestra bajo el botón ---
   function avisarProgreso(texto) { try { window.dispatchEvent(new CustomEvent("migrar-progreso", { detail: texto })); } catch (e) {} }
   const esPortadaFlv = (c) => /(^|\/\/|\.)animeflv\.net\//i.test(String(c || ""));
+  const esPortadaAV1 = (c) => /cdn\.animeav1\.com\/covers\//i.test(String(c || ""));
   const esFichaAV1 = (u) => /^https:\/\/animeav1\.com\/media\//i.test(String(u || ""));
   // Serie ya enlazada a AnimeAV1 pero con la portada de AnimeFLV: se saca la portada de su ficha
   async function portadaDesdeFichaAV1(url) {
@@ -885,13 +886,13 @@
 
   async function migrarAnimeFlvLocal() {
     const cambios = []; let migradas = 0, portadasFlv = 0, sinCambios = 0, portadasAV1 = 0; const fallos = []; let refrescadas = 0;
-    const pendientes = leerDatosLocal().items.filter((it) => it.url.includes("animeflv") || (esPortadaFlv(it.cover) && esFichaAV1(it.url)));
+    const pendientes = leerDatosLocal().items.filter((it) => it.url.includes("animeflv") || ((esPortadaFlv(it.cover) || esPortadaAV1(it.cover)) && esFichaAV1(it.url)));
     let hechas = 0;
     for (const it of pendientes) {
       hechas++; avisarProgreso(`Migrando ${hechas}/${pendientes.length}: ${it.title}`);
       if (!it.url.includes("animeflv")) {
         const img = await portadaDesdeFichaAV1(it.url);
-        if (img) { cambios.push({ row: it.row, cover: img }); precachearImagen(img); refrescadas++; } else sinCambios++;
+        if (img && img !== it.cover) { cambios.push({ row: it.row, cover: img }); precachearImagen(img); refrescadas++; } else sinCambios++;
         continue;
       }
       const encontrado = await buscarEnAnimeAV1(it.title,it.url,fallos);
@@ -1216,7 +1217,8 @@
     // La ficha también lista series relacionadas (/covers/<otro id>.jpg): se prefiere la portada cuyo id coincide
     // con el del fondo (/backdrops/<id>.jpg) o el de las capturas (/screenshots/<id>/…) de la propia serie.
     const id = (html.match(/cdn\.animeav1\.com\/backdrops\/(\d+)\./i) || html.match(/cdn\.animeav1\.com\/screenshots\/(\d+)\//i) || [])[1];
-    if (id && new RegExp(`cdn\\.animeav1\\.com/covers/${id}\\.(?:jpg|jpeg|png|webp)`, "i").test(html)) return `https://cdn.animeav1.com/covers/${id}.jpg`;
+    const delId = id && html.match(new RegExp(`cdn\\.animeav1\\.com/covers/${id}\\.(?:jpg|jpeg|png|webp)`, "i"));
+  if (delId) return `https://${delId[0]}`; // con su extensión real (no siempre es .jpg)
     const m = html.match(/cdn\.animeav1\.com\/covers\/\d+\.(?:jpg|jpeg|png|webp)/i);
     return m ? `https://${m[0]}` : null;
   }
@@ -1337,10 +1339,10 @@
     const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0,portadasAV1=0;const fallos=[];let refrescadas=0;
     // Series con enlace de AnimeFLV, o ya enlazadas a AnimeAV1 pero con la portada de AnimeFLV (columna J)
     const portadaDe=(v)=>extraerUrlImagen(v[6])||(v[6]?.formattedValue||"");
-    const esPendiente=(v)=>{const e=v[0]?.hyperlink||"";return e.includes("animeflv")||(esFichaAV1(e)&&esPortadaFlv(portadaDe(v)));};
+    const esPendiente=(v)=>{const e=v[0]?.hyperlink||"";return e.includes("animeflv")||(esFichaAV1(e)&&(esPortadaFlv(portadaDe(v))||esPortadaAV1(portadaDe(v))));};
     const total=filas.filter((f)=>esPendiente(f.values||[])).length;let hechas=0;
     for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!esPendiente(v))continue;hechas++;avisarProgreso(`Migrando ${hechas}/${total}: ${v[0]?.formattedValue||""}`);
-      if(!enlace.includes("animeflv")){const img=await portadaDesdeFichaAV1(enlace);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);refrescadas++;}else sinCambios++;continue;}
+      if(!enlace.includes("animeflv")){const img=await portadaDesdeFichaAV1(enlace);if(img&&img!==portadaDe(v)){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);refrescadas++;}else sinCambios++;continue;}
       const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo,enlace,fallos);
       if(encontrado){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:3,endColumnIndex:4},rows:[{values:[{userEnteredValue:{stringValue:titulo},textFormatRuns:[{startIndex:0,format:{link:{uri:encontrado.url}}}]}]}],fields:"userEnteredValue,textFormatRuns"}});migradas++;{const img=extraerPortadaDesdeHtml(encontrado.html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasAV1++;}}}
       else if(!ya){try{const html=await leerPaginaWorker(enlace);const img=extraerPortadaAnimeFlv(html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasFlv++;}else sinCambios++;}catch(e){sinCambios++;}}
