@@ -323,7 +323,7 @@ function cargarFiltros() {
 // La primera vez se descarga y se guarda en la Cache Storage de la extensión
 // (compartida con background.js). Las siguientes veces se lee de ahí, sin red.
 
-const COVER_CACHE = "anime-covers-v2";
+const COVER_CACHE = "anime-covers-v3";
 const portadasEnCache = new Set();
 
 function actualizarContadorPortadas() {
@@ -380,6 +380,36 @@ function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else port
 function esMW(url) {
   try { return /(^|\.)img\d+mw\.xyz$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
 }
+// animeav1 (y su CDN) también se piden sin Referer: así lo hace la extensión y evita que el
+// anti-hotlink del CDN rechace algunas portadas cuando llegan con el Referer de github.io.
+function sinReferer(url) {
+  try { return esMW(url) || /(^|\.)animeav1\.com$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
+}
+const politicaReferer = (url) => (sinReferer(url) ? "no-referrer" : "strict-origin-when-cross-origin");
+
+// Comprueba que la URL carga como imagen de verdad (pasa por el Service Worker, o sea, por la copia guardada).
+function imagenValida(url) {
+  return new Promise((resolve) => {
+    const im = new Image();
+    const t = setTimeout(() => resolve(false), 10000);
+    im.referrerPolicy = politicaReferer(url);
+    im.onload = () => { clearTimeout(t); resolve(true); };
+    im.onerror = () => { clearTimeout(t); resolve(false); };
+    im.src = url;
+  });
+}
+
+// Borra una portada de todas las cachés de portadas (una copia opaca podía ser un error guardado).
+async function purgarPortada(url) {
+  portadaMem.delete(url); portadasEnCache.delete(url); portadaImgs.delete(url);
+  try {
+    for (const k of await caches.keys()) {
+      if (k.startsWith("anime-covers-")) await (await caches.open(k)).delete(url);
+    }
+  } catch (_) {}
+  try { actualizarContadorPortadas(); } catch (_) {}
+}
+
 function portadaAlternativas(url) {
   try {
     const u = new URL(url, location.href);
@@ -396,6 +426,12 @@ function portadaAlternativas(url) {
 }
 // Siguiente intento tras un error de carga; devuelve false si ya no quedan.
 function reintentarPortada(img, original) {
+  // Portadas normales: si falla, puede ser una copia local corrupta. Se borra y se pide de nuevo a la red, sin Referer (una vez).
+  if (!esMW(original) && !img.dataset.portadaCurada) {
+    img.dataset.portadaCurada = "1";
+    purgarPortada(original).finally(() => { img.referrerPolicy = politicaReferer(original); img.src = original; });
+    return true;
+  }
   const alts = portadaAlternativas(original);
   const n = Number(img.dataset.intentoPortada || 0);
   if (n >= alts.length) return false;
@@ -428,9 +464,11 @@ async function guardarEnCache(url) {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 12000);
       let res;
-      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: "strict-origin-when-cross-origin", signal: ctl.signal }); } finally { clearTimeout(t); }
+      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: politicaReferer(url), signal: ctl.signal }); } finally { clearTimeout(t); }
       if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
       await cache.put(url, res.clone());
+      // Una respuesta opaca puede ser un error (403/429/5xx): se comprueba que carga como imagen o se descarta.
+      if (!(await imagenValida(url))) { await cache.delete(url); throw new Error("la copia guardada no es una imagen válida"); }
     } finally { portadaLiberar(); }
   }
   portadasEnCache.add(url);
@@ -478,7 +516,7 @@ function crearPortada(anime, clase, observador) {
       if (reintentarPortada(img, original)) return;
       caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true;
     };
-    if (esMW(original)) img.referrerPolicy = "no-referrer";
+    img.referrerPolicy = politicaReferer(original);
     img.src = original;
   };
   const cargar = () => { if (portadaMem.has(url)) asignar(url); else obtenerPortada(url).then(asignar); };
@@ -1308,7 +1346,7 @@ function renderItem(anime) {
     img.dataset.src = portadaSrc;
     img.addEventListener("load", () => img.classList.add("lista"));
     img.addEventListener("error", () => { reintentarPortada(img, portadaSrc); });
-    if (esMW(portadaSrc)) img.referrerPolicy = "no-referrer";
+    img.referrerPolicy = politicaReferer(portadaSrc);
     portada.append(img);
     if (portadaMem.has(portadaSrc)) img.src = portadaSrc; else observador.observe(img);
   } else {
@@ -3523,28 +3561,19 @@ fillCoversBtn.addEventListener("click", async () => {
   cargar();
 });
 
-window.addEventListener("migrar-progreso", (e) => { migrateStatusEl.textContent = e.detail; });
 migrateFlvBtn.addEventListener("click", async () => {
   migrateFlvBtn.disabled = true;
-  const textoBoton = migrateFlvBtn.textContent;
-  migrateFlvBtn.textContent = "Migrando…";
-  migrateStatusEl.style.whiteSpace = "pre-wrap";
-  migrateStatusEl.textContent = "Preparando… leyendo tu lista.";
+  migrateStatusEl.textContent = "Revisando enlaces de AnimeFLV… puede tardar un poco.";
   const res = await enviarMensaje({ type: "MIGRATE_ANIMEFLV" });
   migrateFlvBtn.disabled = false;
-  migrateFlvBtn.textContent = textoBoton;
   if (!res || !res.ok) {
     migrateStatusEl.textContent = "Error: " + (res?.error || "error desconocido");
     return;
   }
-  migrateStatusEl.style.whiteSpace = "pre-wrap";
   migrateStatusEl.textContent =
-    `Listo (${res.total ?? "?"} series revisadas). ` +
-    `Migrados a AnimeAV1: ${res.migradas} (portadas de AnimeAV1 aplicadas: ${res.portadasAV1 ?? 0}). ` +
-    `Portadas corregidas o sustituidas en series ya migradas: ${res.refrescadas ?? 0}. ` +
+    `Migrados a AnimeAV1: ${res.migradas}. ` +
     `Portada de AnimeFLV usada (sin equivalente en AnimeAV1): ${res.portadasFlv}. ` +
-    `Sin cambios: ${res.sinCambios}.` +
-    (res.fallos?.length ? "\nNo encontradas:\n" + res.fallos.map((f) => `• ${f.titulo} → ${f.motivo}`).join("\n") : "");
+    `Sin cambios: ${res.sinCambios}.`;
   cargar();
 });
 

@@ -5,6 +5,23 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.30.1
+
+### Portadas de animeAV1 que no cargaban en la PWA **[PWA]**
+
+- **Causa:** la PWA guardaba las portadas como respuestas «opacas» y daba por buena cualquiera (`type === "opaque"`),
+  también un error 403/429/5xx del CDN. Esa copia mala se guardaba para siempre y el Service Worker la servía en cada
+  carga, así que esa portada ya no salía aunque el CDN respondiera bien después. La extensión no lo sufre porque
+  tiene permiso para `cdn.animeav1.com` y solo guarda respuestas `ok`.
+- Las copias guardadas se **comprueban**: tras guardar una portada se carga como imagen y, si no lo es, se borra.
+- Si una portada falla al pintarla, se **borra su copia local y se pide de nuevo a la red** (una vez) en vez de quedarse en «Sin portada».
+- Las imágenes de animeAV1 se piden **sin `Referer`** (como hace la extensión), también al guardarlas, para que el
+  anti-hotlink del CDN no rechace algunas.
+- `pwa-api.js` usaba la caché `anime-covers-v1` y `popup.js`/`sw.js` la `v2`. Ahora las tres usan **`anime-covers-v3`**; al
+  actualizar, el Service Worker borra las antiguas (y con ellas las copias malas). Caché de la PWA `v53`.
+- Tras subir la nueva versión hay que abrir la app con conexión una vez (se actualiza sola) y, si alguna sigue sin salir,
+  cerrarla del todo y volver a abrirla.
+
 ## 1.30.0
 
 ### Notificaciones con la app cerrada: capítulos nuevos [PWA + Worker]

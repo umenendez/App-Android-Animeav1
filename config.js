@@ -13,8 +13,5 @@
 //   https://tuusuario.github.io
 window.PWA_CONFIG = {
   googleClientId: "123415018434-6dicvlgt2j37v841f9m0hricunuatp9c.apps.googleusercontent.com",
-  googleScopes: "https://www.googleapis.com/auth/spreadsheets",
-  // Proxy de portadas de Manwhaweb (img1mw.xyz…): URL base del Worker, el mismo de WORKER_URL en pwa-api.js.
-  // Sin esto las portadas dan 403 por el anti-hotlink de Cloudflare.
-  mwProxy: "https://red-violet-9fed.unaxmenendez.workers.dev"
+  googleScopes: "https://www.googleapis.com/auth/spreadsheets"
 };
