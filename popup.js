@@ -3523,18 +3523,25 @@ fillCoversBtn.addEventListener("click", async () => {
   cargar();
 });
 
+window.addEventListener("migrar-progreso", (e) => { migrateStatusEl.textContent = e.detail; });
 migrateFlvBtn.addEventListener("click", async () => {
   migrateFlvBtn.disabled = true;
-  migrateStatusEl.textContent = "Revisando enlaces de AnimeFLV… puede tardar un poco.";
+  const textoBoton = migrateFlvBtn.textContent;
+  migrateFlvBtn.textContent = "Migrando…";
+  migrateStatusEl.style.whiteSpace = "pre-wrap";
+  migrateStatusEl.textContent = "Preparando… leyendo tu lista.";
   const res = await enviarMensaje({ type: "MIGRATE_ANIMEFLV" });
   migrateFlvBtn.disabled = false;
+  migrateFlvBtn.textContent = textoBoton;
   if (!res || !res.ok) {
     migrateStatusEl.textContent = "Error: " + (res?.error || "error desconocido");
     return;
   }
   migrateStatusEl.style.whiteSpace = "pre-wrap";
   migrateStatusEl.textContent =
+    `Listo (${res.total ?? "?"} series revisadas). ` +
     `Migrados a AnimeAV1: ${res.migradas} (portadas de AnimeAV1 aplicadas: ${res.portadasAV1 ?? 0}). ` +
+    `Portadas de AnimeFLV sustituidas en series ya migradas: ${res.refrescadas ?? 0}. ` +
     `Portada de AnimeFLV usada (sin equivalente en AnimeAV1): ${res.portadasFlv}. ` +
     `Sin cambios: ${res.sinCambios}.` +
     (res.fallos?.length ? "\nNo encontradas:\n" + res.fallos.map((f) => `• ${f.titulo} → ${f.motivo}`).join("\n") : "");
