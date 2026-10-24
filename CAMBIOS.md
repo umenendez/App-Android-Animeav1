@@ -5,6 +5,15 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.30.2
+
+### Portadas intermitentes en la PWA **[PWA]**
+
+- Cada portada se pedía 3-4 veces a la vez (pintar, guardar, predecodificar, verificar) y el CDN rechazaba algunas, por eso
+  unas veces salían y otras no. Ahora se descarga **una sola vez**, se guarda y se pinta desde la copia local; descargas simultáneas 4 (antes 6).
+- Si una portada falla, se **reintenta hasta 3 veces** con espera creciente (1,5 s, 5 s, 12 s) antes de mostrar «Sin portada».
+- Caché de la PWA `v54`.
+
 ## 1.30.1
 
 ### Portadas de animeAV1 que no cargaban en la PWA **[PWA]**

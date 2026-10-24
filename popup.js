@@ -366,7 +366,7 @@ function aplicarPreferenciaPortadas() {
 const portadaMem = new Set();    // urls ya descargadas y listas para pintar
 const portadaPend = new Map();   // url -> Promise en curso (evita descargas duplicadas)
 const portadaImgs = new Map();   // referencias a imágenes predecodificadas (máx. 80)
-let portadaSlots = 6;
+let portadaSlots = 4;
 const portadaCola = [];
 function portadaSlot() {
   return new Promise((res) => { if (portadaSlots > 0) { portadaSlots--; res(); } else portadaCola.push(res); });
@@ -427,10 +427,20 @@ function portadaAlternativas(url) {
 // Siguiente intento tras un error de carga; devuelve false si ya no quedan.
 function reintentarPortada(img, original) {
   // Portadas normales: si falla, puede ser una copia local corrupta. Se borra y se pide de nuevo a la red, sin Referer (una vez).
-  if (!esMW(original) && !img.dataset.portadaCurada) {
-    img.dataset.portadaCurada = "1";
-    purgarPortada(original).finally(() => { img.referrerPolicy = politicaReferer(original); img.src = original; });
-    return true;
+  if (!esMW(original)) {
+    const n = Number(img.dataset.portadaCurada || 0);
+    if (n < 3) {
+      img.dataset.portadaCurada = String(n + 1);
+      const espera = [1500, 5000, 12000][n];
+      setTimeout(() => {
+        purgarPortada(original).finally(() => {
+          img.referrerPolicy = politicaReferer(original);
+          // A partir del 2.º reintento se evita también una respuesta de error guardada por el navegador o el CDN.
+          img.src = n >= 1 ? original + (original.includes("?") ? "&" : "?") + "_r=" + Date.now() : original;
+        });
+      }, espera);
+      return true;
+    }
   }
   const alts = portadaAlternativas(original);
   const n = Number(img.dataset.intentoPortada || 0);
@@ -482,8 +492,12 @@ function obtenerPortada(url) {
   // Con proxy propio, las de Manwhaweb van directas por él (la URL original siempre da 403).
   if (esMW(url) && window.PWA_CONFIG?.mwProxy) return Promise.resolve(portadaAlternativas(url)[0]);
   const p = (async () => {
-    // Se muestra ya (el navegador la descarga); la caché local y el predecodificado se hacen en segundo plano
-    if (guardarPortadasActivado()) guardarEnCache(url).catch((e) => console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e));
+    // Una sola petición por portada: primero se descarga y guarda (con límite de descargas simultáneas)
+    // y solo después se pinta, desde la copia local. Si no se puede guardar, se pinta igualmente desde la red.
+    // Antes se pedía 3-4 veces a la vez y el CDN rechazaba algunas.
+    if (guardarPortadasActivado()) {
+      try { await guardarEnCache(url); } catch (e) { console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e); }
+    }
     predecodificar(url).then(() => portadaMem.add(url));
     return url;
   })().finally(() => portadaPend.delete(url));
