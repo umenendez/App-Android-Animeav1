@@ -1190,10 +1190,9 @@ async function migrarAnimeFlvLocal() {
     const encontrado = await buscarEnAnimeAV1(it.title, it.url);
     if (encontrado) {
       const c = { row: it.row, url: encontrado.url };
-      if (!it.cover) {
-        const imagenUrl = extraerPortadaDesdeHtml(encontrado.html);
-        if (imagenUrl) { c.cover = imagenUrl; precachearImagen(imagenUrl); }
-      }
+      // La portada pasa a ser la de AnimeAV1 (sustituye a la de AnimeFLV)
+      const imagenUrl = extraerPortadaDesdeHtml(encontrado.html);
+      if (imagenUrl) { c.cover = imagenUrl; precachearImagen(imagenUrl); }
       cambios.push(c);
       migradas++;
     } else if (!it.cover) {
@@ -3066,7 +3065,8 @@ async function migrarAnimeFlv() {
       });
       migradas++;
 
-      if (!yaTienePortada) {
+      {
+        // La portada pasa a ser la de AnimeAV1 (sustituye a la de AnimeFLV)
         const imagenUrl = extraerPortadaDesdeHtml(encontrado.html);
         if (imagenUrl) {
           requests.push({
