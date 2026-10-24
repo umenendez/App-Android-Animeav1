@@ -3727,10 +3727,12 @@ migrateFlvBtn.addEventListener("click", async () => {
     migrateStatusEl.textContent = "Error: " + (res?.error || "error desconocido");
     return;
   }
+  migrateStatusEl.style.whiteSpace = "pre-wrap";
   migrateStatusEl.textContent =
     `Migrados a AnimeAV1: ${res.migradas} (portadas de AnimeAV1 aplicadas: ${res.portadasAV1 ?? 0}). ` +
     `Portada de AnimeFLV usada (sin equivalente en AnimeAV1): ${res.portadasFlv}. ` +
-    `Sin cambios: ${res.sinCambios}.`;
+    `Sin cambios: ${res.sinCambios}.` +
+    (res.fallos?.length ? "\nNo encontradas:\n" + res.fallos.map((f) => `• ${f.titulo} → ${f.motivo}`).join("\n") : "");
   cargar();
 });
 

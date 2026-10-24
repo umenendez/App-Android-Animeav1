@@ -875,10 +875,10 @@
   }
 
   async function migrarAnimeFlvLocal() {
-    const cambios = []; let migradas = 0, portadasFlv = 0, sinCambios = 0, portadasAV1 = 0;
+    const cambios = []; let migradas = 0, portadasFlv = 0, sinCambios = 0, portadasAV1 = 0; const fallos = [];
     for (const it of leerDatosLocal().items) {
       if (!it.url.includes("animeflv")) continue;
-      const encontrado = await buscarEnAnimeAV1(it.title,it.url);
+      const encontrado = await buscarEnAnimeAV1(it.title,it.url,fallos);
       if (encontrado) {
         const c = { row: it.row, url: encontrado.url };
         { const img = extraerPortadaDesdeHtml(encontrado.html); if (img) { c.cover = img; precachearImagen(img); portadasAV1++; } }
@@ -895,7 +895,8 @@
       for (const c of cambios) { const it = d.items.find((i) => i.row === c.row); if (!it) continue; if (c.url) it.url = c.url; if (c.cover) it.cover = c.cover; }
       guardarDatosLocal(d);
     }
-    return { migradas, portadasFlv, sinCambios, portadasAV1 };
+    if (fallos.length) console.log("[AnimeAV1 Tracker] Sin equivalente en AnimeAV1:", fallos);
+    return { migradas, portadasFlv, sinCambios, portadasAV1, fallos: fallos.slice(0, 8) };
   }
 
   // Mayor número de capítulo que aparece en la ficha de la serie (enlaces .../media/<slug>/<n>) y si la serie está en
@@ -1224,34 +1225,41 @@
   // Slug de una ficha de AnimeFLV (cualquier subdominio: www.animeflv.net, www3., www4., …): /anime/<slug>
   function slugDeAnimeFlv(enlace){try{const u=new URL(enlace);if(!/(^|\.)animeflv\.net$/i.test(u.hostname))return "";const m=u.pathname.match(/\/anime\/([^/]+)/i);return m?m[1].toLowerCase():"";}catch(e){return "";}}
   const compactoTitulo=(t)=>normalizarTitulo(t).replace(/ /g,"");
-  async function buscarEnAnimeAV1(titulo,enlaceFlv){
+  function parecidoTitulos(a,b){const A=new Set(normalizarTitulo(a).split(" ").filter(Boolean)),B=new Set(normalizarTitulo(b).split(" ").filter(Boolean));if(!A.size||!B.size)return 0;let c=0;for(const w of A)if(B.has(w))c++;return c/Math.max(A.size,B.size);}
+  // `motivos` (opcional): array donde se anota por qué no se encontró cada candidato (diagnóstico)
+  async function buscarEnAnimeAV1(titulo,enlaceFlv,motivos){
     const slugFlv=slugDeAnimeFlv(enlaceFlv);
     const candidatos=[...new Set([slugify(titulo),slugFlv,slugFlv.replace(/-?(tv|season-?\d+)$/,"")].filter(Boolean))];
+    const notas=[];
     for(const slug of candidatos){
       const url=`https://animeav1.com/media/${slug}`;
       try{
         const r=await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(url)}`);
         const up=Number(r.headers.get("X-Proxy-Upstream-Status")||0);
-        if(!r.ok||(up&&up>=400))continue;
+        if(!r.ok||(up&&up>=400)){notas.push(`${slug}: HTTP ${up||r.status}`);continue;}
         const html=await r.text();
-        const m=html.match(/<h1[^>]*>([^<]+)<\/h1>/i);const h=m?m[1].trim():"";
-        if(!h)continue;
+        const m=html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);const h=m?m[1].replace(/<[^>]*>/g," ").replace(/\s+/g," ").trim():"";
+        if(!h){notas.push(`${slug}: sin título en la ficha`);continue;}
         const ch=compactoTitulo(h);
-        if(ch===compactoTitulo(titulo)||(slugFlv&&ch===slugFlv.replace(/-/g,"")))return {url,html};
-      }catch(e){}
+        const igual=ch===compactoTitulo(titulo)||(slugFlv&&ch===slugFlv.replace(/-/g,""));
+        const parecido=slug===slugFlv&&Math.max(parecidoTitulos(h,titulo),parecidoTitulos(h,slugFlv.replace(/-/g," ")))>=0.5;
+        if(igual||parecido)return {url,html};
+        notas.push(`${slug}: la ficha se llama «${h}»`);
+      }catch(e){notas.push(`${slug}: ${e&&e.message||"error de red"}`);}
     }
+    if(Array.isArray(motivos))motivos.push({titulo,motivo:notas.join(" · ")||"sin candidatos"});
     return null;
   }
   function extraerPortadaAnimeFlv(html){const a=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);if(a)return a[1];const b=html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);return b?b[1]:null;}
   async function migrarAnimeFlv(){
     if (await esListaLocal()) return migrarAnimeFlvLocal();
-    const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0,portadasAV1=0;
-    for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!enlace.includes("animeflv"))continue;const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo,enlace);
+    const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0,portadasAV1=0;const fallos=[];
+    for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!enlace.includes("animeflv"))continue;const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo,enlace,fallos);
       if(encontrado){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:3,endColumnIndex:4},rows:[{values:[{userEnteredValue:{stringValue:titulo},textFormatRuns:[{startIndex:0,format:{link:{uri:encontrado.url}}}]}]}],fields:"userEnteredValue,textFormatRuns"}});migradas++;{const img=extraerPortadaDesdeHtml(encontrado.html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasAV1++;}}}
       else if(!ya){try{const html=await leerPaginaWorker(enlace);const img=extraerPortadaAnimeFlv(html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasFlv++;}else sinCambios++;}catch(e){sinCambios++;}}
       else sinCambios++;
     }
-    if(requests.length)await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});return{migradas,portadasFlv,sinCambios,portadasAV1};
+    if(requests.length)await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});if(fallos.length)console.log("[AnimeAV1 Tracker] Sin equivalente en AnimeAV1:",fallos);return{migradas,portadasFlv,sinCambios,portadasAV1,fallos:fallos.slice(0,8)};
   }
 
   // --- Listas en la nube (Cloudflare D1) ----------------------------------------------

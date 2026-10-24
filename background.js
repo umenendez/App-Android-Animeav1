@@ -1185,9 +1185,10 @@ async function migrarAnimeFlvLocal() {
   const d = await leerDatosLocal();
   const cambios = [];
   let migradas = 0, portadasFlv = 0, sinCambios = 0, portadasAV1 = 0;
+  const fallos = [];
   for (const it of d.items) {
     if (!it.url.includes("animeflv")) continue;
-    const encontrado = await buscarEnAnimeAV1(it.title, it.url);
+    const encontrado = await buscarEnAnimeAV1(it.title, it.url, fallos);
     if (encontrado) {
       const c = { row: it.row, url: encontrado.url };
       // La portada pasa a ser la de AnimeAV1 (sustituye a la de AnimeFLV)
@@ -1218,7 +1219,8 @@ async function migrarAnimeFlvLocal() {
     });
     reindexarViendo();
   }
-  return { migradas, portadasFlv, sinCambios, portadasAV1 };
+  if (fallos.length) console.log("[AnimeAV1 Tracker] Sin equivalente en AnimeAV1:", fallos);
+  return { migradas, portadasFlv, sinCambios, portadasAV1, fallos: fallos.slice(0, 8) };
 }
 
 // --- Listas en la nube (Cloudflare D1) ----------------------------------------------
@@ -3004,22 +3006,39 @@ function slugDeAnimeFlv(enlace) {
 
 const compactoTitulo = (t) => normalizarTitulo(t).replace(/ /g, "");
 
-async function buscarEnAnimeAV1(titulo, enlaceFlv) {
+// Parecido entre dos títulos por palabras (0-1): tolera subtítulos o artículos de más/de menos
+function parecidoTitulos(a, b) {
+  const A = new Set(normalizarTitulo(a).split(" ").filter(Boolean));
+  const B = new Set(normalizarTitulo(b).split(" ").filter(Boolean));
+  if (!A.size || !B.size) return 0;
+  let comunes = 0;
+  for (const w of A) if (B.has(w)) comunes++;
+  return comunes / Math.max(A.size, B.size);
+}
+
+// `motivos` (opcional): array donde se anota por qué no se encontró cada candidato (para diagnóstico)
+async function buscarEnAnimeAV1(titulo, enlaceFlv, motivos) {
   const slugFlv = slugDeAnimeFlv(enlaceFlv);
   const candidatos = [...new Set([slugify(titulo), slugFlv, slugFlv.replace(/-?(tv|season-?\d+)$/, "")].filter(Boolean))];
+  const notas = [];
   for (const slug of candidatos) {
     const url = `https://animeav1.com/media/${slug}`;
     try {
       const res = await fetch(url);
-      if (!res.ok) continue;
+      if (!res.ok) { notas.push(`${slug}: HTTP ${res.status}`); continue; }
       const html = await res.text();
-      const h1Match = html.match(/<h1[^>]*>([^<]+)<\/h1>/i);
-      const h1 = h1Match ? h1Match[1].trim() : "";
-      if (!h1) continue;
+      const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+      const h1 = h1Match ? h1Match[1].replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim() : "";
+      if (!h1) { notas.push(`${slug}: sin título en la ficha`); continue; }
       const ch = compactoTitulo(h1);
-      if (ch === compactoTitulo(titulo) || (slugFlv && ch === slugFlv.replace(/-/g, ""))) return { url, html };
-    } catch (e) {}
+      const igual = ch === compactoTitulo(titulo) || (slugFlv && ch === slugFlv.replace(/-/g, ""));
+      // El enlace de AnimeFLV y el de AnimeAV1 comparten slug casi siempre: si existe y el título se parece, vale
+      const parecido = slug === slugFlv && Math.max(parecidoTitulos(h1, titulo), parecidoTitulos(h1, slugFlv.replace(/-/g, " "))) >= 0.5;
+      if (igual || parecido) return { url, html };
+      notas.push(`${slug}: la ficha se llama «${h1}»`);
+    } catch (e) { notas.push(`${slug}: ${e && e.message || "error de red"}`); }
   }
+  if (Array.isArray(motivos)) motivos.push({ titulo, motivo: notas.join(" · ") || "sin candidatos" });
   return null;
 }
 
@@ -3041,6 +3060,7 @@ async function migrarAnimeFlv() {
   let portadasFlv = 0;
   let sinCambios = 0;
   let portadasAV1 = 0;
+  const fallos = [];
 
   for (let i = 0; i < filas.length; i++) {
     const values = filas[i].values || [];
@@ -3050,7 +3070,7 @@ async function migrarAnimeFlv() {
     const titulo = values[0]?.formattedValue || "";
     const yaTienePortada = (values[6]?.formattedValue || "").trim() !== "";
 
-    const encontrado = await buscarEnAnimeAV1(titulo, enlace);
+    const encontrado = await buscarEnAnimeAV1(titulo, enlace, fallos);
 
     if (encontrado) {
       requests.push({
@@ -3116,5 +3136,6 @@ async function migrarAnimeFlv() {
     await sheetsFetch(":batchUpdate", token, { method: "POST", body: JSON.stringify({ requests }) });
   }
 
-  return { migradas, portadasFlv, sinCambios, portadasAV1 };
+  if (fallos.length) console.log("[AnimeAV1 Tracker] Sin equivalente en AnimeAV1:", fallos);
+  return { migradas, portadasFlv, sinCambios, portadasAV1, fallos: fallos.slice(0, 8) };
 }
