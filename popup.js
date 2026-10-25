@@ -323,7 +323,7 @@ function cargarFiltros() {
 // La primera vez se descarga y se guarda en la Cache Storage de la extensión
 // (compartida con background.js). Las siguientes veces se lee de ahí, sin red.
 
-const COVER_CACHE = "anime-covers-v3";
+const COVER_CACHE = "anime-covers-v2";
 const portadasEnCache = new Set();
 
 function actualizarContadorPortadas() {
@@ -366,7 +366,7 @@ function aplicarPreferenciaPortadas() {
 const portadaMem = new Set();    // urls ya descargadas y listas para pintar
 const portadaPend = new Map();   // url -> Promise en curso (evita descargas duplicadas)
 const portadaImgs = new Map();   // referencias a imágenes predecodificadas (máx. 80)
-let portadaSlots = 4;
+let portadaSlots = 6;
 const portadaCola = [];
 function portadaSlot() {
   return new Promise((res) => { if (portadaSlots > 0) { portadaSlots--; res(); } else portadaCola.push(res); });
@@ -380,36 +380,11 @@ function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else port
 function esMW(url) {
   try { return /(^|\.)img\d+mw\.xyz$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
 }
-// animeav1 (y su CDN) también se piden sin Referer: así lo hace la extensión y evita que el
-// anti-hotlink del CDN rechace algunas portadas cuando llegan con el Referer de github.io.
-function sinReferer(url) {
-  try { return esMW(url) || /(^|\.)animeav1\.com$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
+// Portadas de AnimeAV1 (cdn.animeav1.com): se piden sin Referer (con el de la PWA el CDN puede rechazarlas)
+function esCdnAV1(url) {
+  try { return /(^|\.)cdn\.animeav1\.com$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
 }
-const politicaReferer = (url) => (sinReferer(url) ? "no-referrer" : "strict-origin-when-cross-origin");
-
-// Comprueba que la URL carga como imagen de verdad (pasa por el Service Worker, o sea, por la copia guardada).
-function imagenValida(url) {
-  return new Promise((resolve) => {
-    const im = new Image();
-    const t = setTimeout(() => resolve(false), 10000);
-    im.referrerPolicy = politicaReferer(url);
-    im.onload = () => { clearTimeout(t); resolve(true); };
-    im.onerror = () => { clearTimeout(t); resolve(false); };
-    im.src = url;
-  });
-}
-
-// Borra una portada de todas las cachés de portadas (una copia opaca podía ser un error guardado).
-async function purgarPortada(url) {
-  portadaMem.delete(url); portadasEnCache.delete(url); portadaImgs.delete(url);
-  try {
-    for (const k of await caches.keys()) {
-      if (k.startsWith("anime-covers-")) await (await caches.open(k)).delete(url);
-    }
-  } catch (_) {}
-  try { actualizarContadorPortadas(); } catch (_) {}
-}
-
+const sinReferer = (url) => esMW(url) || esCdnAV1(url);
 function portadaAlternativas(url) {
   try {
     const u = new URL(url, location.href);
@@ -426,22 +401,6 @@ function portadaAlternativas(url) {
 }
 // Siguiente intento tras un error de carga; devuelve false si ya no quedan.
 function reintentarPortada(img, original) {
-  // Portadas normales: si falla, puede ser una copia local corrupta. Se borra y se pide de nuevo a la red, sin Referer (una vez).
-  if (!esMW(original)) {
-    const n = Number(img.dataset.portadaCurada || 0);
-    if (n < 3) {
-      img.dataset.portadaCurada = String(n + 1);
-      const espera = [1500, 5000, 12000][n];
-      setTimeout(() => {
-        purgarPortada(original).finally(() => {
-          img.referrerPolicy = politicaReferer(original);
-          // A partir del 2.º reintento se evita también una respuesta de error guardada por el navegador o el CDN.
-          img.src = n >= 1 ? original + (original.includes("?") ? "&" : "?") + "_r=" + Date.now() : original;
-        });
-      }, espera);
-      return true;
-    }
-  }
   const alts = portadaAlternativas(original);
   const n = Number(img.dataset.intentoPortada || 0);
   if (n >= alts.length) return false;
@@ -454,6 +413,7 @@ function reintentarPortada(img, original) {
 function predecodificar(url) {
   return new Promise((resolve) => {
     const img = new Image();
+    if (sinReferer(url)) img.referrerPolicy = "no-referrer";
     const t = setTimeout(resolve, 8000);
     const fin = () => { clearTimeout(t); resolve(); };
     img.onload = fin; img.onerror = fin;
@@ -474,11 +434,9 @@ async function guardarEnCache(url) {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 12000);
       let res;
-      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: politicaReferer(url), signal: ctl.signal }); } finally { clearTimeout(t); }
+      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: sinReferer(url) ? "no-referrer" : "strict-origin-when-cross-origin", signal: ctl.signal }); } finally { clearTimeout(t); }
       if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
       await cache.put(url, res.clone());
-      // Una respuesta opaca puede ser un error (403/429/5xx): se comprueba que carga como imagen o se descarta.
-      if (!(await imagenValida(url))) { await cache.delete(url); throw new Error("la copia guardada no es una imagen válida"); }
     } finally { portadaLiberar(); }
   }
   portadasEnCache.add(url);
@@ -492,12 +450,8 @@ function obtenerPortada(url) {
   // Con proxy propio, las de Manwhaweb van directas por él (la URL original siempre da 403).
   if (esMW(url) && window.PWA_CONFIG?.mwProxy) return Promise.resolve(portadaAlternativas(url)[0]);
   const p = (async () => {
-    // Una sola petición por portada: primero se descarga y guarda (con límite de descargas simultáneas)
-    // y solo después se pinta, desde la copia local. Si no se puede guardar, se pinta igualmente desde la red.
-    // Antes se pedía 3-4 veces a la vez y el CDN rechazaba algunas.
-    if (guardarPortadasActivado()) {
-      try { await guardarEnCache(url); } catch (e) { console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e); }
-    }
+    // Se muestra ya (el navegador la descarga); la caché local y el predecodificado se hacen en segundo plano
+    if (guardarPortadasActivado()) guardarEnCache(url).catch((e) => console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e));
     predecodificar(url).then(() => portadaMem.add(url));
     return url;
   })().finally(() => portadaPend.delete(url));
@@ -530,7 +484,7 @@ function crearPortada(anime, clase, observador) {
       if (reintentarPortada(img, original)) return;
       caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true;
     };
-    img.referrerPolicy = politicaReferer(original);
+    if (sinReferer(original)) img.referrerPolicy = "no-referrer";
     img.src = original;
   };
   const cargar = () => { if (portadaMem.has(url)) asignar(url); else obtenerPortada(url).then(asignar); };
@@ -1360,7 +1314,7 @@ function renderItem(anime) {
     img.dataset.src = portadaSrc;
     img.addEventListener("load", () => img.classList.add("lista"));
     img.addEventListener("error", () => { reintentarPortada(img, portadaSrc); });
-    img.referrerPolicy = politicaReferer(portadaSrc);
+    if (sinReferer(portadaSrc)) img.referrerPolicy = "no-referrer";
     portada.append(img);
     if (portadaMem.has(portadaSrc)) img.src = portadaSrc; else observador.observe(img);
   } else {
@@ -3575,19 +3529,28 @@ fillCoversBtn.addEventListener("click", async () => {
   cargar();
 });
 
+window.addEventListener("migrar-progreso", (e) => { migrateStatusEl.textContent = e.detail; });
 migrateFlvBtn.addEventListener("click", async () => {
   migrateFlvBtn.disabled = true;
-  migrateStatusEl.textContent = "Revisando enlaces de AnimeFLV… puede tardar un poco.";
+  const textoBoton = migrateFlvBtn.textContent;
+  migrateFlvBtn.textContent = "Migrando…";
+  migrateStatusEl.style.whiteSpace = "pre-wrap";
+  migrateStatusEl.textContent = "Preparando… leyendo tu lista.";
   const res = await enviarMensaje({ type: "MIGRATE_ANIMEFLV" });
   migrateFlvBtn.disabled = false;
+  migrateFlvBtn.textContent = textoBoton;
   if (!res || !res.ok) {
     migrateStatusEl.textContent = "Error: " + (res?.error || "error desconocido");
     return;
   }
+  migrateStatusEl.style.whiteSpace = "pre-wrap";
   migrateStatusEl.textContent =
-    `Migrados a AnimeAV1: ${res.migradas}. ` +
+    `Listo (${res.total ?? "?"} series revisadas). ` +
+    `Migrados a AnimeAV1: ${res.migradas} (portadas de AnimeAV1 aplicadas: ${res.portadasAV1 ?? 0}). ` +
+    `Portadas corregidas o sustituidas en series ya migradas: ${res.refrescadas ?? 0}. ` +
     `Portada de AnimeFLV usada (sin equivalente en AnimeAV1): ${res.portadasFlv}. ` +
-    `Sin cambios: ${res.sinCambios}.`;
+    `Sin cambios: ${res.sinCambios}.` +
+    (res.fallos?.length ? "\nNo encontradas:\n" + res.fallos.map((f) => `• ${f.titulo} → ${f.motivo}`).join("\n") : "");
   cargar();
 });
 

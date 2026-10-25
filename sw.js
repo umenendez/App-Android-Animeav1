@@ -1,8 +1,9 @@
 // Sube la versión (vNN) cuando cambien los archivos de CORE: el activate borra
-// las cachés antiguas. Último bump: v54 (portadas: reintentos y una sola petición).
-const CACHE = "animeav1-pwa-v54";
-const COVER_CACHE = "anime-covers-v3"; // v3: descarta copias opacas antiguas que podían ser respuestas de error
+// las cachés antiguas. Último bump: v52 (avisos push de capítulos nuevos).
+const CACHE = "animeav1-pwa-v61";
+const COVER_CACHE = "anime-covers-v2";
 const MW = /(^|\.)img\d+mw\.xyz$/i;
+const CDN_AV1 = /(^|\.)cdn\.animeav1\.com$/i;
 const CORE = ["./", "./index.html", "./theme.js", "./config.js", "./pwa-api.js", "./popup.js", "./register-sw.js", "./privacy.html", "./icon16.png", "./icon48.png", "./icon128.png", "./icon192.png", "./icon512.png", "./manifest.webmanifest"];
 
 self.addEventListener("install", event => {
@@ -24,7 +25,7 @@ self.addEventListener("activate", event => {
     // Limpia portadas de Manwhaweb guardadas antes (podían ser respuestas de error).
     try {
       const cc = await caches.open(COVER_CACHE);
-      for (const r of await cc.keys()) if (MW.test(new URL(r.url).hostname)) await cc.delete(r);
+      for (const r of await cc.keys()) { const h = new URL(r.url).hostname; if (MW.test(h) || CDN_AV1.test(h)) await cc.delete(r); }
     } catch (_) {}
     await self.clients.claim();
   })());
