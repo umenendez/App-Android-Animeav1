@@ -1288,8 +1288,8 @@ function pintarBarraAgrupar() {
   if (!modoAgrupar) { barra.hidden = true; return; }
   barra.innerHTML = "";
   const n = seleccionAgrupar.size;
-  const texto = el("span", { textContent: `${n} serie${n === 1 ? "" : "s"} seleccionada${n === 1 ? "" : "s"}` });
-  const agrupar = el("button", { className: "btn-mini", type: "button", textContent: "Agrupar", disabled: n < 2 });
+  const texto = el("span", { className: "grupo-barra-texto", textContent: n < 2 ? `${n} seleccionada${n === 1 ? "" : "s"} · elige al menos 2` : `${n} series seleccionadas` });
+  const agrupar = el("button", { className: "btn-mini btn-agrupar-ok", type: "button", textContent: "Agrupar", disabled: n < 2 });
   agrupar.addEventListener("click", crearGrupoDesdeSeleccion);
   const limpiar = el("button", { className: "btn-mini", type: "button", textContent: "Limpiar", disabled: n === 0,
     onclick: () => { seleccionAgrupar.clear(); pintarBarraAgrupar(); render(); } });
@@ -1355,9 +1355,17 @@ function abrirDialogoGrupo(grupo) {
   const miembros = miembrosDeGrupo(grupo);
   dlgGrupoEl.innerHTML = "";
   const titulo = el("h2", { textContent: grupo.title });
-  const sub = el("p", { className: "ayuda-opciones", textContent: `${miembros.length} ${miembros.length === 1 ? "serie" : "series"} dentro del grupo. La nota del grupo es independiente de las notas individuales.` });
+  const contador = el("span", { className: "grupo-contador", textContent: `${miembros.length} ${miembros.length === 1 ? "serie" : "series"}` });
+  const cabecera = el("div", { className: "grupo-cabecera" }, titulo, contador);
+  const sub = el("p", { className: "ayuda-opciones", textContent: "La nota del grupo es independiente de las notas de cada serie." });
   const lista = el("div", { className: "grupo-miembros" });
   miembros.forEach(a => lista.append(renderItem(a)));
+  // El observador de portadas solo vigila #lista; el diálogo queda fuera, así que sus portadas se cargan aquí.
+  lista.querySelectorAll("img.cover[data-src]").forEach((img) => {
+    observador.unobserve(img);
+    const src = img.dataset.src;
+    if (portadaMem.has(src)) img.src = src; else cargarPortada(src).then((r) => { img.src = r; });
+  });
   if (!miembros.length) lista.append(el("p", { className: "vacio-listas", textContent: "El grupo está vacío." }));
 
   const nombre = el("input", { type: "text", value: grupo.title, placeholder: "Nombre del grupo", ariaLabel: "Nombre del grupo" });
@@ -1378,7 +1386,7 @@ function abrirDialogoGrupo(grupo) {
     toast("Grupo guardado");
   });
 
-  const editarContenido = el("button", { className: "btn-mini", type: "button", textContent: "Editar series…" });
+  const editarContenido = el("button", { className: "btn-mini", type: "button", textContent: "Añadir / quitar series…" });
   editarContenido.addEventListener("click", () => editarMiembrosGrupo(grupo));
   const desagrupar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Deshacer grupo" });
   desagrupar.addEventListener("click", async () => {
@@ -1390,36 +1398,50 @@ function abrirDialogoGrupo(grupo) {
     toast("Grupo deshecho");
   });
 
-  const campos = el("div", { className: "edicion" },
-    campoEdicion("Nombre", grupo.title, "", () => {}),
-    el("label", { className: "campo-ed", textContent: "Nota", }, nota),
-    el("label", { className: "campo-ed", textContent: "Géneros", }, genero),
-    el("label", { className: "campo-ed", textContent: "Portada (URL)", }, portada)
+  const campo = (clase, etiqueta, input) => el("label", { className: `campo-ed ${clase}` }, etiqueta, input);
+  const campos = el("div", { className: "grupo-campos" },
+    campo("ancho", "Nombre", nombre),
+    campo("", "Nota", nota),
+    campo("", "Géneros", genero),
+    campo("ancho", "Portada (URL)", portada)
   );
-  // campoEdicion crea su propio input; sustituimos el primero por el input ya preparado.
-  campos.innerHTML = "";
-  campos.append(
-    el("label", { className: "campo-ed" }, "Nombre", nombre),
-    el("label", { className: "campo-ed" }, "Nota", nota),
-    el("label", { className: "campo-ed" }, "Géneros", genero),
-    el("label", { className: "campo-ed" }, "Portada (URL)", portada)
-  );
-  const pie = el("div", { className: "pos-actions" }, editarContenido, guardarGrupo, desagrupar,
-    el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgGrupoEl.close() }));
-  dlgGrupoEl.append(titulo, sub, campos, el("h3", { textContent: "Contenido" }), lista, pie);
+  const pie = el("div", { className: "grupo-pie" }, desagrupar,
+    el("span", { className: "grupo-pie-espacio" }),
+    editarContenido, el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgGrupoEl.close() }), guardarGrupo);
+  dlgGrupoEl.append(cabecera, sub, campos,
+    el("div", { className: "grupo-seccion" }, el("h3", { textContent: "Series del grupo" })),
+    lista, pie);
   dlgGrupoEl.showModal();
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); // sin foco automático en el campo «Nombre»
 }
 
 function editarMiembrosGrupo(grupo) {
   const disponibles = todosLosAnimes.filter(a => !esGrupo(a));
   dlgGrupoEl.innerHTML = "";
   const checks = new Map();
+  const filasEl = new Map();
   const lista = el("div", { className: "grupo-seleccion" });
+  const contador = el("span", { className: "grupo-contador" });
+  const actualizarContador = () => {
+    const n = [...checks.values()].filter(cb => cb.checked).length;
+    contador.textContent = `${n} ${n === 1 ? "marcada" : "marcadas"}`;
+  };
   disponibles.forEach(a => {
     const cb = el("input", { type: "checkbox", checked: String(a.group || "") === String(grupo.title || "") });
+    cb.addEventListener("change", () => { fila.classList.toggle("marcada", cb.checked); actualizarContador(); });
     checks.set(a.row, cb);
-    lista.append(el("label", { className: "marcar-mover" }, cb, el("span", { textContent: a.title })));
+    const mini = el("span", { className: "grupo-mini" });
+    if (a.cover) mini.style.backgroundImage = `url("${String(a.cover).replace(/^http:\/\//i, "https://").replace(/"/g, "%22")}")`;
+    const fila = el("label", { className: "grupo-fila" + (cb.checked ? " marcada" : "") }, cb, mini, el("span", { className: "grupo-fila-titulo", textContent: a.title }));
+    filasEl.set(a.row, { fila, texto: normalizar(a.title) });
+    lista.append(fila);
   });
+  const buscador = el("input", { type: "search", className: "grupo-buscar", placeholder: "Buscar serie…", ariaLabel: "Buscar serie" });
+  buscador.addEventListener("input", () => {
+    const q = normalizar(buscador.value.trim());
+    filasEl.forEach(({ fila, texto }) => { fila.hidden = !!q && !texto.includes(q); });
+  });
+  actualizarContador();
   const guardarMiembros = el("button", { className: "btn", type: "button", textContent: "Guardar contenido" });
   guardarMiembros.addEventListener("click", async () => {
     const filas = [...checks.entries()].filter(([,cb]) => cb.checked).map(([row]) => row);
@@ -1432,10 +1454,12 @@ function editarMiembrosGrupo(grupo) {
     await cargar();
     toast("Contenido del grupo actualizado");
   });
-  dlgGrupoEl.append(el("h2", { textContent: `Editar «${grupo.title}»` }),
+  dlgGrupoEl.append(
+    el("div", { className: "grupo-cabecera" }, el("h2", { textContent: `Editar «${grupo.title}»` }), contador),
     el("p", { className: "ayuda-opciones", textContent: "Marca las series que deben pertenecer al grupo. Las que desmarques vuelven a la lista principal." }),
-    lista,
-    el("div", { className: "pos-actions" }, guardarMiembros, el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => abrirDialogoGrupo(grupo) })));
+    buscador, lista,
+    el("div", { className: "grupo-pie" }, el("span", { className: "grupo-pie-espacio" }),
+      el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => abrirDialogoGrupo(grupo) }), guardarMiembros));
 }
 
 function render() {
@@ -1707,13 +1731,27 @@ function renderItem(anime) {
   }
 
   if (modoAgrupar && !esGrupo(anime)) {
-    const chk = el("input", { type: "checkbox", checked: seleccionAgrupar.has(anime.row), ariaLabel: `Seleccionar ${anime.title} para agrupar` });
-    chk.className = "grupo-check";
-    chk.addEventListener("change", () => {
-      if (chk.checked) seleccionAgrupar.add(anime.row); else seleccionAgrupar.delete(anime.row);
+    // Toda la tarjeta es el área de selección: una capa transparente la cubre y recoge el toque
+    // (así la nota, el estado y los enlaces no se tocan sin querer). La marca ✓ va en la esquina
+    // inferior de la portada, lejos de la nota (arriba a la izquierda).
+    card.classList.add("agrupable");
+    const marca = el("span", { className: "grupo-marca", textContent: "✓", ariaHidden: "true" });
+    portada.append(marca);
+    const capa = el("button", { className: "grupo-capa", type: "button", title: `Seleccionar «${anime.title}»` });
+    capa.setAttribute("role", "checkbox");
+    capa.setAttribute("aria-label", `Seleccionar ${anime.title} para agrupar`);
+    const pintar = () => {
+      const sel = seleccionAgrupar.has(anime.row);
+      card.classList.toggle("agrupada", sel);
+      capa.setAttribute("aria-checked", String(sel));
+    };
+    capa.addEventListener("click", () => {
+      if (seleccionAgrupar.has(anime.row)) seleccionAgrupar.delete(anime.row); else seleccionAgrupar.add(anime.row);
+      pintar();
       pintarBarraAgrupar();
     });
-    card.append(el("label", { className: "grupo-seleccion-card" }, chk, "Agrupar"));
+    pintar();
+    card.append(capa);
   }
   card.append(portada, info);
   return card;

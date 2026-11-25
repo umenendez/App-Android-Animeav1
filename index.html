@@ -81,11 +81,59 @@
     .titulo-grupo { border: 0; background: transparent; padding: 0; text-align: left; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
     .titulo-grupo:hover { color: var(--accent); }
     .grupo-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
-    .grupo-seleccion-card { position: absolute; top: 8px; left: 8px; z-index: 3; display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 999px; background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--border); font-size: 11px; }
-    .grupo-seleccion-card .grupo-check { margin: 0; }
-    .grupo-miembros { display: grid; gap: 8px; max-height: 48vh; overflow: auto; margin: 8px 0 14px; }
-    .grupo-miembros .card { margin: 0; }
-    .grupo-seleccion { display: grid; gap: 4px; max-height: 55vh; overflow: auto; margin: 10px 0 14px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; }
+    /* Modo agrupar: la tarjeta entera es el área de selección */
+    .card.agrupable { cursor: pointer; transition: outline-color .12s, transform .12s; outline: 2px solid transparent; outline-offset: 1px; }
+    .grupo-capa { position: absolute; inset: 0; z-index: 20; border: 0; padding: 0; margin: 0; background: transparent; border-radius: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    .grupo-capa:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+    .grupo-marca { position: absolute; right: 7px; bottom: 9px; z-index: 5; width: 26px; height: 26px; display: grid; place-items: center; border-radius: 50%; font-size: 15px; font-weight: 800; line-height: 1; color: transparent; background: rgba(15, 20, 29, .55); border: 2px solid rgba(255,255,255,.9); box-shadow: 0 1px 4px rgba(0,0,0,.35); transition: background .12s, color .12s, transform .12s; pointer-events: none; }
+    .card.agrupada { outline-color: var(--accent); }
+    .card.agrupada .cover { filter: brightness(.7); }
+    .card.agrupada .grupo-marca { background: var(--accent); border-color: #fff; color: #fff; transform: scale(1.08); }
+    .card-grupo { border-style: dashed; }
+    .titulo-grupo { border: 0; background: transparent; padding: 0; text-align: left; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
+    .titulo-grupo:hover { color: var(--accent); }
+    .grupo-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+    /* Diálogo del grupo */
+    #dlgGrupo { width: min(680px, calc(100vw - 24px)); max-height: min(90vh, 900px); padding: 0; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(0,0,0,.32); overflow: hidden; }
+    #dlgGrupo[open] { display: flex; flex-direction: column; }
+    #dlgGrupo::backdrop { background: rgba(0,0,0,.58); backdrop-filter: blur(2px); }
+    #dlgGrupo > * { flex: none; }
+    #dlgGrupo > .grupo-miembros, #dlgGrupo > .grupo-seleccion { flex: 1 1 auto; }
+    #dlgGrupo > .grupo-cabecera { padding: 16px 18px 0; }
+    #dlgGrupo > .ayuda-opciones { padding: 0 18px; margin: 4px 0 0; }
+    .grupo-cabecera { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .grupo-cabecera h2 { flex: 1; min-width: 0; margin: 0; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .grupo-contador { flex: none; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--field); color: var(--muted); border: 1px solid var(--border); }
+    .grupo-campos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; padding: 12px 18px 4px; }
+    .grupo-campos .campo-ed { margin: 0; min-width: 0; }
+    .grupo-campos .campo-ed.ancho { grid-column: 1 / -1; }
+    .grupo-seccion { padding: 10px 18px 0; }
+    .grupo-seccion h3 { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    .grupo-miembros { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 8px 0 0; padding: 4px 18px 14px; display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px; align-content: start; }
+    .grupo-miembros .card { margin: 0; width: 100%; max-width: none; }
+    .grupo-miembros .info { padding: 5px; }
+    .grupo-miembros .info .genero, .grupo-miembros .edicion, .grupo-miembros .marcar-mover, .grupo-miembros .mover-lista, .grupo-miembros .chip-visto { display: none; }
+    .grupo-miembros .vacio-listas { grid-column: 1 / -1; text-align: center; color: var(--muted); padding: 20px 0; }
+    .grupo-pie { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--surface); }
+    .grupo-pie-espacio { flex: 1; }
+    .grupo-pie .btn { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    .grupo-pie .btn:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--accent); }
+
+    #barraMover .grupo-barra-texto { font-weight: 700; margin-right: auto; }
+    #barraMover .btn-agrupar-ok:not(:disabled) { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+
+    /* Pantalla «Añadir / quitar series» */
+    .grupo-buscar { margin: 10px 18px 0; padding: 7px 10px; font: inherit; font-size: 13px; color: var(--text); background: var(--field); border: 1px solid var(--border); border-radius: 10px; }
+    .grupo-seleccion { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; margin: 10px 18px 12px; border: 1px solid var(--border); border-radius: 12px; }
+    .grupo-fila { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 13px; }
+    .grupo-fila:last-child { border-bottom: 0; }
+    .grupo-fila[hidden] { display: none; }
+    .grupo-fila:hover { background: var(--field); }
+    .grupo-fila.marcada { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+    .grupo-fila input { flex: none; width: 18px; height: 18px; margin: 0; accent-color: var(--accent); }
+    .grupo-mini { flex: none; width: 34px; height: 48px; border-radius: 6px; background: var(--field) center / cover no-repeat; border: 1px solid var(--border); }
+    .grupo-fila-titulo { flex: 1; min-width: 0; line-height: 1.25; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 
     .aviso-img { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 10px; border-radius: 10px; background: rgba(255,170,0,.14); flex-shrink: 0; }
     .aviso-img[hidden] { display: none; }
@@ -634,7 +682,8 @@
   <dialog id="dlgComparar"></dialog>
   <dialog id="dlgGeneros"></dialog>
   <dialog id="dlgPosicionar" tabindex="-1"></dialog>
-  <dialog id="dlgSerie" tabindex="-1"></dialog>\n  <dialog id="dlgGrupo" tabindex="-1"></dialog>
+  <dialog id="dlgSerie" tabindex="-1"></dialog>
+  <dialog id="dlgGrupo" tabindex="-1"></dialog>
 
   <section id="agregarPanel" class="config" hidden>
     <h2>Añadir anime por enlace</h2>
