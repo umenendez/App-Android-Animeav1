@@ -78,28 +78,41 @@
     .ajuste.ajuste-fuente .ajuste-nombre small { display: block; color: var(--muted); overflow-wrap: anywhere; word-break: normal; }
     .btn-fijar[aria-pressed="true"] { background: var(--accent, #6c8cff); color: #fff; }
     .card-grupo { border-style: dashed; }
-    .card-grupo .portada {
+    /* La portada del grupo debe comportarse exactamente como una portada de tarjeta:
+       el contenedor define el tamaño y la imagen lo rellena sin deformarse. */
+    .card.card-grupo {
+      overflow: hidden;
+    }
+    .card.card-grupo > .portada {
       position: relative;
+      display: block;
+      flex: 0 0 auto;
       width: 100%;
       height: auto;
-      min-height: 0;
       aspect-ratio: 2 / 3;
+      min-width: 0;
+      min-height: 0;
       overflow: hidden;
       padding: 0;
+      margin: 0;
+      border-radius: 11px 11px 0 0;
     }
-    .card-grupo .portada .cover {
-      position: absolute;
-      inset: 0;
-      display: block;
+    .card.card-grupo > .portada > img.cover {
+      position: absolute !important;
+      inset: 0 !important;
+      display: block !important;
+      box-sizing: border-box;
       width: 100% !important;
       height: 100% !important;
-      min-width: 100%;
-      min-height: 100%;
-      max-width: none;
-      max-height: none;
+      min-width: 0 !important;
+      min-height: 0 !important;
+      max-width: none !important;
+      max-height: none !important;
       object-fit: cover !important;
-      object-position: center;
-      opacity: 1;
+      object-position: center center !important;
+      margin: 0 !important;
+      padding: 0 !important;
+      opacity: 1 !important;
     }
     .titulo-grupo { border: 0; background: transparent; padding: 0; text-align: left; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
     .titulo-grupo:hover { color: var(--accent); }
@@ -521,8 +534,19 @@
     /* Vista en lista (Opciones > Apariencia > Vista): filas compactas en vez de cards */
     #lista.vista-lista { grid-template-columns: 1fr; }
     #lista.vista-lista .card { width: 100%; max-width: none; justify-self: stretch; flex-direction: row; align-items: stretch; }
-    #lista.vista-lista .card-grupo .portada { width: 56px; flex: none; aspect-ratio: auto; min-height: 80px; height: auto; border-radius: 11px 0 0 11px; }
-    #lista.vista-lista .card-grupo .portada .cover { width: 100% !important; height: 100% !important; }
+    #lista.vista-lista .card.card-grupo { overflow: hidden; }
+    #lista.vista-lista .card-grupo > .portada {
+      width: 56px;
+      flex: 0 0 56px;
+      aspect-ratio: auto;
+      min-height: 80px;
+      height: auto;
+      border-radius: 11px 0 0 11px;
+    }
+    #lista.vista-lista .card-grupo > .portada > img.cover {
+      width: 100% !important;
+      height: 100% !important;
+    }
     #lista.vista-lista .info { flex: 1; min-width: 0; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; }
     #lista.vista-lista a.titulo { flex: 1 1 100%; min-height: 0; font-size: 12.5px; }
     #lista.vista-lista .info select.estado, #lista.vista-lista .info .genero { flex: 1 1 110px; min-width: 0; }
