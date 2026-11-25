@@ -5,6 +5,16 @@ carpetas (`chrome-extension_AnimeAV1-tracker/` y `android-app_AnimeAV1-tracker/`
 cualquier cambio de comportamiento se anota aquí una sola vez y se copia a las dos.
 Cuando una mejora es solo de una plataforma, se indica con **[ext]** o **[PWA]**.
 
+## 1.30.3
+
+### Portadas de AnimeFLV que no cargaban en la PWA **[PWA + Worker]**
+
+- **Causa:** `animeflv.net/uploads/…` comprueba el `Referer`. La extensión lo pone con una regla; una PWA no puede.
+- Se piden **sin `Referer`** y, si falla, se prueba por el **Worker** (que sí pone el `Referer` de AnimeFLV) y después por proxies de imágenes.
+- **Worker (`worker-completo.js`):** la ruta de imágenes sirve también `animeflv.net/uploads/…`. El resto de `animeflv.net` (fichas) no cambia.
+  Hay que volver a pegarlo y pulsar **Deploy**, y tener la URL del Worker en `mwProxy` de `config.js` (la misma que ya usas para Manwhaweb).
+- Caché de la PWA `v55`.
+
 ## 1.30.2
 
 ### Portadas intermitentes en la PWA **[PWA]**

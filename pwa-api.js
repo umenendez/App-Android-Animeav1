@@ -830,7 +830,7 @@
     const valores = new Array(12).fill(null).map(() => ({}));
     valores[0] = genero ? { userEnteredValue: { stringValue: genero } } : {};
     valores[2] = Number.isFinite(num) && num > 0 ? { userEnteredValue: { numberValue: num }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } } : {};
-    valores[3] = { userEnteredValue: { stringValue: n }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: `group:${gid}` } } }] };
+    valores[3] = { userEnteredValue: { stringValue: n } };
     valores[5] = { userEnteredValue: { stringValue: "" } };
     if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover.replace(/"/g, '""')}",1)` } };
     valores[11] = { userEnteredValue: { stringValue: n } };

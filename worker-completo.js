@@ -59,6 +59,9 @@ const PERMITIDOS = ["animeav1.com", "animeflv.net", "www.animeflv.net"];
 // Portadas de Manwhaweb
 const HOST_IMG_MW = /(^|\.)img\d+mw\.xyz$/i;
 const SITIO_MW = "https://manhwaweb.com/"; // web desde la que se ven normalmente las portadas
+// Portadas de AnimeFLV (animeflv.net/uploads/…): también exigen el Referer de su web
+const HOST_IMG_FLV = /(^|\.)animeflv\.net$/i;
+const SITIO_FLV = "https://animeflv.net/";
 
 const CORS_BASE = {
   "Access-Control-Allow-Origin": "*",
@@ -115,6 +118,8 @@ async function manejarProxy(url, request) {
 
   // Imágenes de Manwhaweb: se devuelven en bruto, con el Referer correcto
   if (HOST_IMG_MW.test(destino.hostname)) return manejarImagenMW(destino, request);
+  // Solo las imágenes de /uploads/; el resto de animeflv.net (fichas para el scraping) sigue por el proxy de texto
+  if (HOST_IMG_FLV.test(destino.hostname) && destino.pathname.startsWith("/uploads/")) return manejarImagenMW(destino, request, SITIO_FLV);
 
   const permitido = PERMITIDOS.some(
     (dominio) => destino.hostname === dominio || destino.hostname.endsWith("." + dominio)
@@ -155,14 +160,14 @@ async function manejarProxy(url, request) {
 // Aquí SÍ se devuelve el código de error real (no 200): un <img> necesita
 // un fallo de verdad para pasar al siguiente intento.
 
-async function manejarImagenMW(destino, request) {
+async function manejarImagenMW(destino, request, sitio = SITIO_MW) {
   if (destino.protocol !== "https:") {
     return new Response("Solo https", { status: 400, headers: CORS_BASE });
   }
   const origen = await fetch(destino.toString(), {
     headers: {
-      "Referer": SITIO_MW,
-      "Origin": SITIO_MW.replace(/\/$/, ""),
+      "Referer": sitio,
+      "Origin": sitio.replace(/\/$/, ""),
       "User-Agent": request.headers.get("User-Agent") || "Mozilla/5.0",
       "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
     },

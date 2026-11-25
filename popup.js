@@ -3631,6 +3631,7 @@ function mensajeError(error) {
   if (c.includes("ENLACE_INVALIDO")) return "Ese enlace no parece de Google Sheets (debe contener «/spreadsheets/d/…»).";
   if (c.includes("HOJA_NO_ENCONTRADA")) return "No se encuentra esa hoja. Revisa el enlace.";
   if (c.includes("SIN_PERMISO")) return "Tu cuenta de Google no tiene acceso a esa hoja. Comprueba que está compartida contigo con permiso de edición.";
+  if (c.includes("Error de Sheets API (400)")) return "Google Sheets ha rechazado los datos del grupo. Revisa la hoja y vuelve a intentarlo.";
   if (c.includes("TOKEN_INVALIDO")) return "La sesión de Google ha caducado. Inténtalo de nuevo.";
   if (c.includes("NECESITA_INICIO_SESION")) return "Toca el botón para iniciar sesión con Google.";
   if (c.includes("access_denied")) return "Has cancelado el inicio de sesión de Google.";
