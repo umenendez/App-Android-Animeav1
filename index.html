@@ -77,6 +77,16 @@
     .ajuste.ajuste-fuente .ajuste-nombre { flex: 1 0 100%; min-width: 0; display: block; }
     .ajuste.ajuste-fuente .ajuste-nombre small { display: block; color: var(--muted); overflow-wrap: anywhere; word-break: normal; }
     .btn-fijar[aria-pressed="true"] { background: var(--accent, #6c8cff); color: #fff; }
+    .card-grupo { border-style: dashed; }
+    .titulo-grupo { border: 0; background: transparent; padding: 0; text-align: left; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
+    .titulo-grupo:hover { color: var(--accent); }
+    .grupo-meta { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .grupo-seleccion-card { position: absolute; top: 8px; left: 8px; z-index: 3; display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 999px; background: color-mix(in srgb, var(--surface) 88%, transparent); border: 1px solid var(--border); font-size: 11px; }
+    .grupo-seleccion-card .grupo-check { margin: 0; }
+    .grupo-miembros { display: grid; gap: 8px; max-height: 48vh; overflow: auto; margin: 8px 0 14px; }
+    .grupo-miembros .card { margin: 0; }
+    .grupo-seleccion { display: grid; gap: 4px; max-height: 55vh; overflow: auto; margin: 10px 0 14px; padding: 6px; border: 1px solid var(--border); border-radius: 10px; }
+
     .aviso-img { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; padding: 6px 10px; border-radius: 10px; background: rgba(255,170,0,.14); flex-shrink: 0; }
     .aviso-img[hidden] { display: none; }
     #contador { font-size: 12px; color: var(--muted); }
@@ -163,7 +173,7 @@
     @media (min-width: 620px) { #lista { grid-template-columns: var(--cols, repeat(5, 1fr)); } }
     @media (min-width: 860px) { #lista { grid-template-columns: var(--cols, repeat(6, 1fr)); } }
     .card {
-      display: flex; flex-direction: column; min-width: 0; overflow: visible;
+      display: flex; flex-direction: column; min-width: 0; overflow: visible; position: relative;
       width: min(100%, var(--card-w, 100%)); max-width: var(--card-w, none); justify-self: center;
       background: color-mix(in srgb, var(--tinte) 12%, var(--surface));
       border: 1px solid color-mix(in srgb, var(--tinte) 40%, var(--border));
@@ -596,6 +606,9 @@
       <button id="btnPosicionar" class="icon-btn" title="Posicionar series" aria-label="Posicionar series">
         <svg viewBox="0 0 24 24"><path d="M12 3v18M5 6h14M7 6l-3 6h6L7 6Zm10 0-3 6h6l-3-6ZM4 12h6M14 12h6"/></svg>
       </button>
+      <button id="btnAgrupar" class="icon-btn" title="Crear grupos" aria-pressed="false" aria-label="Crear grupos">
+        <svg viewBox="0 0 24 24"><path d="M8 5h8v4H8zM5 15h6v4H5zM13 15h6v4h-6z"/><path d="M12 9v3M8 13h8"/></svg>
+      </button>
       <button id="btnStats" class="icon-btn" title="Estadísticas" aria-label="Estadísticas">
         <svg viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/><path d="M3 20h18"/></svg>
       </button>
@@ -621,7 +634,7 @@
   <dialog id="dlgComparar"></dialog>
   <dialog id="dlgGeneros"></dialog>
   <dialog id="dlgPosicionar" tabindex="-1"></dialog>
-  <dialog id="dlgSerie" tabindex="-1"></dialog>
+  <dialog id="dlgSerie" tabindex="-1"></dialog>\n  <dialog id="dlgGrupo" tabindex="-1"></dialog>
 
   <section id="agregarPanel" class="config" hidden>
     <h2>Añadir anime por enlace</h2>

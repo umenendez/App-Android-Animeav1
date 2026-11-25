@@ -3,7 +3,7 @@
  */
 (function () {
   const CFG = window.PWA_CONFIG || {};
-  const COVER_CACHE = "anime-covers-v1";
+  const COVER_CACHE = "anime-covers-v3";
   const ESTADO_VIENDO = "-";
 
   // En Android, si el navegador nota que casi no usas la PWA, puede borrar
@@ -438,10 +438,19 @@
 
   async function asegurarEncabezados() {
     const nombre = await getSheetName();
-    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(nombre, "A1:K1"))}&fields=sheets.data.rowData.values(formattedValue)`);
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(nombre, "A1:L1"))}&fields=sheets.data.rowData.values(formattedValue)`);
     const fila = data.sheets?.[0]?.data?.[0]?.rowData?.[0]?.values || [];
-    if (fila.some(c => (c.formattedValue || "").trim())) return false;
-    const encabezados = ["Género", "", "Nota", "Título", "Descripción", "Estado", "", "", "", "Portada", "Último capítulo"];
+    if (fila.some(c => (c.formattedValue || "").trim())) {
+      if (!(fila[11]?.formattedValue || "").trim()) {
+        await sheetsFetch(":batchUpdate", { method:"POST", body:JSON.stringify({ requests:[{ updateCells:{
+          range:{sheetId:gid,startRowIndex:0,endRowIndex:1,startColumnIndex:11,endColumnIndex:12},
+          rows:[{values:[{userEnteredValue:{stringValue:"Grupo"},userEnteredFormat:{textFormat:{bold:true}}}]}],
+          fields:"userEnteredValue,userEnteredFormat.textFormat"
+        }}] }) });
+      }
+      return false;
+    }
+    const encabezados = ["Género", "", "Nota", "Título", "Descripción", "Estado", "", "", "", "Portada", "Último capítulo", "Grupo"];
     const requests = [{ updateCells: {
       range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: encabezados.length },
       rows: [{ values: encabezados.map(t => ({ userEnteredValue: { stringValue: t }, userEnteredFormat: { textFormat: { bold: true } } })) }],
@@ -452,7 +461,7 @@
   }
 
   async function getFilasDaK(sheetName) {
-    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "D:K"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink,userEnteredValue)`);
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "D:L"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink)`);
     return data.sheets?.[0]?.data?.[0]?.rowData || [];
   }
 
@@ -475,7 +484,7 @@
       return leerDatosLocal().items;
     }
     const sheetName = await getSheetName();
-    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "A:K"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink,userEnteredValue)`);
+    const data = await sheetsFetch(`?ranges=${encodeURIComponent(rango(sheetName, "A:L"))}&fields=sheets.data.rowData.values(formattedValue,hyperlink,userEnteredValue)`);
     const rows = data.sheets?.[0]?.data?.[0]?.rowData || [];
     const lista = [];
     rows.forEach((r, i) => {
@@ -485,12 +494,12 @@
       if (!title) return;
       lista.push({ row:i+1, genre:v[0]?.formattedValue || "", score:v[2]?.formattedValue || "", title,
         url:v[3]?.hyperlink || "", status:(v[5]?.formattedValue || "").trim(), cover:extraerUrlImagen(v[9]),
-        lastEpisodeUrl:v[10]?.formattedValue || v[10]?.hyperlink || "" });
+        lastEpisodeUrl:v[10]?.formattedValue || v[10]?.hyperlink || "", group:v[11]?.formattedValue || "", isGroup:String(v[3]?.hyperlink || "").startsWith("group:") || (!!v[11]?.formattedValue && String(v[11].formattedValue).trim() === title.trim() && !v[3]?.hyperlink && !v[10]?.formattedValue) });
     });
     return lista;
   }
 
-  const COLUMNAS_EDITABLES = { score:2, status:5, genre:0, cover:9, lastEpisodeUrl:10 };
+  const COLUMNAS_EDITABLES = { score:2, status:5, genre:0, cover:9, lastEpisodeUrl:10, group:11 };
   async function actualizarCampo(row, campo, valor) {
     if (await esListaLocal()) return actualizarCampoLocal(row, campo, valor);
     await getSheetName();
@@ -642,20 +651,20 @@
     const sheetName = await getSheetName();
     const fila = await siguienteFilaLibre(sheetName);
 
-    const valores = new Array(11).fill(null).map(() => ({}));
+    const valores = new Array(12).fill(null).map(() => ({}));
     valores[3] = { userEnteredValue: { stringValue: title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: url } } }] };
     valores[5] = { userEnteredValue: { stringValue: ESTADO_VIENDO } };
     if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover}",1)` } };
     if (episodeUrl) valores[10] = { userEnteredValue: { stringValue: episodeUrl } };
 
     await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
-      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 12 },
       rows: [{ values: valores }],
       fields: "userEnteredValue,textFormatRuns"
     }}] }) });
 
     if (cover) precachearImagen(cover);
-    return { row: fila, title, url, cover: cover || "", status: ESTADO_VIENDO };
+    return { row: fila, title, url, cover: cover || "", status: ESTADO_VIENDO, group: "", isGroup: false };
   }
 
   // El usuario contestó a "¿Es la misma serie?"
@@ -701,7 +710,7 @@
     return {
       row, genre: String(x.genre ?? "").trim(), score: notaLocal(x.score), title,
       url: String(x.url ?? "").trim(), status: String(x.status ?? "").trim(),
-      cover: String(x.cover ?? "").trim(), lastEpisodeUrl: String(x.lastEpisodeUrl ?? "").trim(),
+      cover: String(x.cover ?? "").trim(), lastEpisodeUrl: String(x.lastEpisodeUrl ?? "").trim(), group: String(x.group ?? "").trim(), isGroup: !!x.isGroup,
     };
   }
 
@@ -753,15 +762,16 @@
     if (existe) throw new Error("YA_EXISTE");
     const fila = await siguienteFilaLibre(sheetName);
     const num = parseFloat(String(s.score ?? "").replace(",", "."));
-    const valores = new Array(11).fill(null).map(() => ({}));
+    const valores = new Array(12).fill(null).map(() => ({}));
     valores[0] = { userEnteredValue: { stringValue: String(s.genre ?? "") } };
     valores[2] = Number.isFinite(num) && num > 0 ? { userEnteredValue: { numberValue: num }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } } : {};
     valores[3] = s.url ? { userEnteredValue: { stringValue: title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: String(s.url) } } }] } : { userEnteredValue: { stringValue: title } };
     valores[5] = { userEnteredValue: { stringValue: String(s.status ?? "") } };
     if (s.cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${String(s.cover).replace(/"/g, '""')}",1)` } };
     if (s.lastEpisodeUrl) valores[10] = { userEnteredValue: { stringValue: String(s.lastEpisodeUrl) } };
+    if (s.group) valores[11] = { userEnteredValue: { stringValue: String(s.group) } };
     await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ updateCells: {
-      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+      range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 12 },
       rows: [{ values: valores }], fields: "userEnteredValue,textFormatRuns,userEnteredFormat.numberFormat"
     }}] }) });
     if (s.cover) precachearImagen(s.cover);
@@ -779,6 +789,212 @@
     await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ deleteDimension: { range: { sheetId: gid, dimension: "ROWS", startIndex: n - 1, endIndex: n } } }] }) });
   }
 
+  function idGrupoNuevo() {
+    return "g" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  }
+
+  async function crearGrupo(nombre, filas, datos = {}) {
+    const n = String(nombre || "").trim();
+    const rows = [...new Set((filas || []).map(Number).filter(x => Number.isInteger(x) && x >= 2))];
+    if (!n) throw new Error("FALTA_NOMBRE_GRUPO");
+    if (rows.length < 2) throw new Error("GRUPO_REQUIERE_DOS");
+    if (await esListaLocal()) {
+      const d = leerDatosLocal();
+      const miembros = d.items.filter(it => rows.includes(Number(it.row)));
+      if (miembros.length !== rows.length) throw new Error("FILA_NO_ENCONTRADA");
+      if (miembros.some(it => it.isGroup)) throw new Error("NO_SE_PUEDE_AGRUPAR_GRUPO");
+      if (d.items.some(it => !it.isGroup && String(it.group || "").trim() === n)) throw new Error("NOMBRE_GRUPO_EXISTE");
+      const gid = idGrupoNuevo();
+      const grupo = {
+        row: d.siguiente++, genre: String(datos.genre || miembros.flatMap(x => String(x.genre || "").split(",").map(s => s.trim()).filter(Boolean)).filter(Boolean).join(", ")).trim(),
+        score: notaLocal(datos.score), title: n, url: `group:${gid}`, status: "", cover: String(datos.cover || miembros.find(x => x.cover)?.cover || "").trim(),
+        lastEpisodeUrl: "", group: n, isGroup: true, groupId: gid
+      };
+      miembros.forEach(it => { it.group = n; });
+      d.items.push(grupo);
+      guardarDatosLocal(d);
+      return grupo;
+    }
+
+    const sheetName = await getSheetName();
+    const lista = await obtenerListaCompleta();
+    const miembros = lista.filter(it => rows.includes(Number(it.row)));
+    if (miembros.length !== rows.length) throw new Error("FILA_NO_ENCONTRADA");
+    if (miembros.some(it => it.isGroup)) throw new Error("NO_SE_PUEDE_AGRUPAR_GRUPO");
+    if (lista.some(it => it.isGroup && String(it.title || "").trim().toLowerCase() === n.toLowerCase())) throw new Error("NOMBRE_GRUPO_EXISTE");
+    const fila = await siguienteFilaLibre(sheetName);
+    const gid = idGrupoNuevo();
+    const num = parseFloat(String(datos.score ?? "").replace(",", "."));
+    const genero = String(datos.genre || miembros.flatMap(x => String(x.genre || "").split(",").map(s => s.trim()).filter(Boolean)).filter(Boolean).join(", ")).trim();
+    const cover = String(datos.cover || miembros.find(x => x.cover)?.cover || "").trim();
+    const valores = new Array(12).fill(null).map(() => ({}));
+    valores[0] = genero ? { userEnteredValue: { stringValue: genero } } : {};
+    valores[2] = Number.isFinite(num) && num > 0 ? { userEnteredValue: { numberValue: num }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } } : {};
+    valores[3] = { userEnteredValue: { stringValue: n }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: `group:${gid}` } } }] };
+    valores[5] = { userEnteredValue: { stringValue: "" } };
+    if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover.replace(/"/g, '""')}",1)` } };
+    valores[11] = { userEnteredValue: { stringValue: n } };
+    const requests = [{
+      updateCells: {
+        range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 12 },
+        rows: [{ values: valores }],
+        fields: "userEnteredValue,textFormatRuns,userEnteredFormat.numberFormat"
+      }
+    }];
+    for (const row of rows) {
+      requests.push({ updateCells: {
+        range: { sheetId: gid, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: 11, endColumnIndex: 12 },
+        rows: [{ values: [{ userEnteredValue: { stringValue: n } }] }],
+        fields: "userEnteredValue"
+      }});
+    }
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+    if (cover) precachearImagen(cover);
+    return { row: fila, title: n, url: `group:${gid}`, status: "", genre: genero, score: Number.isFinite(num) && num > 0 ? num.toFixed(1) : "", cover, lastEpisodeUrl: "", group: n, isGroup: true, groupId: gid };
+  }
+
+  async function actualizarGrupo(row, cambios = {}) {
+    const lista = await obtenerListaCompleta();
+    const grupo = lista.find(a => Number(a.row) === Number(row) && a.isGroup);
+    if (!grupo) throw new Error("GRUPO_NO_ENCONTRADO");
+    const nombreAnterior = grupo.title;
+    const nombreNuevo = cambios.title !== undefined ? String(cambios.title || "").trim() : nombreAnterior;
+    if (!nombreNuevo) throw new Error("FALTA_NOMBRE_GRUPO");
+    if (nombreNuevo !== nombreAnterior && lista.some(a => a.isGroup && Number(a.row) !== Number(row) && String(a.title || "").trim().toLowerCase() === nombreNuevo.toLowerCase())) {
+      throw new Error("NOMBRE_GRUPO_EXISTE");
+    }
+    if (await esListaLocal()) {
+      const d = leerDatosLocal();
+      const g = d.items.find(a => Number(a.row) === Number(row) && a.isGroup);
+      if (!g) throw new Error("GRUPO_NO_ENCONTRADO");
+      if (cambios.title !== undefined) g.title = g.group = nombreNuevo;
+      if (cambios.score !== undefined) g.score = notaLocal(cambios.score);
+      if (cambios.genre !== undefined) g.genre = String(cambios.genre || "").trim();
+      if (cambios.cover !== undefined) { g.cover = String(cambios.cover || "").trim(); if (g.cover) precachearImagen(g.cover); }
+      d.items.filter(a => !a.isGroup && String(a.group || "") === nombreAnterior).forEach(a => { a.group = nombreNuevo; });
+      guardarDatosLocal(d);
+      return true;
+    }
+    await getSheetName();
+    const miembros = lista.filter(a => !a.isGroup && String(a.group || "") === nombreAnterior);
+    const requests = [];
+    if (cambios.title !== undefined) requests.push({ updateCells: {
+      range: { sheetId: gid, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: 3, endColumnIndex: 4 },
+      rows: [{ values: [{ userEnteredValue: { stringValue: nombreNuevo } }] }], fields: "userEnteredValue"
+    }});
+    if (cambios.score !== undefined) {
+      const num = parseFloat(String(cambios.score ?? "").replace(",", "."));
+      const scoreCell = Number.isFinite(num) && num > 0
+        ? { userEnteredValue: { numberValue: num }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } }
+        : { userEnteredValue: { stringValue: "" }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } };
+      requests.push({
+        updateCells: {
+          range: { sheetId: gid, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: 2, endColumnIndex: 3 },
+          rows: [{ values: [scoreCell] }],
+          fields: "userEnteredValue,userEnteredFormat.numberFormat"
+        }
+      });
+    }
+    if (cambios.genre !== undefined) {
+      requests.push({
+        updateCells: {
+          range: { sheetId: gid, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: 0, endColumnIndex: 1 },
+          rows: [{ values: [{ userEnteredValue: { stringValue: String(cambios.genre || "") } }] }],
+          fields: "userEnteredValue"
+        }
+      });
+    }
+    if (cambios.cover !== undefined) {
+      const cover = String(cambios.cover || "");
+      const coverCell = cover
+        ? { userEnteredValue: { formulaValue: `=IMAGE("${cover.replace(/"/g, '""')}",1)` } }
+        : { userEnteredValue: { stringValue: "" } };
+      requests.push({
+        updateCells: {
+          range: { sheetId: gid, startRowIndex: row - 1, endRowIndex: row, startColumnIndex: 9, endColumnIndex: 10 },
+          rows: [{ values: [coverCell] }],
+          fields: "userEnteredValue"
+        }
+      });
+    }
+    if (cambios.title !== undefined || miembros.length) {
+      const val = nombreNuevo;
+      for (const m of miembros) requests.push({ updateCells: {
+        range: { sheetId: gid, startRowIndex: m.row - 1, endRowIndex: m.row, startColumnIndex: 11, endColumnIndex: 12 },
+        rows: [{ values: [{ userEnteredValue: { stringValue: val } }] }],
+        fields: "userEnteredValue"
+      }});
+    }
+    if (requests.length) await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+    if (cambios.cover) precachearImagen(cambios.cover);
+    return true;
+  }
+
+  async function establecerMiembrosGrupo(row, filas) {
+    const lista = await obtenerListaCompleta();
+    const grupo = lista.find(a => Number(a.row) === Number(row) && a.isGroup);
+    if (!grupo) throw new Error("GRUPO_NO_ENCONTRADO");
+    const rows = new Set((filas || []).map(Number).filter(x => Number.isInteger(x) && x >= 2));
+    const miembrosActuales = lista.filter(a => !a.isGroup && String(a.group || "") === String(grupo.title || ""));
+    if (await esListaLocal()) {
+      const d = leerDatosLocal();
+      const g = d.items.find(a => Number(a.row) === Number(row) && a.isGroup);
+      if (!g) throw new Error("GRUPO_NO_ENCONTRADO");
+      d.items.forEach(a => {
+        if (a.isGroup) return;
+        if (Number(a.row) === Number(row)) return;
+        if (rows.has(Number(a.row))) a.group = g.title;
+        else if (String(a.group || "") === String(g.title || "")) a.group = "";
+      });
+      if (!d.items.some(a => !a.isGroup && String(a.group || "") === String(g.title || ""))) {
+        d.items = d.items.filter(a => Number(a.row) !== Number(row));
+      }
+      guardarDatosLocal(d);
+      return true;
+    }
+    await getSheetName();
+    const afectados = new Map();
+    miembrosActuales.forEach(a => afectados.set(Number(a.row), ""));
+    rows.forEach(r => afectados.set(r, grupo.title));
+    const requests = [];
+    for (const [r, value] of afectados) {
+      if (r === Number(row)) continue;
+      requests.push({ updateCells: {
+        range: { sheetId: gid, startRowIndex: r - 1, endRowIndex: r, startColumnIndex: 11, endColumnIndex: 12 },
+        rows: [{ values: [{ userEnteredValue: { stringValue: value } }] }],
+        fields: "userEnteredValue"
+      }});
+    }
+    if (!rows.size) {
+      requests.push({ deleteDimension: { range: { sheetId: gid, dimension: "ROWS", startIndex: Number(row) - 1, endIndex: Number(row) } } });
+    }
+    if (requests.length) await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+    return true;
+  }
+
+  async function desagruparGrupo(row) {
+    const lista = await obtenerListaCompleta();
+    const grupo = lista.find(a => Number(a.row) === Number(row) && a.isGroup);
+    if (!grupo) throw new Error("GRUPO_NO_ENCONTRADO");
+    const miembros = lista.filter(a => !a.isGroup && String(a.group || "") === String(grupo.title || ""));
+    if (await esListaLocal()) {
+      const d = leerDatosLocal();
+      d.items.filter(a => !a.isGroup && String(a.group || "") === String(grupo.title || "")).forEach(a => { a.group = ""; });
+      d.items = d.items.filter(a => Number(a.row) !== Number(row));
+      guardarDatosLocal(d);
+      return true;
+    }
+    await getSheetName();
+    const requests = miembros.map(m => ({ updateCells: {
+      range: { sheetId: gid, startRowIndex: m.row - 1, endRowIndex: m.row, startColumnIndex: 11, endColumnIndex: 12 },
+      rows: [{ values: [{ userEnteredValue: { stringValue: "" } }] }],
+      fields: "userEnteredValue"
+    }}));
+    requests.push({ deleteDimension: { range: { sheetId: gid, dimension: "ROWS", startIndex: Number(row) - 1, endIndex: Number(row) } } });
+    await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
+    return true;
+  }
+
   function buscarItemLocal(items, url, titulo) {
     const slug = slugDeUrl(url);
     const tit = String(titulo || "").trim().toLowerCase();
@@ -787,9 +1003,9 @@
       || null;
   }
 
-  function anadirItemLocal(d, { title, url, score, cover, episodeUrl, status }) {
+  function anadirItemLocal(d, { title, url, score, cover, episodeUrl, status, group, isGroup }) {
     const it = { row: d.siguiente++, genre: "", score: notaLocal(score), title: String(title || "").trim(), url: url || "",
-      status: status ?? ESTADO_VIENDO, cover: cover || "", lastEpisodeUrl: episodeUrl || "" };
+      status: status ?? ESTADO_VIENDO, cover: cover || "", lastEpisodeUrl: episodeUrl || "", group: String(group || "").trim(), isGroup: !!isGroup };
     d.items.push(it);
     return it;
   }
@@ -874,47 +1090,28 @@
     return { encontradas: hallazgos.length, sinImagen };
   }
 
-  // --- Progreso de «Migrar enlaces»: el popup escucha este evento y lo muestra bajo el botón ---
-  function avisarProgreso(texto) { try { window.dispatchEvent(new CustomEvent("migrar-progreso", { detail: texto })); } catch (e) {} }
-  const esPortadaFlv = (c) => /(^|\/\/|\.)animeflv\.net\//i.test(String(c || ""));
-  const esPortadaAV1 = (c) => /cdn\.animeav1\.com\/covers\//i.test(String(c || ""));
-  const esFichaAV1 = (u) => /^https:\/\/animeav1\.com\/media\//i.test(String(u || ""));
-  // Serie ya enlazada a AnimeAV1 pero con la portada de AnimeFLV: se saca la portada de su ficha
-  async function portadaDesdeFichaAV1(url) {
-    try { return extraerPortadaDesdeHtml(await leerPaginaWorker(url)); } catch (e) { return null; }
-  }
-
   async function migrarAnimeFlvLocal() {
-    const cambios = []; let migradas = 0, portadasFlv = 0, sinCambios = 0, portadasAV1 = 0; const fallos = []; let refrescadas = 0;
-    const pendientes = leerDatosLocal().items.filter((it) => it.url.includes("animeflv") || ((esPortadaFlv(it.cover) || esPortadaAV1(it.cover)) && esFichaAV1(it.url)));
-    let hechas = 0;
-    for (const it of pendientes) {
-      hechas++; avisarProgreso(`Migrando ${hechas}/${pendientes.length}: ${it.title}`);
-      if (!it.url.includes("animeflv")) {
-        const img = await portadaDesdeFichaAV1(it.url);
-        if (img && img !== it.cover) { cambios.push({ row: it.row, cover: img }); precachearImagen(img); refrescadas++; } else sinCambios++;
-        continue;
-      }
-      const encontrado = await buscarEnAnimeAV1(it.title,it.url,fallos);
+    const cambios = []; let migradas = 0, portadasFlv = 0, sinCambios = 0;
+    for (const it of leerDatosLocal().items) {
+      if (!it.url.includes("animeflv")) continue;
+      const encontrado = await buscarEnAnimeAV1(it.title);
       if (encontrado) {
         const c = { row: it.row, url: encontrado.url };
-        { const img = extraerPortadaDesdeHtml(encontrado.html); if (img) { c.cover = img; precachearImagen(img); portadasAV1++; } }
+        if (!it.cover) { const img = extraerPortadaDesdeHtml(encontrado.html); if (img) { c.cover = img; precachearImagen(img); } }
         cambios.push(c); migradas++;
       } else if (!it.cover) {
         try {
-          const img = extraerPortadaAnimeFlv(await leerPaginaWorker(it.url));
+          const img = extraerPortadaAnimeFlv(await (await fetch(it.url)).text());
           if (img) { cambios.push({ row: it.row, cover: img }); precachearImagen(img); portadasFlv++; } else sinCambios++;
         } catch (e) { sinCambios++; }
       } else sinCambios++;
     }
     if (cambios.length) {
-      avisarProgreso("Guardando cambios…");
       const d = leerDatosLocal();
       for (const c of cambios) { const it = d.items.find((i) => i.row === c.row); if (!it) continue; if (c.url) it.url = c.url; if (c.cover) it.cover = c.cover; }
       guardarDatosLocal(d);
     }
-    if (fallos.length) console.log("[AnimeAV1 Tracker] Sin equivalente en AnimeAV1:", fallos);
-    return { migradas, portadasFlv, sinCambios, portadasAV1, refrescadas, total: pendientes.length, fallos: fallos.slice(0, 8) };
+    return { migradas, portadasFlv, sinCambios };
   }
 
   // Mayor número de capítulo que aparece en la ficha de la serie (enlaces .../media/<slug>/<n>) y si la serie está en
@@ -1207,19 +1404,24 @@
     try {
       const cache = await caches.open(COVER_CACHE);
       if (await cache.match(url)) return;
-      const r = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: /cdn\.animeav1\.com/i.test(url) ? "no-referrer" : "strict-origin-when-cross-origin" });
-      if (r && (r.ok || r.type === "opaque")) await cache.put(url, r.clone());
+      const pol = /(^|\.)(animeav1\.com|animeflv\.net)$/i.test(new URL(url).hostname) ? "no-referrer" : "strict-origin-when-cross-origin";
+      const r = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: pol });
+      if (r && (r.ok || r.type === "opaque")) {
+        await cache.put(url, r.clone());
+        // Una respuesta opaca puede ser un error: se comprueba que carga como imagen o se descarta.
+        const valida = await new Promise((res) => {
+          const im = new Image(); const t = setTimeout(() => res(false), 10000);
+          im.referrerPolicy = pol;
+          im.onload = () => { clearTimeout(t); res(true); }; im.onerror = () => { clearTimeout(t); res(false); };
+          im.src = url;
+        });
+        if (!valida) await cache.delete(url);
+      }
     } catch(e) {}
   }
 
   function extraerPortadaDesdeHtml(html) {
-    html = String(html || "");
-    // La ficha también lista series relacionadas (/covers/<otro id>.jpg): se prefiere la portada cuyo id coincide
-    // con el del fondo (/backdrops/<id>.jpg) o el de las capturas (/screenshots/<id>/…) de la propia serie.
-    const id = (html.match(/cdn\.animeav1\.com\/backdrops\/(\d+)\./i) || html.match(/cdn\.animeav1\.com\/screenshots\/(\d+)\//i) || [])[1];
-    const delId = id && html.match(new RegExp(`cdn\\.animeav1\\.com/covers/${id}\\.(?:jpg|jpeg|png|webp)`, "i"));
-  if (delId) return `https://${delId[0]}`; // con su extensión real (no siempre es .jpg)
-    const m = html.match(/cdn\.animeav1\.com\/covers\/\d+\.(?:jpg|jpeg|png|webp)/i);
+    const m = html.match(/cdn\.animeav1\.com\/covers\/\d+\.jpg/i);
     return m ? `https://${m[0]}` : null;
   }
 
@@ -1241,114 +1443,17 @@
 
   function normalizarTitulo(t){return (t||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase().replace(/[^a-z0-9]+/g," ").trim();}
   function slugify(t){return normalizarTitulo(t).replace(/\s+/g,"-");}
-  // Slug de una ficha de AnimeFLV (cualquier subdominio: www.animeflv.net, www3., www4., …): /anime/<slug>
-  function slugDeAnimeFlv(enlace){try{const u=new URL(enlace);if(!/(^|\.)animeflv\.net$/i.test(u.hostname))return "";const m=u.pathname.match(/\/anime\/([^/]+)/i);return m?m[1].toLowerCase():"";}catch(e){return "";}}
-  const compactoTitulo=(t)=>normalizarTitulo(t).replace(/ /g,"");
-  // --- Búsqueda en el catálogo de AnimeAV1 (cuando el slug del enlace/título no existe) --------------------------
-  // AnimeAV1 nombra las series en romaji (p. ej. «Neon Genesis Evangelion» es /media/shinseiki-evangelion), así que
-  // el slug adivinado falla con muchas. Se buscan en su catálogo el título, el título sin subtítulo y los títulos
-  // alternativos de la ficha de AnimeFLV, y se elige el resultado que contiene todas las palabras con menos añadidos.
-  const PALABRAS_EXTRA_AV1 = /\b(movie|pelicula|ova|ovas|ona|special|specials|especial|recap|pv|cm)\b/;
-
-  function nombresParaBuscar(titulo, htmlFlv) {
-    const nombres = [titulo, String(titulo || "").split(/[:：]/)[0]];
-    if (htmlFlv) {
-      for (const m of String(htmlFlv).matchAll(/class=["'][^"']*TxtAlt[^"']*["'][^>]*>([^<]{2,120})</gi)) nombres.push(m[1]);
-      const og = String(htmlFlv).match(/<h1[^>]*>([^<]{2,120})<\/h1>/i);
-      if (og) nombres.push(og[1]);
-    }
-    const vistos = new Set();
-    return nombres.map((n) => String(n || "").trim()).filter((n) => {
-      const k = normalizarTitulo(n);
-      if (!k || k.length < 3 || vistos.has(k)) return false;
-      vistos.add(k);
-      return true;
-    }).slice(0, 4);
-  }
-
-  function elegirResultadoAV1(nombre, slugs) {
-    const q = new Set(normalizarTitulo(nombre).split(" ").filter(Boolean));
-    if (!q.size) return null;
-    const quiereExtra = PALABRAS_EXTRA_AV1.test(normalizarTitulo(nombre));
-    let mejor = null;
-    for (const slug of slugs) {
-      const palabras = slug.replace(/-/g, " ").split(" ").filter(Boolean);
-      if (!quiereExtra && PALABRAS_EXTRA_AV1.test(palabras.join(" "))) continue;
-      const c = new Set(palabras);
-      let comunes = 0;
-      for (const w of q) if (c.has(w)) comunes++;
-      if (comunes / q.size < 1) continue; // deben estar todas las palabras buscadas
-      const extra = c.size - q.size;
-      if (!mejor || extra < mejor.extra) mejor = { slug, extra };
-    }
-    return mejor ? mejor.slug : null;
-  }
-
-  // leerHtml(url) -> texto HTML (lanza si no se puede leer)
-  async function buscarPorCatalogoAV1(titulo, enlaceFlv, leerHtml, notas) {
-    let htmlFlv = "";
-    if (enlaceFlv) { try { htmlFlv = await leerHtml(enlaceFlv); } catch (e) { notas.push("no se pudo leer la ficha de AnimeFLV"); } }
-    for (const nombre of nombresParaBuscar(titulo, htmlFlv)) {
-      for (const param of ["search", "q"]) {
-        let html;
-        try { html = await leerHtml(`https://animeav1.com/catalogo?${param}=${encodeURIComponent(nombre)}`); }
-        catch (e) { notas.push(`catálogo (${param}=${nombre}): ${e && e.message || "error"}`); continue; }
-        const slugs = [...new Set([...html.matchAll(/href=["']\/media\/([a-z0-9-]+)["']/gi)].map((m) => m[1].toLowerCase()))];
-        const slug = elegirResultadoAV1(nombre, slugs);
-        if (!slug) { notas.push(`catálogo (${param}=${nombre}): ${slugs.length} resultado(s), ninguno encaja`); continue; }
-        try {
-          const ficha = await leerHtml(`https://animeav1.com/media/${slug}`);
-          return { url: `https://animeav1.com/media/${slug}`, html: ficha };
-        } catch (e) { notas.push(`${slug}: no se pudo abrir`); }
-      }
-    }
-    return null;
-  }
-
-  function parecidoTitulos(a,b){const A=new Set(normalizarTitulo(a).split(" ").filter(Boolean)),B=new Set(normalizarTitulo(b).split(" ").filter(Boolean));if(!A.size||!B.size)return 0;let c=0;for(const w of A)if(B.has(w))c++;return c/Math.max(A.size,B.size);}
-  // `motivos` (opcional): array donde se anota por qué no se encontró cada candidato (diagnóstico)
-  async function buscarEnAnimeAV1(titulo,enlaceFlv,motivos){
-    const slugFlv=slugDeAnimeFlv(enlaceFlv);
-    const candidatos=[...new Set([slugify(titulo),slugFlv,slugFlv.replace(/-?(tv|season-?\d+)$/,"")].filter(Boolean))];
-    const notas=[];
-    for(const slug of candidatos){
-      const url=`https://animeav1.com/media/${slug}`;
-      try{
-        const r=await fetch(`${WORKER_URL}/leer?url=${encodeURIComponent(url)}`);
-        const up=Number(r.headers.get("X-Proxy-Upstream-Status")||0);
-        if(!r.ok||(up&&up>=400)){notas.push(`${slug}: HTTP ${up||r.status}`);continue;}
-        const html=await r.text();
-        const m=html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);const h=m?m[1].replace(/<[^>]*>/g," ").replace(/\s+/g," ").trim():"";
-        if(!h){notas.push(`${slug}: sin título en la ficha`);continue;}
-        const ch=compactoTitulo(h);
-        const igual=ch===compactoTitulo(titulo)||(slugFlv&&ch===slugFlv.replace(/-/g,""));
-        const parecido=slug===slugFlv&&Math.max(parecidoTitulos(h,titulo),parecidoTitulos(h,slugFlv.replace(/-/g," ")))>=0.5;
-        if(igual||parecido)return {url,html};
-        notas.push(`${slug}: la ficha se llama «${h}»`);
-      }catch(e){notas.push(`${slug}: ${e&&e.message||"error de red"}`);}
-    }
-    // Último recurso: buscar en el catálogo de AnimeAV1 (siempre por el Worker: la PWA no puede leer esas webs directamente)
-    const porCatalogo=await buscarPorCatalogoAV1(titulo,enlaceFlv,leerPaginaWorker,notas);
-    if(porCatalogo)return porCatalogo;
-    if(Array.isArray(motivos))motivos.push({titulo,motivo:notas.join(" · ")||"sin candidatos"});
-    return null;
-  }
+  async function buscarEnAnimeAV1(titulo){const slug=slugify(titulo);if(!slug)return null;const url=`https://animeav1.com/media/${slug}`;try{const r=await fetch(url);if(!r.ok)return null;const html=await r.text();const m=html.match(/<h1[^>]*>([^<]+)<\/h1>/i);const h=m?m[1].trim():"";return h&&normalizarTitulo(h)===normalizarTitulo(titulo)?{url,html}:null;}catch(e){return null;}}
   function extraerPortadaAnimeFlv(html){const a=html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i);if(a)return a[1];const b=html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i);return b?b[1]:null;}
   async function migrarAnimeFlv(){
     if (await esListaLocal()) return migrarAnimeFlvLocal();
-    const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0,portadasAV1=0;const fallos=[];let refrescadas=0;
-    // Series con enlace de AnimeFLV, o ya enlazadas a AnimeAV1 pero con la portada de AnimeFLV (columna J)
-    const portadaDe=(v)=>extraerUrlImagen(v[6])||(v[6]?.formattedValue||"");
-    const esPendiente=(v)=>{const e=v[0]?.hyperlink||"";return e.includes("animeflv")||(esFichaAV1(e)&&(esPortadaFlv(portadaDe(v))||esPortadaAV1(portadaDe(v))));};
-    const total=filas.filter((f)=>esPendiente(f.values||[])).length;let hechas=0;
-    for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!esPendiente(v))continue;hechas++;avisarProgreso(`Migrando ${hechas}/${total}: ${v[0]?.formattedValue||""}`);
-      if(!enlace.includes("animeflv")){const img=await portadaDesdeFichaAV1(enlace);if(img&&img!==portadaDe(v)){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);refrescadas++;}else sinCambios++;continue;}
-      const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo,enlace,fallos);
-      if(encontrado){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:3,endColumnIndex:4},rows:[{values:[{userEnteredValue:{stringValue:titulo},textFormatRuns:[{startIndex:0,format:{link:{uri:encontrado.url}}}]}]}],fields:"userEnteredValue,textFormatRuns"}});migradas++;{const img=extraerPortadaDesdeHtml(encontrado.html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasAV1++;}}}
-      else if(!ya){try{const html=await leerPaginaWorker(enlace);const img=extraerPortadaAnimeFlv(html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasFlv++;}else sinCambios++;}catch(e){sinCambios++;}}
+    const sheetName=await getSheetName(); const filas=await getFilasDaK(sheetName); const requests=[]; let migradas=0,portadasFlv=0,sinCambios=0;
+    for(let i=0;i<filas.length;i++){const v=filas[i].values||[];const enlace=v[0]?.hyperlink||"";if(!enlace.includes("animeflv"))continue;const titulo=v[0]?.formattedValue||"";const ya=(v[6]?.formattedValue||"").trim()!=="";const encontrado=await buscarEnAnimeAV1(titulo);
+      if(encontrado){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:3,endColumnIndex:4},rows:[{values:[{userEnteredValue:{stringValue:titulo},textFormatRuns:[{startIndex:0,format:{link:{uri:encontrado.url}}}]}]}],fields:"userEnteredValue,textFormatRuns"}});migradas++;if(!ya){const img=extraerPortadaDesdeHtml(encontrado.html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);}}}
+      else if(!ya){try{const r=await fetch(enlace);const html=await r.text();const img=extraerPortadaAnimeFlv(html);if(img){requests.push({updateCells:{range:{sheetId:gid,startRowIndex:i,endRowIndex:i+1,startColumnIndex:9,endColumnIndex:10},rows:[{values:[{userEnteredValue:{formulaValue:`=IMAGE("${img}",1)`}}]}],fields:"userEnteredValue"}});precachearImagen(img);portadasFlv++;}else sinCambios++;}catch(e){sinCambios++;}}
       else sinCambios++;
     }
-    if(requests.length){avisarProgreso("Guardando cambios en la hoja…");await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});}if(fallos.length)console.log("[AnimeAV1 Tracker] Sin equivalente en AnimeAV1:",fallos);return{migradas,portadasFlv,sinCambios,portadasAV1,refrescadas,total,fallos:fallos.slice(0,8)};
+    if(requests.length)await sheetsFetch(":batchUpdate",{method:"POST",body:JSON.stringify({requests})});return{migradas,portadasFlv,sinCambios};
   }
 
   // --- Listas en la nube (Cloudflare D1) ----------------------------------------------
@@ -1441,7 +1546,7 @@
 
   function listaNube(id) { return obtenerListasArr().find((l) => l.id === id && l.tipo === "nube") || null; }
   const idSerieNube = () => "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
-  const hashItem = (it) => JSON.stringify([it.genre, it.score, it.title, it.url, it.status, it.cover, it.lastEpisodeUrl]);
+  const hashItem = (it) => JSON.stringify([it.genre, it.score, it.title, it.url, it.status, it.cover, it.lastEpisodeUrl, it.group || "", !!it.isGroup]);
 
   function metaNube(d) {
     if (!d.nube || typeof d.nube !== "object") d.nube = {};
@@ -1480,7 +1585,7 @@
   function cambioDeItem(sid, it, loc) {
     return {
       id: sid, titulo: it.title, url: it.url, nota: it.score === "" ? null : Number(it.score), estado: it.status,
-      genero: it.genre, portada: it.cover, ultimo_cap_url: it.lastEpisodeUrl, actualizado: loc,
+      genero: it.genre, portada: it.cover, ultimo_cap_url: it.lastEpisodeUrl, extra: { group: it.group || "", isGroup: !!it.isGroup }, actualizado: loc,
     };
   }
 
@@ -1549,7 +1654,7 @@
       if (!s.titulo) continue;
       const campos = {
         genre: s.genero || "", score: notaLocal(s.nota ?? ""), title: s.titulo, url: s.url || "",
-        status: s.estado || "", cover: s.portada || "", lastEpisodeUrl: s.ultimo_cap_url || "",
+        status: s.estado || "", cover: s.portada || "", lastEpisodeUrl: s.ultimo_cap_url || "", group: String(s.extra?.group || "").trim(), isGroup: !!s.extra?.isGroup,
       };
       let it;
       if (idx >= 0) { it = d.items[idx]; if (hashItem({ ...it, ...campos }) !== hashItem(it)) cambios++; Object.assign(it, campos); }
@@ -1875,7 +1980,7 @@
         if (x.cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${x.cover.replace(/"/g, '""')}",1)` } };
         if (x.lastEpisodeUrl) valores[10] = { userEnteredValue: { stringValue: x.lastEpisodeUrl } };
         lotes.anadir.push({ k: op.k, reqs: [{ updateCells: {
-          range: { sheetId, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 11 },
+          range: { sheetId, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 12 },
           rows: [{ values: valores }], fields: "userEnteredValue,textFormatRuns,userEnteredFormat.numberFormat",
         } }] });
         fila++;
@@ -2106,6 +2211,10 @@
       case "UPDATE_ANIME": await actualizarCampo(msg.row,msg.campo,msg.valor); return {ok:true};
       case "UPDATE_GENRES_BULK": await actualizarGenerosLote(msg.cambios); return {ok:true};
       case "UPDATE_TITLE_URL": await actualizarTituloUrl(msg.row,msg.title,msg.url); return {ok:true};
+      case "CREATE_GROUP": return {ok:true,grupo:await crearGrupo(msg.name,msg.rows,msg)};
+      case "UPDATE_GROUP": await actualizarGrupo(msg.row,msg.cambios || {}); return {ok:true};
+      case "SET_GROUP_MEMBERS": await establecerMiembrosGrupo(msg.row,msg.filas || []); return {ok:true};
+      case "UNGROUP": await desagruparGrupo(msg.row); return {ok:true};
       case "FILL_COVERS": return {ok:true,...await rellenarPortadas()};
       case "MIGRATE_ANIMEFLV": return {ok:true,...await migrarAnimeFlv()};
       case "GET_CAPITULOS": { const i=await infoCapitulos(msg.slug); return {ok:true,max:i?.max??null,emision:i?.emision??null}; }

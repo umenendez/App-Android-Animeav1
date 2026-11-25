@@ -92,6 +92,9 @@ const listaStatusEl = $("listaStatus");
 
 let todosLosAnimes = [];
 let modoEdicion = false;
+let modoAgrupar = false;
+const seleccionAgrupar = new Set();
+const dlgGrupoEl = $("dlgGrupo");
 let filtroEstado = "-"; // por defecto: viendo
 let filtroPendientes = false; // solo series en «Viendo» con capítulos publicados que no has visto
 let filtroGeneros = new Set(); // filtro múltiple: el anime debe tener TODOS los seleccionados (y puede tener más)
@@ -152,7 +155,7 @@ function aplicarTema(modo) {
 aplicarTema(document.documentElement.dataset.tema || "auto");
 
 // --- Ajustes de apariencia y comportamiento (se guardan en este dispositivo) -------
-const AJUSTES_BASE = { vista: "cuadricula", columnas: "auto", tamano: 155, espacio: 8, nota: true, estado: true, genero: true, siguienteCap: true, avisosCaps: false };
+const AJUSTES_BASE = { vista: "cuadricula", columnas: "auto", tamano: 155, espacio: 8, nota: true, estado: true, genero: true, siguienteCap: true, avisosCaps: false, tratarGruposComoUno: false };
 let ajustes = { ...AJUSTES_BASE };
 try {
   const g = JSON.parse(localStorage.getItem("ajustes") || "null");
@@ -323,7 +326,7 @@ function cargarFiltros() {
 // La primera vez se descarga y se guarda en la Cache Storage de la extensión
 // (compartida con background.js). Las siguientes veces se lee de ahí, sin red.
 
-const COVER_CACHE = "anime-covers-v2";
+const COVER_CACHE = "anime-covers-v3";
 const portadasEnCache = new Set();
 
 function actualizarContadorPortadas() {
@@ -366,7 +369,7 @@ function aplicarPreferenciaPortadas() {
 const portadaMem = new Set();    // urls ya descargadas y listas para pintar
 const portadaPend = new Map();   // url -> Promise en curso (evita descargas duplicadas)
 const portadaImgs = new Map();   // referencias a imágenes predecodificadas (máx. 80)
-let portadaSlots = 6;
+let portadaSlots = 4;
 const portadaCola = [];
 function portadaSlot() {
   return new Promise((res) => { if (portadaSlots > 0) { portadaSlots--; res(); } else portadaCola.push(res); });
@@ -380,19 +383,50 @@ function portadaLiberar() { const n = portadaCola.shift(); if (n) n(); else port
 function esMW(url) {
   try { return /(^|\.)img\d+mw\.xyz$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
 }
-// Portadas de AnimeAV1 (cdn.animeav1.com): se piden sin Referer (con el de la PWA el CDN puede rechazarlas)
-function esCdnAV1(url) {
-  try { return /(^|\.)cdn\.animeav1\.com$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
+// animeav1 (y su CDN) también se piden sin Referer: así lo hace la extensión y evita que el
+// anti-hotlink del CDN rechace algunas portadas cuando llegan con el Referer de github.io.
+// Portadas de AnimeFLV (animeflv.net/uploads/…): su servidor comprueba el Referer; la extensión lo pone con una regla, la PWA no puede.
+function esFLV(url) {
+  try { const u = new URL(url, location.href); return /(^|\.)animeflv\.net$/i.test(u.hostname) && u.pathname.startsWith("/uploads/"); } catch (_) { return false; }
 }
-const sinReferer = (url) => esMW(url) || esCdnAV1(url);
+function sinReferer(url) {
+  try { return esMW(url) || esFLV(url) || /(^|\.)animeav1\.com$/i.test(new URL(url, location.href).hostname); } catch (_) { return false; }
+}
+const politicaReferer = (url) => (sinReferer(url) ? "no-referrer" : "strict-origin-when-cross-origin");
+
+// Comprueba que la URL carga como imagen de verdad (pasa por el Service Worker, o sea, por la copia guardada).
+function imagenValida(url) {
+  return new Promise((resolve) => {
+    const im = new Image();
+    const t = setTimeout(() => resolve(false), 10000);
+    im.referrerPolicy = politicaReferer(url);
+    im.onload = () => { clearTimeout(t); resolve(true); };
+    im.onerror = () => { clearTimeout(t); resolve(false); };
+    im.src = url;
+  });
+}
+
+// Borra una portada de todas las cachés de portadas (una copia opaca podía ser un error guardado).
+async function purgarPortada(url) {
+  portadaMem.delete(url); portadasEnCache.delete(url); portadaImgs.delete(url);
+  try {
+    for (const k of await caches.keys()) {
+      if (k.startsWith("anime-covers-")) await (await caches.open(k)).delete(url);
+    }
+  } catch (_) {}
+  try { actualizarContadorPortadas(); } catch (_) {}
+}
+
 function portadaAlternativas(url) {
   try {
     const u = new URL(url, location.href);
-    if (!esMW(url)) return [];
+    if (!esMW(url) && !esFLV(url)) return [];
     const sinProtocolo = encodeURIComponent(u.host + u.pathname + u.search);
     const propio = String(window.PWA_CONFIG?.mwProxy || "").trim().replace(/\/+$/, "");
-    if (propio) return [propio + "/?url=" + encodeURIComponent(u.href)];
+    const viaWorker = propio ? [propio + "/?url=" + encodeURIComponent(u.href)] : [];
+    if (esMW(url) && propio) return viaWorker;
     return [
+      ...viaWorker,
       "https://images.weserv.nl/?url=" + sinProtocolo,
       "https://wsrv.nl/?url=" + sinProtocolo,
       "https://wsrv.nl/?url=" + encodeURIComponent(u.href),
@@ -401,6 +435,22 @@ function portadaAlternativas(url) {
 }
 // Siguiente intento tras un error de carga; devuelve false si ya no quedan.
 function reintentarPortada(img, original) {
+  // Portadas normales: si falla, puede ser una copia local corrupta. Se borra y se pide de nuevo a la red, sin Referer (una vez).
+  if (!esMW(original)) {
+    const n = Number(img.dataset.portadaCurada || 0);
+    if (n < (esFLV(original) ? 1 : 3)) {
+      img.dataset.portadaCurada = String(n + 1);
+      const espera = [1500, 5000, 12000][n];
+      setTimeout(() => {
+        purgarPortada(original).finally(() => {
+          img.referrerPolicy = politicaReferer(original);
+          // A partir del 2.º reintento se evita también una respuesta de error guardada por el navegador o el CDN.
+          img.src = n >= 1 ? original + (original.includes("?") ? "&" : "?") + "_r=" + Date.now() : original;
+        });
+      }, espera);
+      return true;
+    }
+  }
   const alts = portadaAlternativas(original);
   const n = Number(img.dataset.intentoPortada || 0);
   if (n >= alts.length) return false;
@@ -413,7 +463,6 @@ function reintentarPortada(img, original) {
 function predecodificar(url) {
   return new Promise((resolve) => {
     const img = new Image();
-    if (sinReferer(url)) img.referrerPolicy = "no-referrer";
     const t = setTimeout(resolve, 8000);
     const fin = () => { clearTimeout(t); resolve(); };
     img.onload = fin; img.onerror = fin;
@@ -434,9 +483,11 @@ async function guardarEnCache(url) {
       const ctl = new AbortController();
       const t = setTimeout(() => ctl.abort(), 12000);
       let res;
-      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: sinReferer(url) ? "no-referrer" : "strict-origin-when-cross-origin", signal: ctl.signal }); } finally { clearTimeout(t); }
+      try { res = await fetch(url, { mode: "no-cors", credentials: "omit", referrerPolicy: politicaReferer(url), signal: ctl.signal }); } finally { clearTimeout(t); }
       if (!res || (!res.ok && res.type !== "opaque")) throw new Error(`HTTP ${res?.status ?? "?"}`);
       await cache.put(url, res.clone());
+      // Una respuesta opaca puede ser un error (403/429/5xx): se comprueba que carga como imagen o se descarta.
+      if (!(await imagenValida(url))) { await cache.delete(url); throw new Error("la copia guardada no es una imagen válida"); }
     } finally { portadaLiberar(); }
   }
   portadasEnCache.add(url);
@@ -450,8 +501,12 @@ function obtenerPortada(url) {
   // Con proxy propio, las de Manwhaweb van directas por él (la URL original siempre da 403).
   if (esMW(url) && window.PWA_CONFIG?.mwProxy) return Promise.resolve(portadaAlternativas(url)[0]);
   const p = (async () => {
-    // Se muestra ya (el navegador la descarga); la caché local y el predecodificado se hacen en segundo plano
-    if (guardarPortadasActivado()) guardarEnCache(url).catch((e) => console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e));
+    // Una sola petición por portada: primero se descarga y guarda (con límite de descargas simultáneas)
+    // y solo después se pinta, desde la copia local. Si no se puede guardar, se pinta igualmente desde la red.
+    // Antes se pedía 3-4 veces a la vez y el CDN rechazaba algunas.
+    if (guardarPortadasActivado()) {
+      try { await guardarEnCache(url); } catch (e) { console.error("[AnimeAV1 Tracker] No se pudo guardar la portada:", url, e); }
+    }
     predecodificar(url).then(() => portadaMem.add(url));
     return url;
   })().finally(() => portadaPend.delete(url));
@@ -484,7 +539,7 @@ function crearPortada(anime, clase, observador) {
       if (reintentarPortada(img, original)) return;
       caja.classList.remove("cargando"); caja.classList.add("sin"); img.hidden = true;
     };
-    if (sinReferer(original)) img.referrerPolicy = "no-referrer";
+    img.referrerPolicy = politicaReferer(original);
     img.src = original;
   };
   const cargar = () => { if (portadaMem.has(url)) asignar(url); else obtenerPortada(url).then(asignar); };
@@ -783,10 +838,15 @@ function inicializarToolbar() {
 }
 
 function renderChips() {
+  const elementos = elementosPrincipales();
   const conteo = {};
-  todosLosAnimes.forEach((a) => { conteo[a.status] = (conteo[a.status] || 0) + 1; });
+  // Un grupo cuenta como un solo elemento por estado: si tiene varias series en el mismo estado,
+  // solo suma una vez a ese chip.
+  ESTADOS.forEach(e => {
+    conteo[e.value] = elementos.filter(a => a.isGroup ? miembrosDeGrupo(a).some(m => m.status === e.value) : a.status === e.value).length;
+  });
   chipsEl.innerHTML = "";
-  [{ value: "", label: "Todos", n: todosLosAnimes.length }, ...ESTADOS.map((e) => ({ ...e, n: conteo[e.value] || 0 }))].forEach((e) => {
+  [{ value: "", label: "Todos", n: elementos.length }, ...ESTADOS.map((e) => ({ ...e, n: conteo[e.value] || 0 }))].forEach((e) => {
     const chip = el("button", { className: "chip", type: "button" }, e.value ? el("span", { className: "punto" }) : null, e.label, el("span", { className: "n", textContent: e.n }));
     if (e.value) chip.dataset.estado = e.value;
     chip.setAttribute("aria-pressed", String(filtroEstado === e.value));
@@ -1204,6 +1264,180 @@ function urlSiguienteCap(u) {
   return m ? `${m[1]}/${m[2] ? parseInt(m[2], 10) + 1 : 1}` : ""; // sin número (ficha de la serie): el siguiente es el 1
 }
 
+
+function esGrupo(a) { return !!a?.isGroup; }
+function miembrosDeGrupo(grupo) {
+  return todosLosAnimes.filter(a => !esGrupo(a) && String(a.group || "").trim() === String(grupo.title || "").trim());
+}
+function grupoCoincideFiltro(grupo) {
+  const miembros = miembrosDeGrupo(grupo);
+  if (!filtroEstado) return true;
+  return miembros.some(a => a.status === filtroEstado);
+}
+function grupoTienePendiente(grupo) {
+  return miembrosDeGrupo(grupo).some(tieneCapituloPendiente);
+}
+function elementosPrincipales() {
+  const grupos = todosLosAnimes.filter(esGrupo);
+  const sueltos = todosLosAnimes.filter(a => !esGrupo(a) && !String(a.group || "").trim());
+  return [...grupos, ...sueltos];
+}
+
+function pintarBarraAgrupar() {
+  const barra = $("barraMover");
+  if (!modoAgrupar) { barra.hidden = true; return; }
+  barra.innerHTML = "";
+  const n = seleccionAgrupar.size;
+  const texto = el("span", { textContent: `${n} serie${n === 1 ? "" : "s"} seleccionada${n === 1 ? "" : "s"}` });
+  const agrupar = el("button", { className: "btn-mini", type: "button", textContent: "Agrupar", disabled: n < 2 });
+  agrupar.addEventListener("click", crearGrupoDesdeSeleccion);
+  const limpiar = el("button", { className: "btn-mini", type: "button", textContent: "Limpiar", disabled: n === 0,
+    onclick: () => { seleccionAgrupar.clear(); pintarBarraAgrupar(); render(); } });
+  barra.append(texto, agrupar, limpiar);
+  barra.hidden = false;
+}
+
+async function crearGrupoDesdeSeleccion() {
+  const filas = [...seleccionAgrupar];
+  if (filas.length < 2) return;
+  const nombre = prompt("Nombre del grupo:", "");
+  if (!nombre || !nombre.trim()) return;
+  const res = await enviarMensaje({ type: "CREATE_GROUP", name: nombre.trim(), rows: filas });
+  if (!res?.ok) { toast(mensajeError(res?.error || "No se pudo crear el grupo")); return; }
+  seleccionAgrupar.clear();
+  modoAgrupar = false;
+  $("btnAgrupar").setAttribute("aria-pressed", "false");
+  await cargar();
+  toast(`Grupo «${nombre.trim()}» creado`);
+}
+
+function renderGrupoItem(grupo) {
+  const card = el("div", { className: "card card-grupo" });
+  card.dataset.estado = "";
+  const portada = el("div", { className: "portada" });
+  if (grupo.cover) {
+    const img = el("img", { className: "cover lista", alt: "", draggable: false, referrerPolicy: "strict-origin-when-cross-origin" });
+    const src = String(grupo.cover).replace(/^http:\/\//i, "https://");
+    img.src = src;
+    portada.append(img);
+  } else {
+    portada.append(el("div", { className: "sin-portada", textContent: "Grupo" }));
+  }
+  const score = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0.1", max: "10",
+    value: textoNotaVisible(grupo), placeholder: "-", title: "Nota propia del grupo" });
+  aplicarColorNota(score);
+  score.addEventListener("input", () => aplicarColorNota(score));
+  score.addEventListener("change", () => {
+    let v = String(score.value || "").replace(",", ".").trim();
+    if (v !== "") {
+      const n = parseFloat(v);
+      v = Number.isFinite(n) && n > 0 ? String(Math.min(10, n)) : "";
+      score.value = v;
+    }
+    grupo.score = v;
+    aplicarColorNota(score);
+    guardar({ type: "UPDATE_ANIME", row: grupo.row, campo: "score", valor: v }, score);
+  });
+  portada.append(score);
+
+  const info = el("div", { className: "info" });
+  const btn = el("button", { className: "titulo titulo-grupo", type: "button", textContent: grupo.title, title: "Abrir grupo" });
+  const miembros = miembrosDeGrupo(grupo);
+  btn.addEventListener("click", () => abrirDialogoGrupo(grupo));
+  const meta = el("div", { className: "grupo-meta", textContent: `${miembros.length} ${miembros.length === 1 ? "serie" : "series"}` });
+  info.append(btn, meta);
+  if (grupo.genre) info.append(el("button", { className: "genero", type: "button", textContent: parseGeneros(grupo.genre).join(" · ") || "Sin género", title: grupo.genre }));
+  card.append(portada, info);
+  return card;
+}
+
+function abrirDialogoGrupo(grupo) {
+  const miembros = miembrosDeGrupo(grupo);
+  dlgGrupoEl.innerHTML = "";
+  const titulo = el("h2", { textContent: grupo.title });
+  const sub = el("p", { className: "ayuda-opciones", textContent: `${miembros.length} ${miembros.length === 1 ? "serie" : "series"} dentro del grupo. La nota del grupo es independiente de las notas individuales.` });
+  const lista = el("div", { className: "grupo-miembros" });
+  miembros.forEach(a => lista.append(renderItem(a)));
+  if (!miembros.length) lista.append(el("p", { className: "vacio-listas", textContent: "El grupo está vacío." }));
+
+  const nombre = el("input", { type: "text", value: grupo.title, placeholder: "Nombre del grupo", ariaLabel: "Nombre del grupo" });
+  const nota = el("input", { type: "number", step: "0.1", min: "0.1", max: "10", value: textoNotaVisible(grupo), placeholder: "-", ariaLabel: "Nota del grupo" });
+  const genero = el("input", { type: "text", value: grupo.genre || "", placeholder: "Géneros", ariaLabel: "Géneros del grupo" });
+  const portada = el("input", { type: "url", value: grupo.cover || "", placeholder: "URL de portada", ariaLabel: "Portada del grupo" });
+  const guardarGrupo = el("button", { className: "btn", type: "button", textContent: "Guardar cambios" });
+  guardarGrupo.addEventListener("click", async () => {
+    let n = String(nota.value || "").replace(",", ".").trim();
+    if (n) {
+      const x = parseFloat(n);
+      n = Number.isFinite(x) && x > 0 ? String(Math.min(10, x)) : "";
+    }
+    const r = await enviarMensaje({ type: "UPDATE_GROUP", row: grupo.row, cambios: { title: nombre.value.trim(), score: n, genre: genero.value.trim(), cover: portada.value.trim() } });
+    if (!r?.ok) { toast(mensajeError(r?.error || "No se pudo guardar el grupo")); return; }
+    dlgGrupoEl.close();
+    await cargar();
+    toast("Grupo guardado");
+  });
+
+  const editarContenido = el("button", { className: "btn-mini", type: "button", textContent: "Editar series…" });
+  editarContenido.addEventListener("click", () => editarMiembrosGrupo(grupo));
+  const desagrupar = el("button", { className: "btn-mini peligro", type: "button", textContent: "Deshacer grupo" });
+  desagrupar.addEventListener("click", async () => {
+    if (!confirm(`¿Deshacer «${grupo.title}»? Las ${miembros.length} series volverán a aparecer sueltas.`)) return;
+    const r = await enviarMensaje({ type: "UNGROUP", row: grupo.row });
+    if (!r?.ok) { toast(mensajeError(r?.error || "No se pudo deshacer el grupo")); return; }
+    dlgGrupoEl.close();
+    await cargar();
+    toast("Grupo deshecho");
+  });
+
+  const campos = el("div", { className: "edicion" },
+    campoEdicion("Nombre", grupo.title, "", () => {}),
+    el("label", { className: "campo-ed", textContent: "Nota", }, nota),
+    el("label", { className: "campo-ed", textContent: "Géneros", }, genero),
+    el("label", { className: "campo-ed", textContent: "Portada (URL)", }, portada)
+  );
+  // campoEdicion crea su propio input; sustituimos el primero por el input ya preparado.
+  campos.innerHTML = "";
+  campos.append(
+    el("label", { className: "campo-ed" }, "Nombre", nombre),
+    el("label", { className: "campo-ed" }, "Nota", nota),
+    el("label", { className: "campo-ed" }, "Géneros", genero),
+    el("label", { className: "campo-ed" }, "Portada (URL)", portada)
+  );
+  const pie = el("div", { className: "pos-actions" }, editarContenido, guardarGrupo, desagrupar,
+    el("button", { className: "btn-mini", type: "button", textContent: "Cerrar", onclick: () => dlgGrupoEl.close() }));
+  dlgGrupoEl.append(titulo, sub, campos, el("h3", { textContent: "Contenido" }), lista, pie);
+  dlgGrupoEl.showModal();
+}
+
+function editarMiembrosGrupo(grupo) {
+  const disponibles = todosLosAnimes.filter(a => !esGrupo(a));
+  dlgGrupoEl.innerHTML = "";
+  const checks = new Map();
+  const lista = el("div", { className: "grupo-seleccion" });
+  disponibles.forEach(a => {
+    const cb = el("input", { type: "checkbox", checked: String(a.group || "") === String(grupo.title || "") });
+    checks.set(a.row, cb);
+    lista.append(el("label", { className: "marcar-mover" }, cb, el("span", { textContent: a.title })));
+  });
+  const guardarMiembros = el("button", { className: "btn", type: "button", textContent: "Guardar contenido" });
+  guardarMiembros.addEventListener("click", async () => {
+    const filas = [...checks.entries()].filter(([,cb]) => cb.checked).map(([row]) => row);
+    if (!filas.length) {
+      if (!confirm("El grupo quedará vacío y se eliminará. ¿Continuar?")) return;
+    }
+    const r = await enviarMensaje({ type: "SET_GROUP_MEMBERS", row: grupo.row, filas });
+    if (!r?.ok) { toast(mensajeError(r?.error || "No se pudo actualizar el grupo")); return; }
+    dlgGrupoEl.close();
+    await cargar();
+    toast("Contenido del grupo actualizado");
+  });
+  dlgGrupoEl.append(el("h2", { textContent: `Editar «${grupo.title}»` }),
+    el("p", { className: "ayuda-opciones", textContent: "Marca las series que deben pertenecer al grupo. Las que desmarques vuelven a la lista principal." }),
+    lista,
+    el("div", { className: "pos-actions" }, guardarMiembros, el("button", { className: "btn-mini", type: "button", textContent: "Cancelar", onclick: () => abrirDialogoGrupo(grupo) })));
+}
+
 function render() {
   botonesSiguiente.clear(); // las cards se recrean: se vuelven a registrar al dibujarlas
   actualizarBotonPendientes();
@@ -1213,9 +1447,14 @@ function render() {
   const orden = ordenEl.value;
   const q = normalizar(busquedaEl.value.trim());
 
-  let lista = todosLosAnimes.filter((a) => {
-    if (filtroEstado && a.status !== filtroEstado) return false;
-    if (pendientesActivo() && !tieneCapituloPendiente(a)) return false;
+  let lista = elementosPrincipales().filter((a) => {
+    if (esGrupo(a)) {
+      if (!grupoCoincideFiltro(a)) return false;
+      if (pendientesActivo() && !grupoTienePendiente(a)) return false;
+    } else {
+      if (filtroEstado && a.status !== filtroEstado) return false;
+      if (pendientesActivo() && !tieneCapituloPendiente(a)) return false;
+    }
     if (!pasaGeneros(a, filtroGeneros)) return false;
     if (q && !normalizar(a.title).includes(q)) return false;
     return true;
@@ -1255,7 +1494,7 @@ function render() {
     }
     return;
   }
-  lista.forEach((anime) => listaEl.append(renderItem(anime)));
+  lista.forEach((anime) => listaEl.append(esGrupo(anime) ? renderGrupoItem(anime) : renderItem(anime)));
 }
 
 // --- Tarjeta de cada anime --------------------------------------------------
@@ -1314,7 +1553,7 @@ function renderItem(anime) {
     img.dataset.src = portadaSrc;
     img.addEventListener("load", () => img.classList.add("lista"));
     img.addEventListener("error", () => { reintentarPortada(img, portadaSrc); });
-    if (sinReferer(portadaSrc)) img.referrerPolicy = "no-referrer";
+    img.referrerPolicy = politicaReferer(portadaSrc);
     portada.append(img);
     if (portadaMem.has(portadaSrc)) img.src = portadaSrc; else observador.observe(img);
   } else {
@@ -1467,6 +1706,15 @@ function renderItem(anime) {
     }
   }
 
+  if (modoAgrupar && !esGrupo(anime)) {
+    const chk = el("input", { type: "checkbox", checked: seleccionAgrupar.has(anime.row), ariaLabel: `Seleccionar ${anime.title} para agrupar` });
+    chk.className = "grupo-check";
+    chk.addEventListener("change", () => {
+      if (chk.checked) seleccionAgrupar.add(anime.row); else seleccionAgrupar.delete(anime.row);
+      pintarBarraAgrupar();
+    });
+    card.append(el("label", { className: "grupo-seleccion-card" }, chk, "Agrupar"));
+  }
   card.append(portada, info);
   return card;
 }
@@ -1590,6 +1838,11 @@ function pantallaNueva() {
 }
 dlgPosicionarEl.addEventListener("close", () => { dlgPosicionarEl.onkeydown = null; limpiarObservadoresPos(); });
 
+function elementosPosicionables() {
+  if (ajustes.tratarGruposComoUno) return elementosPrincipales();
+  return todosLosAnimes.filter(a => a && !a.isGroup && a.row != null && a.title);
+}
+
 function abrirPosicionador() {
   const validas = todosLosAnimes.filter(a => a && a.row != null && a.title);
   if (validas.length < 2) { toast("Necesitas al menos 2 series para posicionar"); return; }
@@ -1618,13 +1871,25 @@ function renderPosicionInicio() {
   const orden = el("select", { className: "pos-filtro", ariaLabel: "Ordenar series" });
   [["", "Orden recomendado"],["title-asc", "Nombre: A → Z"],["title-desc", "Nombre: Z → A"],["score-desc", "Nota: mayor a menor"],["score-asc", "Nota: menor a mayor"],["unrated", "Sin valorar primero"]].forEach(([value,label]) => orden.append(el("option", { value, textContent: label })));
   orden.value = posicionFiltros.orden;
+  const tratarGrupos = el("label", { className: "marcar-mover" },
+    el("input", { type: "checkbox", checked: !!ajustes.tratarGruposComoUno }),
+    "Tratar grupos como un solo elemento"
+  );
+  tratarGrupos.firstChild.addEventListener("change", () => {
+    ajustes.tratarGruposComoUno = tratarGrupos.firstChild.checked;
+    localStorage.setItem("ajustes", JSON.stringify(ajustes));
+    posicionState.validas = elementosPosicionables();
+    renderPosicionInicio();
+  });
   const lista = el("div", { className: "pos-selector-grid" });
   const mensaje = el("div", { className: "pos-lista-vacia", hidden: true });
   const cuenta = el("span", {});
   let obsLista = null;
   function obtenerLista() {
     const q = normalizar(posicionFiltros.q);
-    let arr = validas.filter(a => (!q || normalizar(a.title).includes(q)) && (!posicionFiltros.estado || a.status === posicionFiltros.estado) && (!posicionFiltros.genero || parseGeneros(a.genre).includes(posicionFiltros.genero)));
+    let arr = validas.filter(a => (!q || normalizar(a.title).includes(q))
+      && (!posicionFiltros.estado || (a.isGroup ? miembrosDeGrupo(a).some(m => m.status === posicionFiltros.estado) : a.status === posicionFiltros.estado))
+      && (!posicionFiltros.genero || parseGeneros(a.genre).includes(posicionFiltros.genero)));
     const nota = a => notaNumero(a);
     arr.sort((a,b) => {
       if (posicionFiltros.orden === "title-asc") return posicionTitulo(a).localeCompare(posicionTitulo(b), "es");
@@ -1671,6 +1936,7 @@ function renderPosicionInicio() {
   dlgPosicionarEl.append(
     el("div", { className: "pos-head" }, el("div", { className: "pos-mark", textContent: "⚖" }), el("div", {}, el("h2", { textContent: "Posicionar serie" }), el("p", { textContent: "Elige una serie y compárala con otras para calcular su nota." })), el("button", { className: "btn-mini", type: "button", textContent: "Separar notas iguales", title: "Ordenar series que tienen la misma nota", onclick: abrirSeparadorEmpates })),
     el("div", { className: "pos-selector-toolbar" }, buscador, estado, genero, orden),
+    tratarGrupos,
     lista, mensaje,
     el("div", { className: "pos-help" }, el("strong", { textContent: `${sinNota.length} sin valorar` }), " · ", cuenta, " · Pulsa una tarjeta (o Enter en el buscador) para comenzar. También puedes recolocar una serie ya valorada."),
     el("div", { className: "pos-actions" }, cerrar)
@@ -2348,6 +2614,21 @@ $("btnEdicion").addEventListener("click", (e) => {
   e.currentTarget.setAttribute("aria-pressed", String(modoEdicion));
   toast(modoEdicion ? "Modo edición activado" : "Modo edición desactivado");
   pintarBarraMover();
+  render();
+});
+
+$("btnAgrupar").addEventListener("click", (e) => {
+  modoAgrupar = !modoAgrupar;
+  seleccionAgrupar.clear();
+  e.currentTarget.setAttribute("aria-pressed", String(modoAgrupar));
+  if (modoAgrupar) {
+    modoEdicion = false;
+    $("btnEdicion").setAttribute("aria-pressed", "false");
+    toast("Selecciona las series que quieras agrupar");
+  } else {
+    toast("Selección de grupos cerrada");
+  }
+  pintarBarraAgrupar();
   render();
 });
 
@@ -3529,28 +3810,19 @@ fillCoversBtn.addEventListener("click", async () => {
   cargar();
 });
 
-window.addEventListener("migrar-progreso", (e) => { migrateStatusEl.textContent = e.detail; });
 migrateFlvBtn.addEventListener("click", async () => {
   migrateFlvBtn.disabled = true;
-  const textoBoton = migrateFlvBtn.textContent;
-  migrateFlvBtn.textContent = "Migrando…";
-  migrateStatusEl.style.whiteSpace = "pre-wrap";
-  migrateStatusEl.textContent = "Preparando… leyendo tu lista.";
+  migrateStatusEl.textContent = "Revisando enlaces de AnimeFLV… puede tardar un poco.";
   const res = await enviarMensaje({ type: "MIGRATE_ANIMEFLV" });
   migrateFlvBtn.disabled = false;
-  migrateFlvBtn.textContent = textoBoton;
   if (!res || !res.ok) {
     migrateStatusEl.textContent = "Error: " + (res?.error || "error desconocido");
     return;
   }
-  migrateStatusEl.style.whiteSpace = "pre-wrap";
   migrateStatusEl.textContent =
-    `Listo (${res.total ?? "?"} series revisadas). ` +
-    `Migrados a AnimeAV1: ${res.migradas} (portadas de AnimeAV1 aplicadas: ${res.portadasAV1 ?? 0}). ` +
-    `Portadas corregidas o sustituidas en series ya migradas: ${res.refrescadas ?? 0}. ` +
+    `Migrados a AnimeAV1: ${res.migradas}. ` +
     `Portada de AnimeFLV usada (sin equivalente en AnimeAV1): ${res.portadasFlv}. ` +
-    `Sin cambios: ${res.sinCambios}.` +
-    (res.fallos?.length ? "\nNo encontradas:\n" + res.fallos.map((f) => `• ${f.titulo} → ${f.motivo}`).join("\n") : "");
+    `Sin cambios: ${res.sinCambios}.`;
   cargar();
 });
 
