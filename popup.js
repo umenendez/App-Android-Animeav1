@@ -1278,8 +1278,17 @@ function grupoTienePendiente(grupo) {
   return miembrosDeGrupo(grupo).some(tieneCapituloPendiente);
 }
 function elementosPrincipales() {
-  const grupos = todosLosAnimes.filter(esGrupo);
-  const sueltos = todosLosAnimes.filter(a => !esGrupo(a) && !String(a.group || "").trim());
+  const norm = (v) => String(v || "").trim();
+  // Grupos con el mismo nombre (creados a la vez en dos dispositivos): se muestra solo uno
+  const vistos = new Set();
+  const grupos = todosLosAnimes.filter(esGrupo).filter(g => {
+    const k = norm(g.title).toLowerCase();
+    if (vistos.has(k)) return false;
+    vistos.add(k); return true;
+  });
+  const nombres = new Set(grupos.map(g => norm(g.title)));
+  // Una serie cuyo grupo ya no existe (renombrado/borrado en otro dispositivo) se muestra suelta en vez de desaparecer
+  const sueltos = todosLosAnimes.filter(a => !esGrupo(a) && (!norm(a.group) || !nombres.has(norm(a.group))));
   return [...grupos, ...sueltos];
 }
 
