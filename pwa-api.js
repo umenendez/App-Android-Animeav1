@@ -1886,24 +1886,30 @@
   // sincronizaron («base»): si solo cambió la nube se escribe en la hoja; si solo cambió la hoja se escribe en la
   // nube; si cambiaron los dos, gana la hoja. Una serie que existe en un solo lado se añade al otro, salvo que
   // estuviera en la base (entonces es que se borró en el otro lado y se borra aquí también).
-  const CAMPOS_VINCULO = ["genre", "score", "title", "url", "status", "cover", "lastEpisodeUrl"];
+  const CAMPOS_VINCULO = ["genre", "score", "title", "url", "status", "cover", "lastEpisodeUrl", "group", "isGroup"];
   function normItemVinculo(it) {
     const t = (v) => String(v ?? "").trim();
     const n = parseFloat(t(it?.score).replace(",", "."));
+    // Los grupos se guardan distinto en cada sitio (la hoja no tiene enlace; la nube usa «group:id»): para compararlos
+    // la URL de un grupo no cuenta, y se identifica por su nombre.
+    const esG = !!it?.isGroup;
     return {
       genre: t(it?.genre), score: Number.isFinite(n) && n > 0 ? String(Math.round(n * 10) / 10) : "", title: t(it?.title),
-      url: t(it?.url), status: t(it?.status), cover: t(it?.cover), lastEpisodeUrl: t(it?.lastEpisodeUrl),
+      url: esG ? "" : t(it?.url), status: t(it?.status), cover: t(it?.cover), lastEpisodeUrl: t(it?.lastEpisodeUrl),
+      group: esG ? t(it?.title) : t(it?.group), isGroup: esG ? "1" : "",
     };
   }
+  const sinGrupoVinculo = (it) => JSON.stringify(CAMPOS_VINCULO.filter((c) => c !== "group" && c !== "isGroup").map((c) => normItemVinculo(it)[c]));
   const hashVinculo = (it) => JSON.stringify(CAMPOS_VINCULO.map((c) => normItemVinculo(it)[c]));
   function claveSerieVinculo(it) {
+    if (it?.isGroup) return "g:" + String(it.title ?? "").trim().toLowerCase().replace(/\s+/g, " ");
     const u = String(it?.url ?? "").trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/[?#].*$/, "").replace(/\/+$/, "");
     return u ? "u:" + u : "t:" + String(it?.title ?? "").trim().toLowerCase().replace(/\s+/g, " ");
   }
   function diferenciasVinculo(de, a) {
     const x = normItemVinculo(de), y = normItemVinculo(a);
     const campos = [];
-    for (const c of ["genre", "score", "status", "cover", "lastEpisodeUrl"]) if (x[c] !== y[c]) campos.push([c, y[c]]);
+    for (const c of ["genre", "score", "status", "cover", "lastEpisodeUrl", "group"]) if (x[c] !== y[c]) campos.push([c, y[c]]);
     return { campos, tituloUrl: x.title !== y.title || x.url !== y.url, title: y.title, url: y.url };
   }
   function planificarVinculo(base, hoja, nube) {
@@ -1917,7 +1923,9 @@
       if (s && c) {
         if (hs === hc) plan.base[k] = hs;
         else if (b !== undefined && hs === b) { plan.aHoja.actualizar.push({ k, row: s.row, de: s, a: c }); plan.base[k] = hc; } // cambió la nube
-        else { plan.aNube.actualizar.push({ k, row: c.row, a: s }); plan.base[k] = hs; }                                        // cambió la hoja (o las dos: gana la hoja)
+        else if (b === undefined && !s.isGroup && sinGrupoVinculo(s) === sinGrupoVinculo(c) && !normItemVinculo(s).group && normItemVinculo(c).group) {
+          plan.aHoja.actualizar.push({ k, row: s.row, de: s, a: c }); plan.base[k] = hc; // primera sincronización: solo el grupo difiere y la hoja no lo tenía
+        } else { plan.aNube.actualizar.push({ k, row: c.row, a: s }); plan.base[k] = hs; }                                        // cambió la hoja (o las dos: gana la hoja)
       } else if (s) {
         if (b !== undefined && hs === b) plan.aHoja.eliminar.push({ k, row: s.row, title: s.title });                           // se borró en la nube
         else { plan.aNube.anadir.push({ k, item: s }); plan.base[k] = hs; }
@@ -1931,15 +1939,15 @@
     plan.sospechoso = plan.borrados > Math.max(5, Math.ceil(0.4 * Math.max(H.size, N.size)));
     return plan;
   }
-  const claveBaseVinculo = (nubeId, hojaId) => `vinculoBase:${nubeId}:${hojaId}`;
+  const claveBaseVinculo = (nubeId, hojaId) => `vinculoBase2:${nubeId}:${hojaId}`; // v2: la base incluye ya los grupos
   // Datos de una serie tal como se guardan en una lista de la nube (la nota con una décima)
-  const camposParaNube = (it) => { const x = normItemVinculo(it); return { ...x, score: notaLocal(x.score) }; };
+  const camposParaNube = (it) => { const x = normItemVinculo(it); return { ...x, score: notaLocal(x.score), isGroup: !!x.isGroup }; };
   const resumenVinculoVacio = () => ({ hoja: { actualizadas: 0, anadidas: 0, eliminadas: 0 }, nube: { actualizadas: 0, anadidas: 0, eliminadas: 0 } });
 
   // Peticiones de Sheets para aplicar a la hoja los cambios del plan EN POCAS LLAMADAS (no serie a serie):
   // ediciones, borrados (de abajo arriba) y altas se agrupan en lotes; el coste ya no crece con el número de series.
   function requestCampoHoja(sheetId, row, campo, valor) {
-    const col = { genre: 0, score: 2, status: 5, cover: 9, lastEpisodeUrl: 10 }[campo];
+    const col = { genre: 0, score: 2, status: 5, cover: 9, lastEpisodeUrl: 10, group: 11 }[campo];
     const c = {};
     let fields = "userEnteredValue";
     if (campo === "score") {
@@ -1979,13 +1987,14 @@
       for (const op of aHoja.anadir) {
         const x = normItemVinculo(op.item);
         const num = parseFloat(x.score);
-        const valores = Array.from({ length: 11 }, () => ({}));
+        const valores = Array.from({ length: 12 }, () => ({}));
         valores[0] = { userEnteredValue: { stringValue: x.genre } };
         if (Number.isFinite(num) && num > 0) valores[2] = { userEnteredValue: { numberValue: num }, userEnteredFormat: { numberFormat: { type: "NUMBER", pattern: "0.0" } } };
-        valores[3] = x.url ? { userEnteredValue: { stringValue: x.title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: x.url } } }] } : { userEnteredValue: { stringValue: x.title } };
+        valores[3] = x.url && !x.isGroup ? { userEnteredValue: { stringValue: x.title }, textFormatRuns: [{ startIndex: 0, format: { link: { uri: x.url } } }] } : { userEnteredValue: { stringValue: x.title } };
         valores[5] = { userEnteredValue: { stringValue: x.status } };
         if (x.cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${x.cover.replace(/"/g, '""')}",1)` } };
         if (x.lastEpisodeUrl) valores[10] = { userEnteredValue: { stringValue: x.lastEpisodeUrl } };
+        if (x.group) valores[11] = { userEnteredValue: { stringValue: x.group } }; // grupo al que pertenece (o, en la fila de un grupo, su propio nombre)
         lotes.anadir.push({ k: op.k, reqs: [{ updateCells: {
           range: { sheetId, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 12 },
           rows: [{ values: valores }], fields: "userEnteredValue,textFormatRuns,userEnteredFormat.numberFormat",
@@ -2085,6 +2094,9 @@
       const fallos = new Set();
       // --- Hoja: todos los cambios en una o pocas peticiones
       if (plan.aHoja.anadir.length) gridFilas = await leerFilasHoja();
+      if (gridColumnas !== null && gridColumnas < 12 && (plan.aHoja.anadir.length || plan.aHoja.actualizar.length)) { // la columna L (grupos) puede no existir aún
+        try { await enviarRequestsHoja([{ appendDimension: { sheetId: gid, dimension: "COLUMNS", length: 12 - gridColumnas } }]); gridColumnas = 12; } catch (e) {}
+      }
       const hechos = await ejecutarLotesHoja(construirLotesHoja(gid, plan.aHoja, hoja, gridFilas), enviarRequestsHoja);
       res.hoja.actualizadas = hechos.actualizadas; res.hoja.eliminadas = hechos.eliminadas; res.hoja.anadidas = hechos.anadidas;
       hechos.fallos.forEach((k) => fallos.add(k));
@@ -2097,13 +2109,16 @@
         for (const op of plan.aNube.actualizar) {
           const i = pos(op.k);
           if (i < 0) { fallos.add(op.k); continue; }
-          d.items[i] = { ...d.items[i], ...camposParaNube(op.a) };
+          const previa = d.items[i];
+          d.items[i] = { ...previa, ...camposParaNube(op.a) };
+          if (previa.isGroup) d.items[i].url = previa.url; // el enlace «group:id» de un grupo no existe en la hoja: se conserva
           if (d.items[i].cover) portadas.push(d.items[i].cover);
           res.nube.actualizadas++; cambios++;
         }
         for (const op of plan.aNube.anadir) {
           if (pos(op.k) >= 0) continue;
           const it = { row: d.siguiente++, ...camposParaNube(op.item) };
+          if (it.isGroup) it.url = `group:${idGrupoNuevo()}`;
           d.items.push(it);
           if (it.cover) portadas.push(it.cover);
           res.nube.anadidas++; cambios++;
