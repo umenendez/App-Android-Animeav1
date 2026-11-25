@@ -1323,15 +1323,16 @@ async function crearGrupoDesdeSeleccion() {
 function renderGrupoItem(grupo) {
   const card = el("div", { className: "card card-grupo" });
   card.dataset.estado = "";
-  const portada = el("div", { className: "portada" });
-  if (grupo.cover) {
-    const img = el("img", { className: "cover lista", alt: "", draggable: false, referrerPolicy: "strict-origin-when-cross-origin" });
-    const src = String(grupo.cover).replace(/^http:\/\//i, "https://");
-    img.src = src;
-    portada.append(img);
-  } else {
-    portada.append(el("div", { className: "sin-portada", textContent: "Grupo" }));
-  }
+
+  // Un grupo puede no tener todavía su portada propia en la fila de la hoja
+  // (por ejemplo después de una sincronización antigua). Si algún miembro
+  // tiene portada, la usamos como respaldo. Después se carga con el mismo
+  // pipeline de portadas que utilizan las series normales.
+  const miembroConPortada = miembrosDeGrupo(grupo).find(a => a?.cover);
+  const coverGrupo = String(grupo.cover || miembroConPortada?.cover || "").trim();
+  const portada = coverGrupo
+    ? crearPortada({ ...grupo, cover: coverGrupo }, "portada portada-grupo", null)
+    : el("div", { className: "portada" }, el("div", { className: "sin-portada", textContent: "Grupo" }));
   const score = el("input", { className: "nota", type: "number", inputMode: "decimal", step: "0.1", min: "0.1", max: "10",
     value: textoNotaVisible(grupo), placeholder: "-", title: "Nota propia del grupo" });
   aplicarColorNota(score);
