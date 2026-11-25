@@ -45,6 +45,7 @@
   let gidConfig = null;
   let gid = 0;
   let gridFilas = null; // filas de la pestaña (para saber si hay que ampliarla al añadir series)
+  let gridColumnas = null;
   let cachedSheetName = null;
   let listaLocalId = null; // id de la lista activa si es una lista local (sin Google Sheets)
   let tokenClient = null;
@@ -260,7 +261,7 @@
   }
 
   function resetConfig() {
-    spreadsheetId = null; gidConfig = null; cachedSheetName = null; listaLocalId = null;
+    spreadsheetId = null; gidConfig = null; cachedSheetName = null; listaLocalId = null; gridFilas = null; gridColumnas = null;
   }
   function rango(nombre, celdas) { return `'${nombre.replace(/'/g, "''")}'!${celdas}`; }
 
@@ -271,7 +272,7 @@
     const hojas = (data.sheets || []).map(s => s.properties);
     const hoja = (gidConfig !== null && hojas.find(h => h.sheetId === gidConfig)) || hojas[0];
     if (!hoja) throw new Error("El documento no tiene ninguna pestaña");
-    gid = hoja.sheetId; gridFilas = hoja.gridProperties?.rowCount ?? null; cachedSheetName = hoja.title;
+    gid = hoja.sheetId; gridFilas = hoja.gridProperties?.rowCount ?? null; gridColumnas = hoja.gridProperties?.columnCount ?? null; cachedSheetName = hoja.title;
     return cachedSheetName;
   }
 
@@ -823,7 +824,7 @@
     if (miembros.some(it => it.isGroup)) throw new Error("NO_SE_PUEDE_AGRUPAR_GRUPO");
     if (lista.some(it => it.isGroup && String(it.title || "").trim().toLowerCase() === n.toLowerCase())) throw new Error("NOMBRE_GRUPO_EXISTE");
     const fila = await siguienteFilaLibre(sheetName);
-    const gid = idGrupoNuevo();
+    const groupId = idGrupoNuevo();
     const num = parseFloat(String(datos.score ?? "").replace(",", "."));
     const genero = String(datos.genre || miembros.flatMap(x => String(x.genre || "").split(",").map(s => s.trim()).filter(Boolean)).filter(Boolean).join(", ")).trim();
     const cover = String(datos.cover || miembros.find(x => x.cover)?.cover || "").trim();
@@ -834,6 +835,12 @@
     valores[5] = { userEnteredValue: { stringValue: "" } };
     if (cover) valores[9] = { userEnteredValue: { formulaValue: `=IMAGE("${cover.replace(/"/g, '""')}",1)` } };
     valores[11] = { userEnteredValue: { stringValue: n } };
+    if (gridColumnas !== null && gridColumnas < 12) {
+      await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests: [{ appendDimension: {
+        sheetId: gid, dimension: "COLUMNS", length: 12 - gridColumnas
+      }}] }) });
+      gridColumnas = 12;
+    }
     const requests = [{
       updateCells: {
         range: { sheetId: gid, startRowIndex: fila - 1, endRowIndex: fila, startColumnIndex: 0, endColumnIndex: 12 },
@@ -850,7 +857,7 @@
     }
     await sheetsFetch(":batchUpdate", { method: "POST", body: JSON.stringify({ requests }) });
     if (cover) precachearImagen(cover);
-    return { row: fila, title: n, url: `group:${gid}`, status: "", genre: genero, score: Number.isFinite(num) && num > 0 ? num.toFixed(1) : "", cover, lastEpisodeUrl: "", group: n, isGroup: true, groupId: gid };
+    return { row: fila, title: n, url: `group:${groupId}`, status: "", genre: genero, score: Number.isFinite(num) && num > 0 ? num.toFixed(1) : "", cover, lastEpisodeUrl: "", group: n, isGroup: true, groupId: gid };
   }
 
   async function actualizarGrupo(row, cambios = {}) {
